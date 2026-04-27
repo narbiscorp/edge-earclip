@@ -1,0 +1,4 @@
+# Built artifacts from protocol/test
+test/roundtrip
+test/roundtrip.exe
+test/*.o
