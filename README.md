@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # narbis-earclip
 
 Narbis earclip firmware, dashboard, and protocol — all in one repo.
@@ -38,3 +39,6 @@ npm run dev
 - MAX30102 or MAX30101 breakout (auto-detected)
 - Single-cell LiPo battery
 - Wiring: SDA→D4, SCL→D5, INT→D0, VIN→3V3, GND→GND
+=======
+ 
+>>>>>>> 8788dcded8809f5be7036843b191604a7cf04246
