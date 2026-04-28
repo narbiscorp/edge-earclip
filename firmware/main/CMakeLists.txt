@@ -20,6 +20,8 @@ idf_component_register(
         esp_event
         esp_netif
         esp_timer
+        bt
+        esp_app_format
         narbis_protocol
         ppg_driver_max3010x
         ppg_channel

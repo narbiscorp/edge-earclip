@@ -45,9 +45,17 @@ static void on_beat(const beat_event_t *e, void *ctx)
              bpm_x10 / 10, bpm_x10 % 10, e->confidence_x100, e->flags,
              e->peak_amplitude);
 
+    /* ESP-NOW always: that's the path to Edge glasses. */
     esp_err_t err = transport_espnow_send_beat(e);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "espnow send_beat: %s", esp_err_to_name(err));
+    }
+
+    /* BLE only in HYBRID mode (and only if a central is subscribed; the
+     * call internally no-ops otherwise). */
+    const narbis_runtime_config_t *cfg = ble_service_narbis_config();
+    if (cfg->transport_mode == NARBIS_TRANSPORT_HYBRID) {
+        (void)transport_ble_send_beat(e);
     }
 }
 
@@ -63,6 +71,8 @@ static void battery_tick(void *arg)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "espnow send_battery: %s", esp_err_to_name(err));
     }
+    (void)transport_ble_send_battery(soc, mv, charging);
+    (void)ble_service_narbis_push_battery(soc, mv, charging);
 }
 
 static void boot_log_macs(void)
@@ -104,6 +114,9 @@ static void on_ppg_sample(const ppg_sample_t *sample, void *user_ctx)
 {
     (void)user_ctx;
     ppg_channel_feed(sample);
+
+    const narbis_runtime_config_t *cfg = ble_service_narbis_config();
+    (void)transport_ble_send_raw_sample(sample, cfg->sample_rate_hz, cfg->data_format);
 }
 #endif
 
