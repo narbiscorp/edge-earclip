@@ -1,0 +1,21 @@
+menu "Narbis earclip"
+
+    config NARBIS_HARDCODED_PARTNER_MAC
+        bool "Use hardcoded ESP-NOW partner MAC as fallback"
+        default y
+        help
+            When the runtime config has not yet been populated (partner_mac is
+            all zero in NVS), fall back to the MAC compiled in via
+            NARBIS_HARDCODED_PARTNER_MAC_VAL. Disable this in production builds
+            where every device must be paired via the dashboard before use.
+
+    config NARBIS_HARDCODED_PARTNER_MAC_VAL
+        string "Hardcoded ESP-NOW partner MAC"
+        depends on NARBIS_HARDCODED_PARTNER_MAC
+        default "FF:FF:FF:FF:FF:FF"
+        help
+            Six-byte MAC, colon-separated, used when no partner MAC is stored
+            in NVS. The default broadcast address is intentional — it makes
+            unconfigured units inert until paired.
+
+endmenu

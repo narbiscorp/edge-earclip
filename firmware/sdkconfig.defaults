@@ -1,0 +1,32 @@
+# Narbis earclip — ESP-IDF defaults.
+# Pin: ESP-IDF v5.5.1 (see CLAUDE.md). Do not silently upgrade.
+
+# ---------------- target ----------------
+CONFIG_IDF_TARGET="esp32c6"
+
+# ---------------- flash + partition table ----------------
+# XIAO ESP32-C6 has 4 MB flash. The partition table assumes that size.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ---------------- Bluetooth (NimBLE host) ----------------
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+
+# ---------------- Wi-Fi / coex (for ESP-NOW alongside BLE) ----------------
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# ---------------- Power management ----------------
+# Light sleep is the only sleep mode allowed (CLAUDE.md: no deep sleep on the
+# earclip — incompatible with continuous sampling). Stage 07 wires up actual
+# sleep entry; here we just enable the framework.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# ---------------- Logging ----------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

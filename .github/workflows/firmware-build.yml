@@ -1,0 +1,38 @@
+name: firmware-build
+
+on:
+  push:
+    paths:
+      - 'firmware/**'
+      - 'protocol/**'
+      - '.github/workflows/firmware-build.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - 'protocol/**'
+      - '.github/workflows/firmware-build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32c6
+          path: firmware
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: narbis_earclip-firmware
+          path: |
+            firmware/build/narbis_earclip.bin
+            firmware/build/narbis_earclip.elf
+            firmware/build/partition_table/partition-table.bin
+            firmware/build/bootloader/bootloader.bin
+          if-no-files-found: warn

@@ -1,0 +1,23 @@
+# Narbis earclip partition table for 4 MB flash (XIAO ESP32-C6).
+#
+# Layout (offsets in hex):
+#   0x000000 - 0x008000   bootloader (32 KB, IDF default)
+#   0x008000 - 0x009000   partition table (4 KB)
+#   0x009000 - 0x00F000   nvs            (24 KB)
+#   0x00F000 - 0x011000   otadata        ( 8 KB)
+#   0x011000 - 0x012000   phy_init       ( 4 KB)
+#   0x012000 - 0x020000   (alignment gap, 56 KB unused)
+#   0x020000 - 0x120000   factory app    ( 1 MB) — recovery image
+#   0x120000 - 0x280000   ota_0 app      ( 1.4 MB)
+#   0x280000 - 0x3E0000   ota_1 app      ( 1.4 MB)
+#   0x3E0000 - 0x400000   (free, 128 KB headroom)
+#
+# App partitions are 64 KB-aligned as required by the ESP32-C6 bootloader.
+#
+# Name,    Type, SubType,  Offset,   Size,     Flags
+nvs,       data, nvs,      0x9000,   0x6000,
+otadata,   data, ota,      0xF000,   0x2000,
+phy_init,  data, phy,      0x11000,  0x1000,
+factory,   app,  factory,  0x20000,  0x100000,
+ota_0,     app,  ota_0,    0x120000, 0x160000,
+ota_1,     app,  ota_1,    0x280000, 0x160000,

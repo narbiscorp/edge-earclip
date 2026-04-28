@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "app_state.c"
+        "transport_espnow.c"
+        "transport_ble.c"
+        "ble_service_hrs.c"
+        "ble_service_battery.c"
+        "ble_service_dis.c"
+        "ble_service_narbis.c"
+        "ble_ota.c"
+        "config_manager.c"
+        "power_mgmt.c"
+        "diagnostics.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        narbis_protocol
+)
