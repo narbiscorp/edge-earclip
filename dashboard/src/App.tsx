@@ -6,6 +6,7 @@ import ConfigPanel from './components/ConfigPanel';
 import PresetBar from './components/PresetBar';
 import RecordingControls from './components/RecordingControls';
 import ReplayControls from './components/ReplayControls';
+import DebugPanel from './components/DebugPanel';
 
 export default function App() {
   return (
@@ -32,7 +33,7 @@ export default function App() {
       <footer className="flex items-center gap-3 px-4 py-2 border-t border-slate-800 shrink-0">
         <RecordingControls />
         <ReplayControls />
-        <span className="ml-auto text-xs text-slate-400">stage 09 skeleton</span>
+        <div className="ml-auto"><DebugPanel /></div>
       </footer>
     </div>
   );
