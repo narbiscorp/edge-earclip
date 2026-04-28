@@ -16,4 +16,5 @@ idf_component_register(
     REQUIRES
         nvs_flash
         narbis_protocol
+        ppg_driver_max3010x
 )
