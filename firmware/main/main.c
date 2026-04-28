@@ -1,13 +1,19 @@
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+
+#include "sdkconfig.h"
 
 #include "narbis_protocol.h"
 #include "ppg_driver_max3010x.h"
 
 #include "app_state.h"
+#include "beat_validator.h"
 #include "ble_ota.h"
 #include "ble_service_battery.h"
 #include "ble_service_dis.h"
@@ -15,31 +21,91 @@
 #include "ble_service_narbis.h"
 #include "config_manager.h"
 #include "diagnostics.h"
+#include "elgendi.h"
 #include "power_mgmt.h"
+#include "ppg_channel.h"
 #include "transport_ble.h"
 #include "transport_espnow.h"
 
+#ifdef CONFIG_NARBIS_TEST_INJECT
+#include "test_inject.h"
+#endif
+
 static const char *TAG = "narbis";
 
-/* Stage 03 sample probe — logs the first 10 samples and unregisters itself.
- * Replaced in Stage 04 by the ppg_channel hand-off. */
-static void ppg_probe_cb(const ppg_sample_t *sample, void *user_ctx)
+static void on_beat(const beat_event_t *e, void *ctx)
 {
-    (void)user_ctx;
-    static int count = 0;
-    static int64_t prev_ts = 0;
-    if (count >= 10) return;
-    int64_t dt = (count == 0) ? 0 : (sample->timestamp_us - prev_ts);
-    ESP_LOGI(TAG, "ppg[%d] ts=%lld red=%lu ir=%lu green=%lu dt=%lld us",
-             count, (long long)sample->timestamp_us,
-             (unsigned long)sample->red, (unsigned long)sample->ir,
-             (unsigned long)sample->green, (long long)dt);
-    prev_ts = sample->timestamp_us;
-    if (++count >= 10) {
-        ppg_driver_unregister_sample_callback();
-        ESP_LOGI(TAG, "ppg probe done — callback unregistered");
+    (void)ctx;
+    /* BPM x10 = 600000 / IBI(ms), with rounding. Guarded against div-by-0. */
+    uint16_t bpm_x10 = (e->ibi_ms > 0)
+        ? (uint16_t)((600000u + e->ibi_ms / 2u) / e->ibi_ms) : 0;
+    ESP_LOGI(TAG,
+             "beat ts=%lu ibi=%u prev=%u bpm=%u.%u conf=%u flags=0x%02x amp=%u",
+             (unsigned long)e->timestamp_ms, e->ibi_ms, e->prev_ibi_ms,
+             bpm_x10 / 10, bpm_x10 % 10, e->confidence_x100, e->flags,
+             e->peak_amplitude);
+
+    esp_err_t err = transport_espnow_send_beat(e);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "espnow send_beat: %s", esp_err_to_name(err));
     }
 }
+
+static void battery_tick(void *arg)
+{
+    (void)arg;
+    uint16_t mv = 0;
+    uint8_t  soc = 0, charging = 0;
+    if (power_mgmt_get_battery(&mv, &soc, &charging) != ESP_OK) {
+        return;
+    }
+    esp_err_t err = transport_espnow_send_battery(soc, mv, charging);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "espnow send_battery: %s", esp_err_to_name(err));
+    }
+}
+
+static void boot_log_macs(void)
+{
+    uint8_t wifi_mac[6] = {0};
+    uint8_t ble_mac[6]  = {0};
+    uint8_t partner[6]  = {0};
+    const char *src     = "unset";
+
+    (void)esp_wifi_get_mac(WIFI_IF_STA, wifi_mac);
+    (void)esp_read_mac(ble_mac, ESP_MAC_BT);
+    (void)transport_espnow_get_partner_info(partner, &src);
+
+    ESP_LOGI(TAG, "wifi MAC %02x:%02x:%02x:%02x:%02x:%02x",
+             wifi_mac[0], wifi_mac[1], wifi_mac[2],
+             wifi_mac[3], wifi_mac[4], wifi_mac[5]);
+    ESP_LOGI(TAG, "ble  MAC %02x:%02x:%02x:%02x:%02x:%02x",
+             ble_mac[0], ble_mac[1], ble_mac[2],
+             ble_mac[3], ble_mac[4], ble_mac[5]);
+    ESP_LOGI(TAG, "partner  %02x:%02x:%02x:%02x:%02x:%02x  src=%s",
+             partner[0], partner[1], partner[2],
+             partner[3], partner[4], partner[5], src);
+}
+
+static void on_peak(const elgendi_peak_t *p, void *ctx)
+{
+    (void)ctx;
+    beat_validator_feed(p);
+}
+
+static void on_processed(const ppg_processed_sample_t *s, void *ctx)
+{
+    (void)ctx;
+    elgendi_feed(s);
+}
+
+#ifndef CONFIG_NARBIS_TEST_INJECT
+static void on_ppg_sample(const ppg_sample_t *sample, void *user_ctx)
+{
+    (void)user_ctx;
+    ppg_channel_feed(sample);
+}
+#endif
 
 static esp_err_t nvs_init_with_recovery(void)
 {
@@ -62,6 +128,7 @@ void app_main(void)
     ESP_ERROR_CHECK(config_manager_init());
     ESP_ERROR_CHECK(power_mgmt_init());
     ESP_ERROR_CHECK(transport_espnow_init());
+    boot_log_macs();
     ESP_ERROR_CHECK(transport_ble_init());
     ESP_ERROR_CHECK(ble_service_dis_init());
     ESP_ERROR_CHECK(ble_service_battery_init());
@@ -70,9 +137,30 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_ota_init());
     ESP_ERROR_CHECK(diagnostics_init());
 
+    ESP_ERROR_CHECK(ppg_channel_init());
+    ESP_ERROR_CHECK(elgendi_init());
+    ESP_ERROR_CHECK(beat_validator_init());
+    ESP_ERROR_CHECK(ppg_channel_register_output_cb(on_processed, NULL));
+    ESP_ERROR_CHECK(elgendi_register_peak_cb(on_peak, NULL));
+    ESP_ERROR_CHECK(beat_validator_register_event_cb(on_beat, NULL));
+
+#ifdef CONFIG_NARBIS_TEST_INJECT
+    ESP_LOGW(TAG, "CONFIG_NARBIS_TEST_INJECT enabled — using synthetic source");
+    ESP_ERROR_CHECK(test_inject_start());
+#else
     ppg_driver_config_t ppg_cfg = ppg_driver_default_config();
     ESP_ERROR_CHECK(ppg_driver_init(&ppg_cfg));
-    ESP_ERROR_CHECK(ppg_driver_register_sample_callback(ppg_probe_cb, NULL));
+    ESP_ERROR_CHECK(ppg_driver_register_sample_callback(on_ppg_sample, NULL));
+#endif
+
+    const esp_timer_create_args_t bat_args = {
+        .callback        = &battery_tick,
+        .name            = "battery_30s",
+        .dispatch_method = ESP_TIMER_TASK,
+    };
+    esp_timer_handle_t bat_timer = NULL;
+    ESP_ERROR_CHECK(esp_timer_create(&bat_args, &bat_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(bat_timer, 30ULL * 1000ULL * 1000ULL));
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

@@ -18,4 +18,23 @@ menu "Narbis earclip"
             in NVS. The default broadcast address is intentional — it makes
             unconfigured units inert until paired.
 
+    config NARBIS_ESPNOW_CHANNEL
+        int "ESP-NOW Wi-Fi channel"
+        range 1 13
+        default 1
+        help
+            Wi-Fi channel used for ESP-NOW frames. The earclip sets this on the
+            radio at boot and on each peer entry. Must match the receiver's
+            channel. Stage 07 will override this at runtime from
+            narbis_runtime_config_t.espnow_channel.
+
+    config NARBIS_TEST_INJECT
+        bool "Use synthetic 1 Hz PPG injector instead of real driver"
+        default n
+        help
+            Replaces the MAX3010x driver with a built-in 1 Hz sine generator
+            for end-to-end DSP smoke testing without hardware. Expected
+            output is a beat event every ~1000 ms with confidence near 100
+            and no ARTIFACT flag once the running median has filled.
+
 endmenu

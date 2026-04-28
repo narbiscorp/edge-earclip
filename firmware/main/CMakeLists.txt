@@ -12,9 +12,17 @@ idf_component_register(
         "config_manager.c"
         "power_mgmt.c"
         "diagnostics.c"
+        "test_inject.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_timer
         narbis_protocol
         ppg_driver_max3010x
+        ppg_channel
+        elgendi
+        beat_validator
 )

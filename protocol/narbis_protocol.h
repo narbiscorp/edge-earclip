@@ -300,7 +300,8 @@ typedef struct __attribute__((packed)) {
 
     /* ---- beat validator / SQI gating ---- */
     uint16_t sqi_threshold_x100;    /* min SQI to emit IBI (default 50 = 0.50) */
-    uint16_t ibi_min_ms;            /* validator floor (default 300, ≈200 BPM) */
+    uint16_t ibi_min_ms;            /* validator floor (default 300, ≈200 BPM)
+                                     * also used as Elgendi refractory period */
     uint16_t ibi_max_ms;            /* validator ceiling (default 2000, ≈30 BPM) */
     uint8_t  ibi_max_delta_pct;     /* continuity threshold (default 30) */
 

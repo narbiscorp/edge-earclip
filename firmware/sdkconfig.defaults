@@ -20,6 +20,12 @@ CONFIG_BT_CONTROLLER_ENABLED=y
 
 # ---------------- Wi-Fi / coex (for ESP-NOW alongside BLE) ----------------
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+# STA-only; ESP-NOW does not need SoftAP. Saves ~12 KB flash.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# Wi-Fi config lives in RAM (we call esp_wifi_set_storage(WIFI_STORAGE_RAM)).
+CONFIG_ESP_WIFI_NVS_ENABLED=n
+# No AP association → no WPA3 SAE needed.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
 
 # ---------------- Power management ----------------
 # Light sleep is the only sleep mode allowed (CLAUDE.md: no deep sleep on the
