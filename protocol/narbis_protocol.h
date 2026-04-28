@@ -79,9 +79,15 @@ extern "C" {
 #define NARBIS_CHR_MODE_UUID_STR    "71db6de8-5bff-480f-8db1-0d01c90d17d0"
 #define NARBIS_CHR_MODE_UUID_BYTES  { 0xE8, 0x6D, 0xDB, 0x71, 0xFF, 0x5B, 0x0F, 0x48, 0x8D, 0xB1, 0x0D, 0x01, 0xC9, 0x0D, 0x17, 0xD0 }
 
-/* OTA control (Nordic-style DFU; payload format owned by Stage 08) */
-#define NARBIS_CHR_OTA_CONTROL_UUID_STR    "a99ea74e-cc5b-469b-b6f8-333b3e7f9cdc"
-#define NARBIS_CHR_OTA_CONTROL_UUID_BYTES  { 0x4E, 0xA7, 0x9E, 0xA9, 0x5B, 0xCC, 0x9B, 0x46, 0xB6, 0xF8, 0x33, 0x3B, 0x3E, 0x7F, 0x9C, 0xDC }
+/* OTA service — Edge-compatible 16-bit UUIDs (ported from existing Edge
+ * firmware so a single OTA webapp updates both products). Three
+ * characteristics: control point (write+read), data packets (write WoR),
+ * status notifications. Page-based CRC32 transfer, not standard Nordic
+ * Secure DFU — see `staged-prompts/08_firmware_ota.md`. */
+#define NARBIS_OTA_SVC_UUID16          0x00FFu
+#define NARBIS_OTA_CHR_CONTROL_UUID16  0xFF01u
+#define NARBIS_OTA_CHR_DATA_UUID16     0xFF02u
+#define NARBIS_OTA_CHR_STATUS_UUID16   0xFF03u
 
 /* Diagnostics notify (free heap, uptime, RSSI, etc.) */
 #define NARBIS_CHR_DIAGNOSTICS_UUID_STR    "31d99572-bf8a-4658-828e-4f7c138ca722"
@@ -133,6 +139,45 @@ typedef enum {
     NARBIS_CFG_ACK_UNKNOWN_FIELD    = 2,
     NARBIS_CFG_ACK_REQUIRES_REBOOT  = 3
 } narbis_config_ack_status_t;
+
+/* OTA control-point opcodes (byte 0 of a 2-byte write to NARBIS_OTA_CHR_CONTROL).
+ * Values match the Edge firmware byte-for-byte. */
+typedef enum {
+    NARBIS_OTA_OP_START         = 0xA8,  /* param=0x00; enter OTA mode */
+    NARBIS_OTA_OP_FINISH        = 0xA9,  /* param=0x00; flush, set boot, reboot */
+    NARBIS_OTA_OP_CANCEL        = 0xAA,  /* param=0x00; abort transfer */
+    NARBIS_OTA_OP_PAGE_CONFIRM  = 0xAD   /* param=0x01 commit / 0x00 resend */
+} narbis_ota_opcode_t;
+
+/* OTA status notification codes (byte 0 of a notify on NARBIS_OTA_CHR_STATUS). */
+typedef enum {
+    NARBIS_OTA_ST_READY         = 0x01,  /* 4 bytes: 01 00 00 00 */
+    NARBIS_OTA_ST_PROGRESS      = 0x02,  /* reserved (Edge defines, does not emit) */
+    NARBIS_OTA_ST_SUCCESS       = 0x03,  /* 4 bytes: 03 00 00 00; reboot pending */
+    NARBIS_OTA_ST_ERROR         = 0x04,  /* 4 bytes: 04 <err> 00 00 */
+    NARBIS_OTA_ST_CANCELLED     = 0x05,  /* 4 bytes: 05 00 00 00 */
+    NARBIS_OTA_ST_PAGE_CRC      = 0x06,  /* 7 bytes: 06 page_hi page_lo crc32_le[4] */
+    NARBIS_OTA_ST_PAGE_OK       = 0x07,  /* 3 bytes: 07 page_hi page_lo */
+    NARBIS_OTA_ST_PAGE_RESEND   = 0x08   /* 3 bytes: 08 page_hi page_lo */
+} narbis_ota_status_t;
+
+/* OTA error codes (byte 1 of NARBIS_OTA_ST_ERROR notification).
+ * Codes 0x01–0x05 match Edge. 0x06–0x08 are earclip additions for the
+ * battery / chip-id / re-entry safety layers. */
+typedef enum {
+    NARBIS_OTA_ERR_BEGIN        = 0x01,  /* esp_ota_begin failed */
+    NARBIS_OTA_ERR_WRITE        = 0x02,  /* esp_ota_write failed */
+    NARBIS_OTA_ERR_END          = 0x03,  /* esp_ota_end / set_boot failed */
+    NARBIS_OTA_ERR_NOT_IN_OTA   = 0x04,  /* data received outside OTA session */
+    NARBIS_OTA_ERR_NO_PARTITION = 0x05,  /* esp_ota_get_next_update_partition NULL */
+    NARBIS_OTA_ERR_LOW_BATTERY  = 0x06,  /* SoC < 30% (earclip addition) */
+    NARBIS_OTA_ERR_CHIP_MISMATCH= 0x07,  /* image not for ESP32-C6 (earclip addition) */
+    NARBIS_OTA_ERR_ALREADY_IN_OTA = 0x08 /* START received while already in OTA (earclip addition) */
+} narbis_ota_error_t;
+
+/* OTA wire constants — must match Edge. */
+#define NARBIS_OTA_PAGE_SIZE   4096u
+#define NARBIS_OTA_CHUNK_SIZE   244u    /* informational: BLE-MTU-safe */
 
 /* =============================================================
  * Per-message payload structs (wire format)

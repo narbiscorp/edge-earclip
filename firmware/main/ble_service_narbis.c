@@ -11,8 +11,10 @@
  *   MODE           write        3 bytes: transport, ble_profile, data_format
  *   ESPNOW_PAIR    write        6 bytes: new partner MAC
  *   FACTORY_RESET  write        4-byte magic 'NUKE'
- *   OTA_CONTROL    write        Stage 08 — stub returns NOT_PERMITTED
  *   DIAGNOSTICS    notify       Stage 07 owns emission; chr is registered now
+ *
+ * OTA lives in its own GATT service (ble_ota.c, UUID 0x00FF) — see
+ * narbis_protocol.h "OTA service".
  */
 
 #include "ble_service_narbis.h"
@@ -57,7 +59,6 @@ static const ble_uuid128_t CHR_BATTERY_UUID      = NARBIS_UUID128(NARBIS_CHR_BAT
 static const ble_uuid128_t CHR_CONFIG_UUID       = NARBIS_UUID128(NARBIS_CHR_CONFIG_UUID_BYTES);
 static const ble_uuid128_t CHR_CONFIG_WRITE_UUID = NARBIS_UUID128(NARBIS_CHR_CONFIG_WRITE_UUID_BYTES);
 static const ble_uuid128_t CHR_MODE_UUID         = NARBIS_UUID128(NARBIS_CHR_MODE_UUID_BYTES);
-static const ble_uuid128_t CHR_OTA_UUID          = NARBIS_UUID128(NARBIS_CHR_OTA_CONTROL_UUID_BYTES);
 static const ble_uuid128_t CHR_DIAGNOSTICS_UUID  = NARBIS_UUID128(NARBIS_CHR_DIAGNOSTICS_UUID_BYTES);
 
 /* Custom UUIDs invented here (write-only) for ESP-NOW pairing and factory
@@ -226,14 +227,6 @@ static int access_factory_reset(uint16_t conn_handle, uint16_t attr_handle,
     return err == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
 }
 
-static int access_ota(uint16_t conn_handle, uint16_t attr_handle,
-                      struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    /* Stage 08 fills this in. Until then, refuse writes politely. */
-    (void)conn_handle; (void)attr_handle; (void)ctxt; (void)arg;
-    return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
-}
-
 /* ============================================================================
  * GATT table
  * ========================================================================= */
@@ -287,11 +280,6 @@ static const struct ble_gatt_chr_def NARBIS_CHRS[] = {
     {
         .uuid       = &CHR_FACTORY_RESET_UUID.u,
         .access_cb  = access_factory_reset,
-        .flags      = BLE_GATT_CHR_F_WRITE,
-    },
-    {
-        .uuid       = &CHR_OTA_UUID.u,
-        .access_cb  = access_ota,
         .flags      = BLE_GATT_CHR_F_WRITE,
     },
     {

@@ -76,4 +76,20 @@ menu "Narbis earclip"
         help
             Divider ratio denominator. See NARBIS_BATT_ADC_DIV_NUM.
 
+    menu "OTA"
+
+        config NARBIS_OTA_VALIDITY_TIMEOUT_S
+            int "First-connect timeout for OTA validity self-test (s)"
+            range 5 600
+            default 60
+            help
+                On boot from a freshly-OTA'd partition (state =
+                ESP_OTA_IMG_PENDING_VERIFY), the firmware waits up to
+                this many seconds for a BLE central to connect before
+                marking the image valid. If no connection happens, the
+                bootloader rolls back to the previous slot on the next
+                reset. 60 s mirrors the staged-prompt requirement.
+
+    endmenu
+
 endmenu

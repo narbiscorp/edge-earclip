@@ -1,0 +1,2720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Narbis Edge — HRV Dashboard v13.27</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a25;--border:#2a2a3a;--cyan:#00e5ff;--cyan-dim:#00e5ff44;--red:#ff3366;--green:#00ff88;--yellow:#ffcc00;--text:#e0e0e8;--text-dim:#888899;--mono:'IBM Plex Mono',monospace;--display:'Syne',sans-serif}
+  body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;line-height:1.5;overflow-x:hidden}
+  .header{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+  .header h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:-0.5px;color:var(--cyan)}
+  .header h1 span{color:var(--text-dim);font-weight:400;font-size:13px;margin-left:8px}
+  .hdr-right{display:flex;align-items:center;gap:12px}
+  .btn{background:transparent;border:1px solid var(--cyan);color:var(--cyan);font-family:var(--mono);font-size:12px;padding:8px 20px;cursor:pointer;transition:all 0.2s;text-transform:uppercase;letter-spacing:1px}
+  .btn:hover{background:var(--cyan);color:var(--bg)}
+  .btn.on{background:var(--cyan);color:var(--bg)}
+  .btn:disabled{opacity:0.4;cursor:not-allowed}
+  .btn-sm{font-size:10px;padding:4px 10px;border-color:var(--text-dim);color:var(--text-dim)}
+  .btn-sm.on{border-color:var(--yellow);color:var(--yellow)}
+  .status-bar{display:flex;gap:24px;padding:10px 24px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);align-items:center;flex-wrap:wrap}
+  .si{display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--red);transition:background 0.3s}
+  .dot.ok{background:var(--green)}.dot.warn{background:var(--yellow)}
+  .dashboard{display:grid;grid-template-columns:1fr 340px;gap:1px;background:var(--border);min-height:calc(100vh - 90px)}
+  .main-col{display:flex;flex-direction:column;gap:1px;background:var(--border)}
+  .panel{background:var(--surface);padding:16px 20px}
+  .pt{font-family:var(--display);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:2px;color:var(--text-dim);margin-bottom:12px}
+  canvas{width:100%;height:180px;display:block}
+  .sidebar{grid-column:2;grid-row:1/-1;display:flex;flex-direction:column;gap:1px;background:var(--border);overflow-y:auto;max-height:calc(100vh - 60px);padding-bottom:80px;box-sizing:border-box}
+  .mg{background:var(--surface);padding:16px 20px}
+  .mr{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--border)}
+  .mr:last-child{border-bottom:none}
+  .ml{color:var(--text-dim);font-size:11px}
+  .mv{font-size:15px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--text)}
+  .mv.ac{color:var(--cyan)}
+  .mu{font-size:10px;color:var(--text-dim);margin-left:3px}
+  .coh-big{text-align:center;padding:24px 20px;background:var(--surface)}
+  .coh-score{font-family:var(--display);font-size:64px;font-weight:800;line-height:1;color:var(--cyan);text-shadow:0 0 40px var(--cyan-dim)}
+  .coh-label{font-size:10px;text-transform:uppercase;letter-spacing:3px;color:var(--text-dim);margin-top:4px}
+  .coh-zone{margin-top:8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px}
+  .zbar{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-top:12px;background:var(--surface2)}
+  .zs{transition:width 0.5s;min-width:0}
+  .zs.lo{background:var(--red)}.zs.md{background:var(--yellow)}.zs.hi{background:var(--green)}
+  .abar{height:3px;background:var(--surface2);margin-top:4px;border-radius:2px;overflow:hidden}
+  .afill{height:100%;background:var(--red);transition:width 0.3s}
+  .fbs{display:flex;gap:8px;align-items:flex-end;height:60px;margin-top:8px}
+  .fbg{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+  .fbt{width:100%;height:50px;background:var(--surface2);border-radius:2px;position:relative;overflow:hidden}
+  .fbf{position:absolute;bottom:0;width:100%;border-radius:2px;transition:height 0.5s}
+  .fbl{font-size:9px;color:var(--text-dim);text-transform:uppercase}
+  .fbv{font-size:10px;color:var(--text)}
+  .stm{font-variant-numeric:tabular-nums;color:var(--cyan);font-size:12px}
+  .dbg{background:#0d0d14;border-top:2px solid var(--yellow);display:none;max-height:240px;overflow:hidden;flex-direction:column}
+  .dbg.vis{display:flex}
+  .dbg-hdr{display:flex;justify-content:space-between;align-items:center;padding:8px 16px;background:#111119;border-bottom:1px solid var(--border)}
+  .dbg-hdr span{font-size:10px;text-transform:uppercase;letter-spacing:2px;color:var(--yellow);font-weight:600}
+  .dtabs{display:flex;gap:0}
+  .dtab{background:transparent;border:none;color:var(--text-dim);font-family:var(--mono);font-size:10px;padding:4px 12px;cursor:pointer;border-bottom:2px solid transparent}
+  .dtab.on{color:var(--yellow);border-bottom-color:var(--yellow)}
+  .dbg-body{flex:1;overflow-y:auto;padding:8px 16px;font-size:10px;line-height:1.8}
+  .dbg-body pre{margin:0;white-space:pre-wrap;word-break:break-all}
+  .dc{color:var(--cyan)}.dy{color:var(--yellow)}.dr{color:var(--red)}.dg{color:var(--green)}.dd{color:#555566}.dh{color:#8888cc;letter-spacing:1px}
+  @media(max-width:900px){.dashboard{grid-template-columns:1fr}.sidebar{grid-column:1;grid-row:auto;max-height:none;flex-direction:row;flex-wrap:wrap}.mg{flex:1;min-width:200px}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>NARBIS EDGE <span>HRV Dashboard v13.27</span></h1>
+  <div class="hdr-right">
+    <span class="stm" id="timer">00:00</span>
+    <button class="btn btn-sm" id="dbgBtn" onclick="togDbg()">Debug</button>
+    <button class="btn" id="conBtn" onclick="togConn()">Connect</button>
+  </div>
+</div>
+<div class="status-bar">
+  <div class="si"><div class="dot" id="bleDot"></div><span id="bleSt">Disconnected</span></div>
+  <div class="si"><div class="dot" id="sigDot"></div><span>Signal: <span id="sigQ">—</span></span></div>
+  <div class="si"><span>Samples: <span id="nSamp">0</span></span></div>
+  <div class="si"><span>Artifacts: <span id="artPct">0%</span></span></div>
+  <div class="si"><span>BLE: <span id="bleHz">—</span> Hz</span></div>
+  <div class="si"><span>Beats: <span id="nBeats">0</span></span></div>
+  <div class="si" id="adcStats" style="margin-left:auto"><span style="color:var(--text-dim)">ADC</span> <span style="color:var(--text-dim)">waiting for firmware…</span></div>
+</div>
+<div class="status-bar" style="font-size:10px;padding:6px 24px">
+  <div class="si"><span style="color:var(--text-dim)">Wire:</span> <span id="mWireHz">—</span>Hz</div>
+  <div class="si"><span style="color:var(--text-dim)">JS:</span> <span id="mJsHz">—</span>Hz</div>
+  <div class="si"><span style="color:var(--text-dim)">Gap max:</span> <span id="mEvtGap">—</span>ms</div>
+  <div class="si"><span style="color:var(--text-dim)">RAF:</span> <span id="mRafHz">—</span>Hz</div>
+  <div class="si" style="margin-left:auto"><span style="color:var(--text-dim)" id="mHealthNote">v13.27 — lens darkness limit + strobe duty sliders</span></div>
+</div>
+<div class="dashboard">
+  <div class="main-col">
+    <div class="panel">
+      <div class="pt" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Synthesized ECG <span style="color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">— visualization from PPG beats, not real ECG</span></span>
+      </div>
+      <canvas id="cECG" height="140"></canvas>
+    </div>
+    <div class="panel">
+      <div class="pt" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Raw PPG Waveform</span>
+        <div class="dtabs" style="margin-left:auto">
+          <button class="dtab on" id="ppgRawBtn" onclick="togglePPG('raw')">Raw</button>
+          <button class="dtab" id="ppgFiltBtn" onclick="togglePPG('filt')">Filtered</button>
+        </div>
+      </div>
+      <canvas id="cPPG" height="160"></canvas>
+      <div class="abar"><div class="afill" id="artBar" style="width:0%"></div></div>
+    </div>
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="pt">IBI Tachogram</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text-dim);margin-right:8px">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer" title="FW: plot beats from ESP32 firmware (more reliable). Client: plot beats from dashboard detector.">
+            <input type="checkbox" id="ibiSrcChk" onchange="drawIBI()" style="cursor:pointer" checked>
+            <span>FW source</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="ibiSmoothChk" onchange="drawIBI()" style="cursor:pointer">
+            <span>Smooth</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="ibiInterpChk" onchange="drawIBI()" style="cursor:pointer" checked>
+            <span>Interpolate</span>
+          </label>
+        </div>
+      </div>
+      <canvas id="cIBI" height="160"></canvas>
+    </div>
+    <div class="panel"><div class="pt">Spectral Power (Lomb-Scargle)</div><canvas id="cPSD" height="160"></canvas></div>
+    <div class="dbg" id="dbgPanel">
+      <div class="dbg-hdr"><span>Debug Console</span>
+        <div class="dtabs">
+          <button class="dtab on" onclick="setTab('pkt')">Packets</button>
+          <button class="dtab" onclick="setTab('sig')">Signal</button>
+          <button class="dtab" onclick="setTab('evt')">Events</button>
+          <button class="dtab" onclick="setTab('stat')">Stats</button>
+          <button class="dtab" onclick="setTab('fwlog')">FW Log</button>
+        </div>
+      </div>
+      <div class="dbg-body" id="dbgBody"><pre id="dbgPre"></pre></div>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="coh-big">
+      <div class="coh-score" id="cohScore">—</div>
+      <div class="coh-label">Coherence Score</div>
+      <div class="coh-zone" id="cohZone" style="color:var(--text-dim)">Waiting for data…</div>
+      <div class="zbar"><div class="zs lo" id="zLo" style="width:33%"></div><div class="zs md" id="zMd" style="width:34%"></div><div class="zs hi" id="zHi" style="width:33%"></div></div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:10px;line-height:1.4;text-align:left;padding:0 4px">
+        <strong style="color:var(--text)">What this measures:</strong> the percentage of your heart rate variability concentrated at a single breathing frequency (typically ~0.1 Hz / 6 breaths/min). A smooth sine-wave heart rhythm from steady paced breathing → high score. Erratic or shallow breathing → low score. Same formula as HeartMath's coherence metric, scaled 0-100.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Vital Signs</div>
+      <div class="mr"><span class="ml">Heart Rate</span><span class="mv ac" id="mBPM">—<span class="mu">bpm</span></span></div>
+      <div class="mr"><span class="ml">IBI (R-R)</span><span class="mv" id="mIBI">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">Resp Rate</span><span class="mv" id="mResp">—<span class="mu">br/min</span></span></div>
+    </div>
+    <div class="mg"><div class="pt">Time Domain HRV</div>
+      <div class="mr"><span class="ml">SDNN</span><span class="mv" id="mSDNN">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">RMSSD</span><span class="mv" id="mRMSSD">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">pNN50</span><span class="mv" id="mPNN50">—<span class="mu">%</span></span></div>
+      <div class="mr"><span class="ml">MeanRR</span><span class="mv" id="mMeanRR">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">CV</span><span class="mv" id="mCV">—<span class="mu">%</span></span></div>
+    </div>
+    <div class="mg"><div class="pt">Frequency Domain</div>
+      <div class="fbs">
+        <div class="fbg"><div class="fbv" id="fVLF">—</div><div class="fbt"><div class="fbf" id="bVLF" style="height:0%;background:var(--text-dim)"></div></div><div class="fbl">VLF</div></div>
+        <div class="fbg"><div class="fbv" id="fLF">—</div><div class="fbt"><div class="fbf" id="bLF" style="height:0%;background:var(--yellow)"></div></div><div class="fbl">LF</div></div>
+        <div class="fbg"><div class="fbv" id="fHF">—</div><div class="fbt"><div class="fbf" id="bHF" style="height:0%;background:var(--cyan)"></div></div><div class="fbl">HF</div></div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="mr"><span class="ml">LF/HF</span><span class="mv" id="mLFHF">—</span></div>
+        <div class="mr"><span class="ml">Total Power</span><span class="mv" id="mTP">—<span class="mu">ms²</span></span></div>
+        <div class="mr"><span class="ml">Peak Freq</span><span class="mv" id="mPkF">—<span class="mu">Hz</span></span></div>
+        <div class="mr"><span class="ml">HF Peak</span><span class="mv" id="mHFpk">—<span class="mu">Hz</span></span></div>
+        <div class="mr"><span class="ml">Resp Freq</span><span class="mv" id="mRespF">—<span class="mu">Hz</span></span></div>
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Coherence (LF Resonance)</div>
+      <div class="mr"><span class="ml">Coherence Ratio</span><span class="mv ac" id="mCohR">—</span></div>
+      <div class="mr"><span class="ml">Resonance Power</span><span class="mv" id="mResP">—<span class="mu">ms²</span></span></div>
+      <div class="mr"><span class="ml">Res. Frequency</span><span class="mv" id="mResF">—<span class="mu">Hz</span></span></div>
+      <div class="mr"><span class="ml">IBI Swing</span><span class="mv" id="mSwing">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">LF Concentration</span><span class="mv" id="mLFconc">—<span class="mu">%</span></span></div>
+    </div>
+    <div class="mg"><div class="pt">Signal Quality</div>
+      <div class="mr"><span class="ml">Quality</span><span class="mv" id="mSigQ">—<span class="mu">%</span></span></div>
+      <div class="mr"><span class="ml">Artifact</span><span class="mv" id="mArt">—<span class="mu">%</span></span></div>
+      <div class="mr"><span class="ml">Clean IBIs</span><span class="mv" id="mClean">—</span></div>
+      <div class="mr"><span class="ml">Ectopic</span><span class="mv" id="mEct">0</span></div>
+    </div>
+    <div class="mg"><div class="pt">Detector (Adaptive)</div>
+      <div class="mr"><span class="ml">Template NCC</span><span class="mv ac" id="mNCC">—</span></div>
+      <div class="mr"><span class="ml">Alpha (α)</span><span class="mv" id="mAlpha">0.020</span></div>
+      <div class="mr"><span class="ml">Beats Learned</span><span class="mv" id="mLearned">0</span></div>
+      <div class="mr"><span class="ml">Kalman IBI</span><span class="mv" id="mKalIBI">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">NCC Rejected</span><span class="mv" id="mNCCrej">0</span></div>
+      <div class="mr"><span class="ml">Kalman Rejected</span><span class="mv" id="mKalRej">0</span></div>
+      <div class="mr"><span class="ml">Watchdog Resets</span><span class="mv" id="mResets">0</span></div>
+      <canvas id="cTpl" height="50" style="margin-top:8px;width:100%;height:50px"></canvas>
+      <div class="fbl" style="text-align:center;margin-top:2px">Learned Beat Template</div>
+    </div>
+    <div class="mg"><div class="pt">Firmware Detection (ESP32)</div>
+      <div class="mr"><span class="ml">Packet Type</span><span class="mv" id="mFwPktType">—</span></div>
+      <div class="mr"><span class="ml">FW Heart Rate</span><span class="mv ac" id="mFwBPM">—<span class="mu">bpm</span></span></div>
+      <div class="mr"><span class="ml">FW IBI</span><span class="mv" id="mFwIBI">—<span class="mu">ms</span></span></div>
+      <div class="mr"><span class="ml">FW Beats</span><span class="mv" id="mFwBeats">0</span></div>
+      <div class="mr"><span class="ml">FW In-Block</span><span class="mv" id="mFwInBlock">—</span></div>
+      <div class="mr"><span class="ml">HR Agreement</span><span class="mv" id="mAgree">—<span class="mu">Δbpm</span></span></div>
+      <div class="mr"><span class="ml">Beat Agreement</span><span class="mv" id="mBeatAgree">—<span class="mu">%</span></span></div>
+    </div>
+    <div class="mg"><div class="pt">Firmware HRV (v4.13.0+)</div>
+      <div class="mr"><span class="ml">FW Coherence</span><span class="mv ac" id="mFwCoh">—</span></div>
+      <div class="mr"><span class="ml">Coh Agreement</span><span class="mv" id="mFwCohAgree">—<span class="mu">Δ</span></span></div>
+      <div class="mr"><span class="ml">FW Resp Peak</span><span class="mv" id="mFwResp">—<span class="mu">Hz</span></span></div>
+      <div class="mr"><span class="ml">FW Resp (15s avg)</span><span class="mv" id="mFwRespAvg">—<span class="mu">Hz</span></span></div>
+      <div class="mr"><span class="ml">FW Resp Rate (15s)</span><span class="mv" id="mFwRespBpm">—<span class="mu">br/min</span></span></div>
+      <div class="mr"><span class="ml">FW VLF</span><span class="mv" id="mFwVlf">—</span></div>
+      <div class="mr"><span class="ml">FW LF</span><span class="mv" id="mFwLf">—</span></div>
+      <div class="mr"><span class="ml">FW HF</span><span class="mv" id="mFwHf">—</span></div>
+      <div class="mr"><span class="ml">FW Total Power</span><span class="mv" id="mFwTP">—</span></div>
+      <div class="mr"><span class="ml">FW LF norm</span><span class="mv" id="mFwLfNorm">—<span class="mu">%</span></span></div>
+      <div class="mr"><span class="ml">FW HF norm</span><span class="mv" id="mFwHfNorm">—<span class="mu">%</span></span></div>
+      <div class="mr"><span class="ml">FW LF/HF</span><span class="mv" id="mFwLfHf">—</span></div>
+      <div class="mr"><span class="ml">FW IBIs Used</span><span class="mv" id="mFwCohN">—</span></div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Firmware computes these on-device using same algorithm as client. Coh Agreement shows delta — small values validate firmware math.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">PPG Programs</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+        <button class="btn btn-sm" onclick="ppgProgram(0,'1 Heartbeat')" style="width:100%">1. Heartbeat</button>
+        <button class="btn btn-sm" onclick="ppgProgram(1,'2 Breathe')" style="width:100%">2. Coherence Breathe</button>
+        <button class="btn btn-sm" onclick="ppgProgram(2,'3 Lens')" style="width:100%">3. Coherence Lens</button>
+        <button class="btn btn-sm" onclick="ppgProgram(3,'4 Breathe+Strobe')" style="width:100%">4. Coherence Breathe+Strobe</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Dashboard-driven program selection (firmware v4.14.24+, command 0xB7). Enters training mode if not already active. Indicator pulses (1-4) confirm the selected program.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Difficulty & Strobe</div>
+      <div style="margin-top:6px">
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Coherence Difficulty</div>
+        <div style="display:flex;gap:4px" id="diffBtnGroup">
+          <button class="btn btn-sm diff-btn on" data-diff="0" onclick="setDifficulty(0)" style="flex:1">Easy</button>
+          <button class="btn btn-sm diff-btn"    data-diff="1" onclick="setDifficulty(1)" style="flex:1">Med</button>
+          <button class="btn btn-sm diff-btn"    data-diff="2" onclick="setDifficulty(2)" style="flex:1">Hard</button>
+          <button class="btn btn-sm diff-btn"    data-diff="3" onclick="setDifficulty(3)" style="flex:1">Expert</button>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-bottom:2px">
+          <span>Lens Darkness Limit</span>
+          <span id="darkLimitLbl">100%</span>
+        </div>
+        <input type="range" id="darkLimitSlider" min="0" max="100" value="100" oninput="onDarkLimitSliderInput()" onchange="onDarkLimitSliderChange()" style="width:100%">
+      </div>
+      <div style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-bottom:2px">
+          <span>Strobe Frequency</span>
+          <span id="strobeFreqLbl">10 Hz</span>
+        </div>
+        <input type="range" id="strobeFreqSlider" min="1" max="50" value="10" oninput="onStrobeSliderInput()" onchange="onStrobeSliderChange()" style="width:100%">
+      </div>
+      <div style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-bottom:2px">
+          <span>Strobe Duty Cycle</span>
+          <span id="strobeDutyLbl">50%</span>
+        </div>
+        <input type="range" id="strobeDutySlider" min="10" max="90" value="50" oninput="onStrobeDutySliderInput()" onchange="onStrobeDutySliderChange()" style="width:100%">
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Difficulty only changes the zone thresholds (Low/Med/High coloring) and the lens opacity curve — the raw coherence score stays comparable across all levels, matching HeartMath convention. Higher levels require more coherence to reach the green zone and open the lens. Lens Darkness Limit (0xA2) caps maximum tint for breathing &amp; coherence programs — feedback still scales 0→limit based on signal. Strobe Frequency (0xAB) sets flash rate for Program 4 and standalone strobe (1-50 Hz). Strobe Duty (0xAC) sets dark fraction per cycle (10-90%). All three persist to flash and override firmware defaults on next boot.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Breathing Pacer</div>
+      <div style="margin-top:6px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-bottom:2px">
+          <span>Rate</span>
+          <span id="breatheBpmLbl">6 br/min</span>
+        </div>
+        <input type="range" id="breatheBpmSlider" min="1" max="30" value="6" oninput="onBreatheBpmSliderInput()" onchange="onBreatheBpmSliderChange()" style="width:100%">
+      </div>
+      <div style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);margin-bottom:2px">
+          <span>Inhale</span>
+          <span id="breatheInhaleLbl">40% / 60%</span>
+        </div>
+        <input type="range" id="breatheInhaleSlider" min="10" max="90" value="40" oninput="onBreatheInhaleSliderInput()" onchange="onBreatheInhaleSliderChange()" style="width:100%">
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Controls fixed-rate breathing modes (hall-selected Breathe program and Program 4 when Adaptive Pacer is OFF). Doesn't affect PPG Programs 2/4 when Adaptive is ON — those track your measured respiration. Saved to device flash. Firmware v4.14.30+.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Adaptive Pacer</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:6px;cursor:pointer;font-size:12px">
+        <input type="checkbox" id="adaptiveChk" checked onchange="toggleAdaptivePacer()" style="cursor:pointer">
+        <span>Track measured respiration (Programs 2 &amp; 4)</span>
+      </label>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:6px;line-height:1.4">
+        When ON, the breathing pacer in Programs 2 and 4 starts at 6 br/min and then adapts each cycle to match your detected respiration rate (15-second average, clamped 3-10 br/min). When OFF, pacer stays at fixed 6 br/min. Firmware v4.14.32+.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">System Health</div>
+      <div id="healthRows" style="font-size:12px;margin-top:4px;display:flex;flex-direction:column;gap:4px;font-family:'Inter Mono',monospace">
+        <div style="color:var(--text-dim)">Waiting for 0xF3 packets…</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Heap, stack, jitter, and BLE error telemetry from firmware v4.14.36+. Reports every 500ms. Red values indicate problems worth investigating.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Firmware Controls</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+        <button class="btn btn-sm" id="scanBtn" onclick="toggleScan()" style="width:100%">Scan ADC Pins</button>
+        <button class="btn btn-sm" onclick="modePulseOnBeat()" style="width:100%">Pulse on Beat mode</button>
+        <button class="btn btn-sm" onclick="modeBreathe()" style="width:100%">Breathe mode</button>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-sm" onclick="modeStatic0()" style="flex:1">Static Clear</button>
+          <button class="btn btn-sm" onclick="modeStatic50()" style="flex:1">Static 50%</button>
+        </div>
+        <button class="btn btn-sm" onclick="resetFwDetector()" style="width:100%;margin-top:6px">Reset FW Detector</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+        Scan ADC: reads all 6 ADC1 pins every 500ms — watch FW Log for "SCAN 36=… 39=…" lines to find which pin has sensor signal.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">Device Preferences</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.4">
+        All settings (brightness, session duration, strobe, breathing, difficulty) are saved to the device's flash and persist across power cycles.
+      </div>
+      <button class="btn btn-sm" onclick="resetDeviceDefaults()" style="width:100%;margin-top:8px;color:var(--red);border-color:var(--red)">Reset to Defaults</button>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:6px;line-height:1.4">
+        Erases all saved preferences on the device and restores factory defaults. Requires confirmation. Firmware v4.14.30+.
+      </div>
+    </div>
+    <div class="mg"><div class="pt">PC Jitter Smoothing</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:6px;cursor:pointer;font-size:12px">
+        <input type="checkbox" id="smoothChk" onchange="toggleSmoothing()" style="cursor:pointer" checked>
+        <span>Enable (150ms buffer)</span>
+      </label>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:6px;line-height:1.4">
+        For PC only. Buffers incoming BLE packets 150ms and replays at uniform 20ms intervals. Smooths Windows BLE bursty delivery. Adds 150ms latency to visualization. Leave OFF on tablet.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONFIG & STATE
+// ═══════════════════════════════════════════════════════════
+const SVC='000000ff-0000-1000-8000-00805f9b34fb',
+      CHR='0000ff04-0000-1000-8000-00805f9b34fb',
+      STATUS_CHR='0000ff03-0000-1000-8000-00805f9b34fb',  // v13.3: firmware log + ADC stats
+      CTRL_CHR='0000ff01-0000-1000-8000-00805f9b34fb';    // v13.10: write commands to firmware
+let bleDevice=null, bleChar=null, statusChar=null, ctrlChar=null, connected=false, sessStart=null, sessIv=null;
+let manualDisc=false;
+
+// Buffers
+const PPG_LEN=600; // 12s at 50Hz
+let rawBuf=[], filtBuf=[], beatMarks=[];
+// v9: PPG trace visibility toggles. Default: raw only (shows full PPG morphology).
+let ppgShowRaw = true, ppgShowFilt = false;
+let ibiBuf=[], ibiClean=[];
+// v13.25: separate firmware-beat-driven IBI buffer for tachogram. Push
+// every firmware-reported beat regardless of client-detector state, so
+// tachogram updates reliably when the client detector pauses (BLE
+// jitter, detector reset, noise-induced blind periods).
+let ibiBufFw = [];
+const IBI_BUF_FW_MAX = 300;
+let smpCount=0, beatCount=0, ectCount=0, lastBeatStamp=0;
+// v13.10: two-beat artifact tracking — pendingCompensatoryCheck is set when
+// the prior beat was flagged so we can also catch the compensatory pause.
+// lastMedianIBI is the running median used for the post-ectopic pause check.
+let pendingCompensatoryCheck=false, lastMedianIBI=800;
+let bleTimes=[], pktNum=0, lastPSD=null;
+// v13.10: beat counter used to stride Lomb-Scargle (expensive) to every
+// Nth beat. Time-domain metrics update every beat; frequency-domain
+// every 5 beats. Coherence changes slowly anyway (LF band is 0.04-0.15
+// Hz = period ≥ 6s), so a 5-beat stride ≈ 5s update is fine. Huge
+// scrolling-performance win since LS is 200 freqs × 120 IBIs = 24000
+// sin/cos ops ≈ 3-10ms on a decent laptop, more on slow PCs.
+const HRV_FD_STRIDE = 5;
+let hrvBeatCounter = 0;
+let zHist={lo:0,md:0,hi:0};
+
+// ═══════════════════════════════════════════════════════════
+// v13.2 — Firmware detection telemetry
+// ═══════════════════════════════════════════════════════════
+// Packet type 0x02 (firmware v4.12.0+) carries the ESP32's own Elgendi
+// detection output alongside every raw sample. We display it next to
+// the client-side detection for cross-validation. Packet type 0x01
+// (legacy firmware without on-device detection) is still fully supported
+// — just no firmware detection columns populate.
+//
+// Packet format (13 bytes, little-endian), firmware v4.12.0+:
+//   [0]    type = 0x02
+//   [1..2] raw u16 (ADC code 0-4095)
+//   [3..4] idx u16 (sample counter, wraps at 65536)
+//   [5..8] ts  u32 (ms, esp_timer_get_time based)
+//   [9]    flags: bit 0 = beat, bit 1 = in_block
+//   [10..11] fw IBI u16 (ms, 0 until first valid IBI)
+//   [12]   fw BPM u8  (0 until first valid IBI)
+let fwBeatMarks = [];        // parallel to beatMarks (rawBuf-aligned): 1 if firmware flagged a beat on that sample
+let fwBeatCount = 0;
+let fwIBI = 0, fwBPM = 0;    // latest firmware-reported IBI/BPM
+let fwInBlock = false;
+let fwPktType = 0;           // 0 = no packet yet, 1 = legacy, 2 = v4.12.0+
+
+// Beat-agreement tracker. Every client beat checks whether a firmware
+// beat occurred within ±150ms (generous — client has 400ms template
+// lookahead, firmware is ~150ms detection latency, so client timestamps
+// are ~250ms LATER than firmware for the same physical beat). We use
+// absolute-time matching within a sliding ±300ms window to account for
+// this systematic offset.
+// v13.10: Time-based agreement window (was 60-entry count).
+// Rationale: noise events can drag beat-agreement % for 60+ seconds
+// with the old count-based window. At 60 bpm that's 1 minute of stale
+// data. A 10-second window means transient noise impacts show up and
+// then clear, not linger. User-controllable via AGREEMENT_WINDOW_MS.
+let agreementWindow = [];              // rolling list of {fwMs|null, clientMs|null, ts}
+const AGREEMENT_WINDOW_MS = 10000;     // 10 seconds
+function pruneAgreement(nowMs) {
+  const cutoff = nowMs - AGREEMENT_WINDOW_MS;
+  while (agreementWindow.length && agreementWindow[0].ts < cutoff) {
+    agreementWindow.shift();
+  }
+}
+
+// v13.10: firmware telemetry from status characteristic (0xFF03).
+// Two message types are emitted by firmware v4.12.1+:
+//   0xF0 — ADC stats: min/max/mean of last 25 raw ADC readings (every 500ms)
+//   0xF1 — ASCII log string (ble_log output, whenever firmware emits)
+let fwAdcMin = null, fwAdcMax = null, fwAdcMean = null, fwAdcCount = 0;
+let fwAdcLastRxMs = 0;
+
+// v13.20: 5-second moving average on ADC stats. 0xF0 packets arrive at
+// ~2 Hz, so 10 entries = 5 sec of history. We average min/max/mean
+// separately across the ring; span is derived from the averaged
+// min/max each display update.
+let fwAdcMinRing  = [];
+let fwAdcMaxRing  = [];
+let fwAdcMeanRing = [];
+const FW_ADC_RING_MAX = 10;
+let fwLogLines = [];         // ring buffer of firmware log strings
+const FW_LOG_MAX = 200;
+
+// v13.10: firmware-computed coherence + frequency-domain HRV state
+// (populated from 0xF2 status packets emitted by firmware v4.13.0+).
+// Displayed alongside client-side values for A/B validation.
+let fwCoh = null, fwCohRespMhz = 0, fwCohVlf = 0, fwCohLf = 0, fwCohHf = 0,
+    fwCohTotal = 0, fwCohLfNorm = 0, fwCohHfNorm = 0, fwCohLfHf = 0,
+    fwCohNIbis = 0, fwCohLastMs = 0;
+
+// v13.13: 15-sample ring for respiration peak frequency. 0xF2 packets
+// arrive at 1Hz, so 15 entries = 15s window. Used for the "15s avg" row
+// in the firmware details panel — smooths out noise in the LF peak
+// detection which can jitter between adjacent bins.
+let fwCohRespRing = [];
+const FW_RESP_RING_MAX = 15;
+
+// v13.10: PC-side timing health metrics.
+//   wireTsHistory:  ring of firmware ts values to compute real wire rate
+//   jsTsHistory:    ring of Date.now() values to compute JS-observed rate
+//   lastOnDataMs:   last time onData fired, for gap measurement
+//   evtGapMax:      max gap between onData calls in current window (ms)
+//   rafTimes:       ring of raf timestamps to measure RAF rate
+let wireTsHistory = [], jsTsHistory = [], rafTimes = [];
+let lastOnDataMs = 0, evtGapMax = 0, evtGapWindowStart = 0;
+
+// ═══════════════════════════════════════════════════════════
+// SIGNAL PROCESSING — all client-side
+// ═══════════════════════════════════════════════════════════
+
+// ── Bandpass IIR 0.5–4 Hz @ 50 Hz ───────────────────────────
+// 2nd order Butterworth bandpass.
+// scipy: b, a = signal.butter(2, [0.5, 4], btype='band', fs=50)
+//
+// v13.10: narrowed upper corner from 8 Hz to 4 Hz to match firmware
+// v4.12.4. Motivation: field testing on PC (vs battery tablet) showed
+// strong 60 Hz mains pickup on the PulseSensor bodge wire, aliasing
+// to 10 Hz at 50 Hz sample rate. 4 Hz upper corner gives ~24 dB
+// rejection at 10 Hz (vs ~6 dB at 8 Hz), validated in simulation at
+// ~10× HR-to-mains SNR improvement.
+//
+// Covers 30-240 BPM physiological range. Dicrotic notch visibility
+// is reduced on the FILTERED trace, but the raw trace (which is what
+// the user sees by default) is unchanged. Both client and firmware
+// detectors now use matched filters, so their beat outputs should
+// agree much more tightly — important for the agreement %.
+//
+// History:
+//   v9-v12: 0.5-10 Hz (too wide, dicrotic notch contaminated detection)
+//   v13.0-13.5: 0.5-8 Hz (Elgendi paper's higher corner choice)
+//   v13.10: 0.5-4 Hz (mains-rejection optimized, matches firmware v4.12.4)
+const BP = {
+  b: [0.03657484, 0, -0.07314967, 0, 0.03657484],
+  a: [1, -3.33661174, 4.22598625, -2.42581874, 0.53719462],
+  x: [0,0,0,0,0],
+  y: [0,0,0,0,0]
+};
+
+function bandpass(sample) {
+  const {b,a,x,y} = BP;
+  for(let i=4;i>0;i--){x[i]=x[i-1]; y[i]=y[i-1];}
+  x[0] = sample;
+  y[0] = b[0]*x[0]+b[1]*x[1]+b[2]*x[2]+b[3]*x[3]+b[4]*x[4]
+        -a[1]*y[1]-a[2]*y[2]-a[3]*y[3]-a[4]*y[4];
+  return y[0];
+}
+
+// ═══════════════════════════════════════════════════════════
+// PEAK DETECTION v13 — Elgendi 2013 + Adaptive ML Layer
+// ═══════════════════════════════════════════════════════════
+//
+// PRIMARY DETECTOR: Elgendi et al. 2013 (PLoS ONE 8:e76585)
+// Reference implementation: biosppy.signals.ppg.find_onsets_elgendi2013
+// Validated at 99.84% sensitivity / 99.89% PPV on 40 subjects.
+//
+//   Pipeline:
+//     1. Bandpass 0.5–8 Hz (done above)
+//     2. Rectify — clip negative values to 0
+//     3. Square — emphasizes high-slope events, suppresses small bumps
+//        (dicrotic notches squared become tiny vs systolic peaks)
+//     4. MA_peak: moving avg over W1 = 6 samples (~111 ms @ 50 Hz)
+//     5. MA_beat: moving avg over W2 = 33 samples (~667 ms @ 50 Hz)
+//     6. Threshold: MA_peak > MA_beat × (1 + α)
+//     7. Block = contiguous region where threshold holds
+//     8. Beat = argmax(filtered) within block, only if block width ≥ W1
+//     9. Refractory gate: max(300 ms, 0.6 × IBI) as a backstop
+//
+// ADAPTIVE ML LAYER (built on top of Elgendi):
+//
+//   A. Matched-filter template (online learning)
+//      Maintain a rolling average "shape" of the last 10 accepted beats,
+//      aligned at their peaks. For each new candidate, extract its
+//      800-ms window and compute normalized cross-correlation (NCC)
+//      against the template. Reject if NCC < 0.5 (typical noise-artifact
+//      NCC < 0.3, real beats > 0.7). Template sharpens with every good
+//      beat — the detector literally gets better at recognizing THIS
+//      person's PPG morphology as more data arrives.
+//
+//   B. Kalman filter on IBI
+//      1-D Kalman tracks expected IBI + its uncertainty. New IBI
+//      observations are gated: if |observed - predicted| > 3σ, the
+//      beat is flagged as an artifact. This catches ectopic beats,
+//      doubled detections, and missed beats (which manifest as 2× IBI).
+//
+//   C. Self-tuning α offset
+//      α starts at 0.02 (Elgendi default). Over time:
+//        - If artifact rate rises: α ↑ (stricter threshold)
+//        - If beats missed (gap > 2.5 s during active signal): α ↓
+//      Bounded [0.01, 0.5]. Slow adaptation.
+//
+// Why this beats pure rule-based detection: every patient's PPG is
+// shaped a bit differently (perfusion, skin tone, contact pressure,
+// sensor position). The rule-based detector has to work for ALL
+// of them; the template specializes to THIS session's signal.
+
+// Elgendi detector state
+const DET = {
+  W1: 6,              // MA_peak window (samples)
+  W2: 33,             // MA_beat window (samples)
+
+  // Running sums for MAs (updated incrementally, O(1) per sample)
+  peakSum: 0,
+  beatSum: 0,
+  peakBuf: [],        // ring for MA_peak (W1 samples)
+  beatBuf: [],        // ring for MA_beat (W2 samples)
+
+  // Filtered (bandpassed, NOT squared) signal buffer — used for
+  // finding the peak fiducial within a block (argmax of bandpass
+  // preserves waveform peak location, argmax of squared signal
+  // would shift it slightly toward the max-slope point).
+  bpBuf: [],          // ring of last ~200 bandpass samples (~4 s)
+  BP_BUF_LEN: 200,
+
+  // Timestamps parallel to bpBuf — ms-precise time of each sample
+  tsBuf: [],
+
+  // Absolute sample index of oldest sample still in bpBuf/tsBuf
+  // (bpBuf[0] corresponds to absolute sample index bpBufStart)
+  bpBufStart: 0,
+
+  // Block state (are we currently above threshold?)
+  inBlock: false,
+  blockStartAbsIdx: -1,
+  blockStartMs: 0,
+  blockPeakVal: -Infinity,
+  blockPeakAbsIdx: -1,
+  blockPeakMs: 0,
+
+  // Adaptive α
+  alpha: 0.02,
+  ALPHA_MIN: 0.01,
+  ALPHA_MAX: 0.5,
+
+  // Refractory / IBI backstop
+  lastAcceptedMs: 0,
+  IBI: 900,
+
+  // Warmup
+  sampleCount: 0,
+  WARMUP: 50,         // 1 s — filter + MA_beat to settle
+
+  // Debug
+  lastMApeak: 0,
+  lastMAbeat: 0,
+};
+
+// Matched-filter template state
+const TPL = {
+  WINDOW: 40,         // 800 ms at 50 Hz — covers a beat cycle comfortably
+  HALF: 20,           // samples before and after the peak fiducial
+
+  recentBeats: [],    // array of Float32Array(WINDOW), peak-aligned
+  MAX_BEATS: 10,      // rolling memory of last N accepted beats
+  template: null,     // Float32Array(WINDOW), z-score normalized
+
+  NCC_MIN: 0.5,        // threshold for ADMITTING a candidate as a beat
+  NCC_LEARN_MIN: 0.75, // stricter threshold for adding to template
+                       // (v13.1 fix: preventing template corruption during
+                       //  artifact bursts was the #1 failure mode — a
+                       //  mediocre beat squeaking past NCC_MIN was dragging
+                       //  the template toward the noise distribution, which
+                       //  then rejected real beats forever)
+  WARMUP_BEATS: 4,    // need this many beats before NCC gating activates
+
+  // Pending candidate — a beat was detected but we need HALF more
+  // samples after its peak before we can extract the window and score.
+  pending: null,
+
+  // Watchdog: if too many candidates get rejected in a row, the
+  // template is probably corrupted — full reset.
+  consecutiveRejects: 0,
+  MAX_CONSEC_REJECTS: 5,
+
+  // Stats
+  lastNCC: 0,
+  rejectedByNCC: 0,
+  beatsLearned: 0,
+  resetsCount: 0,
+};
+
+// 1-D Kalman filter on IBI
+const KAL = {
+  x: 900,             // state: current IBI estimate (ms)
+  P: 10000,           // state variance (ms²)
+  Q: 400,             // process noise — IBI drift variance per step (ms²)
+  R: 2500,            // measurement noise — std ~50 ms (ms²)
+  initialized: false,
+
+  KAL_SIGMA: 3.0,     // reject measurements > N·σ from predicted
+  WARMUP_BEATS: 5,
+  beatsSeen: 0,
+
+  lastPredicted: 900,
+  lastInnovation: 0,
+  rejectedByKalman: 0,
+};
+
+// ── Helpers ─────────────────────────────────────────────────
+
+// Z-score normalize a Float32Array in place (mean 0, std 1).
+// Returns std — caller can skip normalization if std is tiny (flat).
+function zscoreNormalize(arr) {
+  let sum = 0;
+  for (let i = 0; i < arr.length; i++) sum += arr[i];
+  const mean = sum / arr.length;
+  let sq = 0;
+  for (let i = 0; i < arr.length; i++) {
+    arr[i] -= mean;
+    sq += arr[i] * arr[i];
+  }
+  const std = Math.sqrt(sq / arr.length);
+  if (std > 1e-6) {
+    for (let i = 0; i < arr.length; i++) arr[i] /= std;
+  }
+  return std;
+}
+
+// Normalized cross-correlation between two equal-length z-scored arrays.
+// Since both are z-scored (mean 0, std 1), NCC = (1/N) * sum(a[i]*b[i]).
+// Returns value in [-1, 1]. Near 1 = identical shape.
+function ncc(a, b) {
+  const n = a.length;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s / n;
+}
+
+// Rebuild template = mean of recentBeats, z-score normalized.
+function rebuildTemplate() {
+  const beats = TPL.recentBeats;
+  if (beats.length === 0) { TPL.template = null; return; }
+  const N = TPL.WINDOW;
+  const tpl = new Float32Array(N);
+  for (const b of beats) for (let i = 0; i < N; i++) tpl[i] += b[i];
+  for (let i = 0; i < N; i++) tpl[i] /= beats.length;
+  zscoreNormalize(tpl);
+  TPL.template = tpl;
+}
+
+// Kalman predict + update. Returns { accepted, predicted, innovation }.
+function kalmanStep(observedIBI) {
+  KAL.beatsSeen++;
+  const xPred = KAL.x;
+  const PPred = KAL.P + KAL.Q;
+  KAL.lastPredicted = xPred;
+  const y = observedIBI - xPred;
+  const S = PPred + KAL.R;
+  KAL.lastInnovation = y;
+
+  // Gate: reject outliers; let first WARMUP_BEATS through to seed
+  if (KAL.initialized && KAL.beatsSeen > KAL.WARMUP_BEATS) {
+    const sigma = Math.sqrt(S);
+    if (Math.abs(y) > KAL.KAL_SIGMA * sigma) {
+      KAL.rejectedByKalman++;
+      return { accepted: false, predicted: xPred, innovation: y };
+    }
+  }
+
+  // Update
+  const K = PPred / S;
+  KAL.x = xPred + K * y;
+  KAL.P = (1 - K) * PPred;
+  KAL.initialized = true;
+  return { accepted: true, predicted: xPred, innovation: y };
+}
+
+// v13.1 fix: full detector reset. Called when template+Kalman state
+// has clearly gotten corrupted (consecutive rejections, or prolonged
+// silence during active signal). Wipes the learned state so the
+// detector can re-acquire from scratch.
+function resetDetectorLearnedState() {
+  DET.alpha = 0.02;
+  DET.inBlock = false;
+  DET.blockPeakVal = -Infinity;
+  DET.blockPeakAbsIdx = -1;
+  // CRITICAL: reset lastAcceptedMs too. Otherwise the next detected
+  // beat computes an enormous observedIBI (spanning the artifact gap)
+  // that trips the 300–2000 ms IBI range check and gets rejected,
+  // and the stuck-state watchdog re-fires the reset every sample
+  // because stuckGap = timeMs - lastAcceptedMs stays huge forever.
+  // Setting to 0 marks "no prior beat" so the next accepted beat
+  // simply seeds the state fresh, no IBI computed for it.
+  DET.lastAcceptedMs = 0;
+  TPL.recentBeats = [];
+  TPL.template = null;
+  TPL.beatsLearned = 0;
+  TPL.pending = null;
+  TPL.lastNCC = 0;
+  TPL.consecutiveRejects = 0;
+  TPL.resetsCount++;
+  KAL.x = 900;   // back to physiological default
+  KAL.P = 10000;
+  KAL.initialized = false;
+  KAL.beatsSeen = 0;
+}
+
+// ── Main detector entry point ───────────────────────────────
+// Called per-sample. Returns array of beats CONFIRMED this sample.
+// A beat is confirmed HALF samples (~400 ms) after its actual peak
+// because we need look-ahead for template matching.
+function detectPeaks(raw, timeMs, filteredBP) {
+  DET.sampleCount++;
+  const absIdx = DET.sampleCount - 1;
+  const confirmed = [];
+
+  // Clipping guard — rail values aren't real signal
+  const clipped = (raw >= 4090 || raw <= 5);
+
+  // Store bandpassed signal + timestamp in ring buffer (for peak
+  // fiducial lookup and template window extraction)
+  DET.bpBuf.push(filteredBP);
+  DET.tsBuf.push(timeMs);
+  if (DET.bpBuf.length > DET.BP_BUF_LEN) {
+    DET.bpBuf.shift();
+    DET.tsBuf.shift();
+    DET.bpBufStart++;
+  }
+
+  // Rectify + square
+  const rect = Math.max(0, filteredBP);
+  const sq = rect * rect;
+
+  // Update moving averages (running-sum, O(1))
+  DET.peakBuf.push(sq);
+  DET.peakSum += sq;
+  if (DET.peakBuf.length > DET.W1) DET.peakSum -= DET.peakBuf.shift();
+  const MApeak = DET.peakSum / DET.peakBuf.length;
+
+  DET.beatBuf.push(sq);
+  DET.beatSum += sq;
+  if (DET.beatBuf.length > DET.W2) DET.beatSum -= DET.beatBuf.shift();
+  const MAbeat = DET.beatSum / DET.beatBuf.length;
+
+  DET.lastMApeak = MApeak;
+  DET.lastMAbeat = MAbeat;
+
+  // ── Block detection ─────────────────────────────────────
+  const threshold = MAbeat * (1 + DET.alpha);
+  const above = MApeak > threshold && !clipped && DET.sampleCount >= DET.WARMUP;
+
+  if (above && !DET.inBlock) {
+    // Block start
+    DET.inBlock = true;
+    DET.blockStartAbsIdx = absIdx;
+    DET.blockStartMs = timeMs;
+    DET.blockPeakVal = filteredBP;
+    DET.blockPeakAbsIdx = absIdx;
+    DET.blockPeakMs = timeMs;
+  } else if (above && DET.inBlock) {
+    // In block — track argmax of filtered bandpass
+    if (filteredBP > DET.blockPeakVal) {
+      DET.blockPeakVal = filteredBP;
+      DET.blockPeakAbsIdx = absIdx;
+      DET.blockPeakMs = timeMs;
+    }
+  } else if (!above && DET.inBlock) {
+    // Block end — decide if it was long enough
+    const blockWidth = absIdx - DET.blockStartAbsIdx;
+    const sinceLast = timeMs - DET.lastAcceptedMs;
+    const refractoryMs = Math.max(300, 0.6 * DET.IBI);
+
+    if (blockWidth >= DET.W1 && sinceLast > refractoryMs) {
+      // Candidate! Stash as pending — we need HALF more samples
+      // after the peak before we can extract the template window.
+      TPL.pending = {
+        peakAbsIdx: DET.blockPeakAbsIdx,
+        peakMs: DET.blockPeakMs,
+      };
+    } else if (blockWidth < DET.W1 && DET.sampleCount > DET.WARMUP * 2) {
+      // Block too short → likely noise → nudge α up slightly
+      DET.alpha = Math.min(DET.ALPHA_MAX, DET.alpha + 0.0005);
+    }
+
+    DET.inBlock = false;
+    DET.blockPeakVal = -Infinity;
+  }
+
+  // ── Handle pending candidate ────────────────────────────
+  if (TPL.pending) {
+    const samplesSincePeak = absIdx - TPL.pending.peakAbsIdx;
+    if (samplesSincePeak >= TPL.HALF) {
+      const peakLocalIdx = TPL.pending.peakAbsIdx - DET.bpBufStart;
+      const winStart = peakLocalIdx - TPL.HALF;
+      const winEnd = peakLocalIdx + TPL.HALF;
+
+      if (winStart >= 0 && winEnd <= DET.bpBuf.length) {
+        const window = new Float32Array(TPL.WINDOW);
+        for (let i = 0; i < TPL.WINDOW; i++) {
+          window[i] = DET.bpBuf[winStart + i];
+        }
+        const winStd = zscoreNormalize(window);
+
+        let accept = true;
+        let nccVal = 0;
+
+        // Morphology gate (active after template warmup)
+        if (TPL.template && TPL.beatsLearned >= TPL.WARMUP_BEATS) {
+          nccVal = ncc(window, TPL.template);
+          TPL.lastNCC = nccVal;
+          if (nccVal < TPL.NCC_MIN || winStd < 1) {
+            accept = false;
+            TPL.rejectedByNCC++;
+            TPL.consecutiveRejects++;
+            DET.alpha = Math.min(DET.ALPHA_MAX, DET.alpha + 0.001);
+          }
+        } else if (TPL.template) {
+          TPL.lastNCC = ncc(window, TPL.template);
+        }
+
+        // IBI plausibility via Kalman
+        if (accept && DET.lastAcceptedMs > 0) {
+          const observedIBI = TPL.pending.peakMs - DET.lastAcceptedMs;
+          if (observedIBI >= 300 && observedIBI <= 2000) {
+            const kRes = kalmanStep(observedIBI);
+            if (!kRes.accepted) {
+              accept = false;
+              TPL.consecutiveRejects++;
+            }
+          } else {
+            accept = false;
+            TPL.consecutiveRejects++;
+          }
+        }
+
+        if (accept) {
+          confirmed.push({
+            peakMs: TPL.pending.peakMs,
+            peakAbsIdx: TPL.pending.peakAbsIdx,
+            ncc: nccVal,
+          });
+
+          // v13.1: only update template with HIGH-quality beats.
+          // During warmup we take everything (need to seed template),
+          // but after that we require NCC >= NCC_LEARN_MIN (0.75),
+          // well above the admission threshold (0.5). This prevents
+          // artifact-adjacent beats from dragging the template toward
+          // the noise distribution.
+          const shouldLearn = (TPL.beatsLearned < TPL.WARMUP_BEATS) ||
+                              (nccVal >= TPL.NCC_LEARN_MIN);
+          if (shouldLearn) {
+            TPL.recentBeats.push(window);
+            if (TPL.recentBeats.length > TPL.MAX_BEATS) TPL.recentBeats.shift();
+            rebuildTemplate();
+          }
+          TPL.beatsLearned++;
+          TPL.consecutiveRejects = 0;
+
+          // v13.1: on successful detection, nudge α back toward the
+          // Elgendi default. This lets α recover from artifact-driven
+          // climbs without needing a full stuck-state timeout first.
+          if (DET.alpha > 0.02) {
+            DET.alpha = Math.max(0.02, DET.alpha - 0.0005);
+          }
+
+          if (DET.lastAcceptedMs > 0) {
+            const ibi = TPL.pending.peakMs - DET.lastAcceptedMs;
+            if (ibi >= 300 && ibi <= 2000) DET.IBI = ibi;
+          }
+          DET.lastAcceptedMs = TPL.pending.peakMs;
+        } else {
+          // v13.1: if too many rejections pile up, the template has
+          // almost certainly been corrupted by the artifact burst
+          // that preceded this. Full reset.
+          if (TPL.consecutiveRejects >= TPL.MAX_CONSEC_REJECTS) {
+            resetDetectorLearnedState();
+          }
+        }
+      }
+
+      TPL.pending = null;
+    }
+  }
+
+  // ── Stuck-state recovery ────────────────────────────────
+  // Two-tier recovery:
+  //   2.5 s silence: relax α (lighter touch — maybe noise pushed it up)
+  //   4.0 s silence with active signal: full learned-state reset.
+  //                                     Template is almost certainly
+  //                                     corrupted if we're seeing
+  //                                     MAbeat > 10 but no beats accepted.
+  const stuckGap = timeMs - DET.lastAcceptedMs;
+  if (DET.lastAcceptedMs > 0 && MAbeat > 10) {
+    if (stuckGap > 4000) {
+      resetDetectorLearnedState();
+    } else if (stuckGap > 2500) {
+      DET.alpha = Math.max(DET.ALPHA_MIN, DET.alpha - 0.005);
+      DET.inBlock = false;
+    }
+  }
+
+  return confirmed;
+}
+
+// ── Signal Quality ──────────────────────────────────────────
+function calcQuality() {
+  if(rawBuf.length < 50) return 0;
+  const recent = rawBuf.slice(-200);
+  let mn=4095, mx=0, sum=0;
+  for(const v of recent){if(v<mn)mn=v;if(v>mx)mx=v;sum+=v;}
+  const range=mx-mn, mean=sum/recent.length;
+  if(range<50) return 5;
+  if(range>3500) return 10;
+  if(mean<100||mean>3900) return 15;
+  let q;
+  if(range<=2000) q=Math.round(50+(range-100)/(800-100)*50);
+  else q=Math.round(50-(range-2000)/(3500-2000)*40);
+  if(Math.abs(mean-2048)>1500)q-=20;
+  else if(Math.abs(mean-2048)>1000)q-=10;
+  return Math.max(0,Math.min(100,q));
+}
+
+// ── Artifact Detection ──────────────────────────────────────
+// v13.10: Artifact detection upgraded from fixed 20% threshold to an
+// adaptive, dRR-based method inspired by Lipponen & Tarvainen 2019
+// (used in Kubios Pro). Rationale documented at the top of computeHRV.
+//
+// Pipeline:
+//   1. Compute dRR[i] = RR[i] - RR[i-1] over recent clean window
+//   2. Adaptive threshold = max(50ms, 3 × quartile-deviation of dRR)
+//   3. Flag candidate if |dRR| > threshold AND |ibi-median|/median > 15%
+//   4. A flagged ectopic's successor (compensatory pause) is also flagged,
+//      since the pause won't trigger on dRR alone (its dRR vs the short
+//      coupled interval looks small).
+//
+// Why adaptive: at rest 20% can easily be exceeded by normal HRV
+// (healthy vagal tone swings 100+ms between breaths), causing false
+// positives. At exertion when HR is high+steady, 20% can be too loose.
+// Quartile deviation tracks the actual variability of the subject and
+// calibrates accordingly.
+//
+// Bounds floor: 50ms is ~6% at resting HR, prevents the threshold
+// collapsing to zero during very regular recordings (athletes at rest,
+// meditative breathing) where QD can be tiny.
+function isArtifact(ibi){
+  // Absolute bounds — physiologically impossible
+  if (ibi < 300 || ibi > 2000) return true;
+  if (ibiClean.length < 8) {
+    // Early beats: fall back to loose rule until we have stats
+    if (ibiClean.length < 2) return false;
+    const r = ibiClean.slice(-5).map(x => x.ibi).sort((a,b) => a-b);
+    const med = r[Math.floor(r.length/2)];
+    return Math.abs(ibi - med) / med > 0.30;  // relaxed during warmup
+  }
+  // Compute dRR series from recent clean beats
+  const recent = ibiClean.slice(-30).map(x => x.ibi);
+  const dRR = [];
+  for (let i = 1; i < recent.length; i++) dRR.push(recent[i] - recent[i-1]);
+  // Quartile deviation of dRR
+  const absDRR = dRR.map(Math.abs).sort((a,b) => a-b);
+  const q1 = absDRR[Math.floor(absDRR.length * 0.25)];
+  const q3 = absDRR[Math.floor(absDRR.length * 0.75)];
+  const qd = (q3 - q1) / 2;
+  const dRRThresh = Math.max(50, 3 * qd);       // ms
+  // Median of recent IBIs for relative-deviation check
+  const sorted = recent.slice().sort((a,b) => a-b);
+  const med = sorted[Math.floor(sorted.length/2)];
+  // Proposed new dRR
+  const newDRR = Math.abs(ibi - recent[recent.length-1]);
+  const relDev = Math.abs(ibi - med) / med;
+  // Both conditions must fire: sudden jump AND deviates from median
+  // (reduces false positives on gradual HR drift like post-exercise cooldown)
+  return (newDRR > dRRThresh) && (relDev > 0.15);
+}
+function artScore(){
+  if(ibiBuf.length<5) return 0;
+  const l=ibiBuf.slice(-50);
+  return Math.round(l.filter(x=>x.artifact).length/l.length*100);
+}
+
+// ═══════════════════════════════════════════════════════════
+// DEBUG
+// ═══════════════════════════════════════════════════════════
+let dbgVis=false, dbgTab='pkt';
+const logs={pkt:[],sig:[],evt:[],stat:[]};
+function togDbg(){dbgVis=!dbgVis;$('dbgPanel').classList.toggle('vis',dbgVis);$('dbgBtn').classList.toggle('on',dbgVis)}
+function setTab(t){
+  dbgTab=t;
+  // v13.10: map tab keys to their button labels so the active-tab highlight
+  // keeps working after adding 'fw log'.
+  const labels={pkt:'packets',sig:'signal',evt:'events',stat:'stats',fwlog:'fw log'};
+  document.querySelectorAll('.dtab').forEach(e=>e.classList.toggle('on',e.textContent.toLowerCase()===labels[t]));
+  renderDbg();
+}
+function dbg(tab,msg,cls=''){const ts=new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3});logs[tab].push({ts,msg,cls});if(logs[tab].length>200)logs[tab].shift();if(dbgVis&&dbgTab===tab)renderDbg()}
+function renderDbg(){
+  const p=$('dbgPre');
+  // v13.10: fwlog tab pulls from fwLogLines (raw pre-formatted strings
+  // from the firmware), rest use the logs{} object shared with dbg().
+  // v13.10: SCAN lines get per-pin highlighting — non-zero channels show
+  // in yellow/green so it's immediately obvious which GPIO has signal.
+  if (dbgTab === 'fwlog') {
+    p.innerHTML = fwLogLines.map(l => {
+      const scanMatch = l.match(/SCAN\s+(.+)$/);
+      if (scanMatch) {
+        const parts = scanMatch[1].trim().split(/\s+/);
+        const rendered = parts.map(part => {
+          const m = part.match(/^(\d+)=(\d+)$/);
+          if (!m) return part;
+          const v = parseInt(m[2], 10);
+          const color = v > 50 ? 'var(--green)' : v > 5 ? 'var(--yellow)' : 'var(--text-dim)';
+          const weight = v > 50 ? '600' : '400';
+          return `<span style="color:${color};font-weight:${weight}">${part}</span>`;
+        }).join(' ');
+        const prefix = l.substring(0, l.indexOf('SCAN'));
+        return `<span class="dy">${prefix}</span><span style="color:var(--cyan);font-weight:600">SCAN</span> ${rendered}`;
+      }
+      return `<span class="dy">${l}</span>`;
+    }).join('\n');
+  } else {
+    p.innerHTML = logs[dbgTab].map(l=>`<span class="${l.cls}">[${l.ts}] ${l.msg}</span>`).join('\n');
+  }
+  $('dbgBody').scrollTop=$('dbgBody').scrollHeight;
+}
+function hex(a){return Array.from(a).map(b=>b.toString(16).padStart(2,'0')).join(' ')}
+function $(id){return document.getElementById(id)}
+function sv(id,val,unit){$(id).innerHTML=val+'<span class="mu">'+unit+'</span>'}
+
+// v13.10: send a command byte-string to the firmware's control char (0xFF01).
+// Commands are typically 2 bytes: [opcode][arg]. Common opcodes:
+//   0xA5 [duty]        Enter STATIC mode at given duty 0-100%
+//   0xA6 0x00          Enter STROBE mode
+//   0xB0 0x00          Enter BREATHE mode
+//   0xB6 0x00          Enter PULSE_ON_BEAT mode (v4.12.1+)
+//   0xC0 0x00|0x01     v4.12.2: ADC scan mode: 0 enable, 1 disable
+async function sendCmd(...bytes) {
+  if (!ctrlChar) {
+    dbg('evt', 'Cannot send command — control char not available', 'dr');
+    return false;
+  }
+  try {
+    const buf = new Uint8Array(bytes);
+    await ctrlChar.writeValue(buf);
+    dbg('evt', `Sent cmd: ${Array.from(buf).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`, 'dc');
+    return true;
+  } catch(e) {
+    dbg('evt', `Send failed: ${e.message}`, 'dr');
+    return false;
+  }
+}
+
+// v13.10: toggle firmware ADC scan mode. When enabled, firmware reads all
+// ADC1 channels every 500ms and logs results to FW Log as
+//   SCAN 36=v 39=v 32=v 33=v 34=v 35=v
+// Whichever channel shows non-zero reading with span (changes on finger
+// contact) is where the PulseSensor is actually wired.
+let scanModeOn = false;
+async function toggleScan() {
+  const ok = await sendCmd(0xC0, scanModeOn ? 0x01 : 0x00);
+  if (!ok) return;
+  scanModeOn = !scanModeOn;
+  const btn = $('scanBtn');
+  btn.textContent = scanModeOn ? 'Stop Scan' : 'Scan ADC Pins';
+  btn.classList.toggle('on', scanModeOn);
+  if (scanModeOn) dbg('evt', 'Watch FW Log for SCAN lines — look for the non-zero channel', 'dy');
+}
+
+async function modeBreathe() { await sendCmd(0xB0, 0x00); }
+async function modePulseOnBeat() { await sendCmd(0xB6, 0x00); }
+async function modeStatic50() { await sendCmd(0xA5, 50); }
+async function modeStatic0() { await sendCmd(0xA5, 0); }
+
+// v13.13: PPG program selection via 0xB7 (firmware v4.14.24+).
+// arg is the program index 0-3:
+//   0 HEARTBEAT
+//   1 COHERENCE_BREATHE
+//   2 COHERENCE_LENS
+//   3 COHERENCE_BREATHE_STROBE
+// Firmware activates ppg-auto state and fires the new-program indicator.
+async function ppgProgram(idx, label) {
+  const ok = await sendCmd(0xB7, idx);
+  if (ok) dbg('evt', 'PPG program → ' + label, 'dc');
+}
+
+// v13.15: coherence difficulty (HeartMath-style, firmware v4.14.26+).
+// Raw coherence score stays the same across all levels — this is the
+// HeartMath industry standard so scores are comparable across sessions.
+// What difficulty changes:
+//   (1) Zone thresholds used to color the coherence display (Low/Med/High)
+//   (2) Lens opacity mapping curve (applied in firmware led_task)
+//
+// Difficulty scaling follows HeartMath convention: ~15% harder between
+// adjacent levels 1-3, ~30% jump between 3-4.
+let difficulty = 0;
+const DIFF_NAMES = ['Easy', 'Medium', 'Hard', 'Expert'];
+// Threshold tables: [low/med cutoff, med/high cutoff] for each difficulty.
+// A raw coherence score below the low cutoff → red (Low). Between →
+// yellow (Medium). Above the high cutoff → green (High).
+// Easy=[30,60] matches the historical v13.x dashboard defaults. Higher
+// levels proportionally raise both thresholds.
+const DIFF_THRESHOLDS = [
+  [30, 60],   // Easy   — any steady paced breathing reaches high
+  [40, 70],   // Medium — 15% stricter
+  [50, 80],   // Hard   — 15% stricter again
+  [60, 90],   // Expert — 30% stricter jump
+];
+async function setDifficulty(level) {
+  if (level < 0 || level > 3) return;
+  difficulty = level;
+  // Update button visual state.
+  document.querySelectorAll('.diff-btn').forEach(b => {
+    b.classList.toggle('on', parseInt(b.dataset.diff, 10) === level);
+  });
+  const [lo, hi] = DIFF_THRESHOLDS[level];
+  const ok = await sendCmd(0xB8, level);
+  if (ok) dbg('evt', 'Difficulty → ' + DIFF_NAMES[level] + ' (zones ' + lo + '/' + hi + ')', 'dc');
+}
+
+// v13.14: strobe frequency slider (0xAB). Fires on slider release
+// (onchange), not on every drag step (oninput), to avoid flooding the
+// BLE command queue.
+function onStrobeSliderInput() {
+  const hz = parseInt($('strobeFreqSlider').value, 10);
+  $('strobeFreqLbl').textContent = hz + ' Hz';
+}
+async function onStrobeSliderChange() {
+  const hz = parseInt($('strobeFreqSlider').value, 10);
+  const ok = await sendCmd(0xAB, hz);
+  if (ok) dbg('evt', 'Strobe freq → ' + hz + ' Hz', 'dc');
+}
+
+// v13.27: lens darkness limit slider (0xA2 — sets firmware `brightness`,
+// which is the cap on max lens tint). The firmware multiplies this by
+// the per-program feedback fraction, so the same value controls both
+// the maximum darkness and the scale of the feedback response:
+//   • Coherence Lens (Prog 3):     duty = darkLimit × (100 − coh) / 100
+//   • Coherence Breathe+Strobe (Prog 4): duty = darkLimit × breath_frac × strobe_dark
+//   • Breathe (hall + Prog 2):     duty = darkLimit × breath_frac
+//   • Pulse-on-Beat:               peak  = darkLimit × pulse_envelope
+// NVS-persisted (KEY_BRIGHTNESS), so it overrides the compiled-in
+// DEFAULT_BRIGHTNESS=100% on next power cycle. Fires on release to keep
+// the BLE queue clean.
+function onDarkLimitSliderInput() {
+  const v = parseInt($('darkLimitSlider').value, 10);
+  $('darkLimitLbl').textContent = v + '%';
+}
+async function onDarkLimitSliderChange() {
+  const v = parseInt($('darkLimitSlider').value, 10);
+  const ok = await sendCmd(0xA2, v);
+  if (ok) dbg('evt', 'Lens darkness limit → ' + v + '%', 'dc');
+}
+
+// v13.27: strobe duty cycle slider (0xAC). Sets the fraction of each
+// strobe period the lens is in the "dark" half-cycle. Range 10–90%
+// (firmware clamps below 10 or above 90). Affects Program 4 and
+// standalone strobe mode. NVS-persisted (KEY_STROBE_DUTY); overrides
+// firmware default of 50% on next boot. Fires on release.
+function onStrobeDutySliderInput() {
+  const v = parseInt($('strobeDutySlider').value, 10);
+  $('strobeDutyLbl').textContent = v + '%';
+}
+async function onStrobeDutySliderChange() {
+  const v = parseInt($('strobeDutySlider').value, 10);
+  const ok = await sendCmd(0xAC, v);
+  if (ok) dbg('evt', 'Strobe duty → ' + v + '%', 'dc');
+}
+
+// v13.19: breathing pacer BPM slider (0xB1). Affects non-sensor
+// breathing modes (hall LED_MODE_BREATHE) and the coherence modes
+// when adaptive pacer is OFF. Fires on release (onchange) not drag
+// (oninput) so we don't flood the BLE queue. NVS-persisted per v4.14.30.
+function onBreatheBpmSliderInput() {
+  const bpm = parseInt($('breatheBpmSlider').value, 10);
+  $('breatheBpmLbl').textContent = bpm + ' br/min';
+}
+async function onBreatheBpmSliderChange() {
+  const bpm = parseInt($('breatheBpmSlider').value, 10);
+  const ok = await sendCmd(0xB1, bpm);
+  if (ok) dbg('evt', 'Breathe rate → ' + bpm + ' br/min', 'dc');
+}
+
+// v13.19: breathing pacer inhale ratio slider (0xB2). Slider value is
+// the inhale percentage (10-90%); exhale is the remainder. 40/60 is
+// the classic resonance ratio and a common HRV biofeedback default.
+function onBreatheInhaleSliderInput() {
+  const inh = parseInt($('breatheInhaleSlider').value, 10);
+  $('breatheInhaleLbl').textContent = inh + '% / ' + (100 - inh) + '%';
+}
+async function onBreatheInhaleSliderChange() {
+  const inh = parseInt($('breatheInhaleSlider').value, 10);
+  const ok = await sendCmd(0xB2, inh);
+  if (ok) dbg('evt', 'Breathe inhale → ' + inh + '% / ' + (100 - inh) + '%', 'dc');
+}
+
+// v13.18: adaptive pacer toggle (0xB9, firmware v4.14.32+).
+// Default ON. Controls whether PPG Programs 2 and 4 use a fixed
+// 6 BPM cycle or track the measured respiration frequency.
+async function toggleAdaptivePacer() {
+  const on = $('adaptiveChk').checked ? 1 : 0;
+  const ok = await sendCmd(0xB9, on);
+  if (ok) dbg('evt', 'Adaptive pacer → ' + (on ? 'ON (tracks resp)' : 'OFF (fixed 6 br/min)'), 'dc');
+  else {
+    // Revert checkbox on failure
+    $('adaptiveChk').checked = !on;
+    dbg('evt', 'Failed to set adaptive pacer', 'dr');
+  }
+}
+
+// v13.16: factory reset (0xBF, firmware v4.14.30+). Erases ALL saved
+// preferences on the device (brightness, session duration, strobe
+// freq/duty, breathe params, coherence difficulty) and reverts to
+// compiled-in defaults. Requires explicit confirm — this is a
+// destructive action.
+async function resetDeviceDefaults() {
+  const msg = 'Reset all device preferences to factory defaults?\n\n' +
+              'This erases on the device:\n' +
+              '  • Brightness, session duration\n' +
+              '  • Strobe frequency and duty\n' +
+              '  • Breathing pacer parameters\n' +
+              '  • Coherence difficulty\n\n' +
+              'Dashboard settings (zone thresholds) will also reset.';
+  if (!confirm(msg)) return;
+  const ok = await sendCmd(0xBF, 0x00);
+  if (ok) {
+    dbg('evt', 'Device preferences RESET to defaults', 'dy');
+    // Also reset dashboard-side difficulty back to Easy so zone
+    // thresholds match the fresh firmware defaults.
+    setDifficulty(0);
+    // Reset strobe slider UI to match firmware default (10 Hz).
+    const slider = $('strobeFreqSlider');
+    if (slider) { slider.value = 10; $('strobeFreqLbl').textContent = '10 Hz'; }
+    // v13.27: reset lens darkness limit to firmware default (100%).
+    const dSl = $('darkLimitSlider');
+    if (dSl) { dSl.value = 100; $('darkLimitLbl').textContent = '100%'; }
+    // v13.27: reset strobe duty to firmware default (50%).
+    const stDuty = $('strobeDutySlider');
+    if (stDuty) { stDuty.value = 50; $('strobeDutyLbl').textContent = '50%'; }
+    // v13.18: reset adaptive pacer checkbox to match firmware default (ON).
+    const adaptChk = $('adaptiveChk');
+    if (adaptChk) adaptChk.checked = true;
+    // v13.19: reset breathing pacer sliders to firmware defaults (6 BPM, 40% inhale).
+    const bSl = $('breatheBpmSlider');
+    if (bSl) { bSl.value = 6; $('breatheBpmLbl').textContent = '6 br/min'; }
+    const iSl = $('breatheInhaleSlider');
+    if (iSl) { iSl.value = 40; $('breatheInhaleLbl').textContent = '40% / 60%'; }
+  } else {
+    dbg('evt', 'Reset failed — device did not acknowledge', 'dr');
+  }
+}
+// v13.10: 0xD0 manual detector reset (firmware v4.12.6+).
+// Clears MA buffers, block state, last-beat time on the firmware side.
+// Useful when firmware detection falls behind real beats after a noisy
+// patch. Also resets the agreement window on the client side so the
+// metric doesn't keep the pre-reset history dragging % down.
+async function resetFwDetector() {
+  const ok = await sendCmd(0xD0, 0x00);
+  if (ok) {
+    agreementWindow = [];
+    $('mBeatAgree').innerHTML = '—<span class="mu">%</span>';
+    $('mBeatAgree').style.color = 'var(--text-dim)';
+    dbg('evt', 'Reset firmware detector + agreement window', 'dy');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// BLE CONNECTION
+// ═══════════════════════════════════════════════════════════
+async function togConn(){
+  if(connected){manualDisc=true;if(bleDevice&&bleDevice.gatt.connected)bleDevice.gatt.disconnect();onDisc();return}
+  const btn=$('conBtn');btn.disabled=true;btn.textContent='Scanning…';manualDisc=false;
+  dbg('evt','Requesting BLE device...','dc');
+  try{
+    bleDevice=await navigator.bluetooth.requestDevice({filters:[{name:'Narbis_Edge'}],optionalServices:[SVC]});
+    dbg('evt',`Found: ${bleDevice.name} (${bleDevice.id})`,'dg');
+    bleDevice.addEventListener('gattserverdisconnected',onDisc);
+    await doConnect();
+  }catch(e){dbg('evt',`FAILED: ${e.message}`,'dr');btn.textContent='Connect';btn.disabled=false}
+}
+
+async function doConnect(attempt=1){
+  const btn=$('conBtn');btn.disabled=true;btn.textContent=attempt>1?`Retry #${attempt}…`:'Connecting…';
+  dbg('evt',`GATT connect attempt ${attempt}/3...`,'dc');
+  try{
+    if(attempt>1) await new Promise(r=>setTimeout(r,800*attempt));
+    const srv=await bleDevice.gatt.connect();
+    dbg('evt','GATT connected','dc');
+    await new Promise(r=>setTimeout(r,300));
+    const svc=await srv.getPrimaryService(SVC);
+    dbg('evt','Service found','dg');
+    bleChar=await svc.getCharacteristic(CHR);
+    dbg('evt',`Char found (notify=${bleChar.properties.notify})`,'dg');
+    await bleChar.startNotifications();
+    bleChar.addEventListener('characteristicvaluechanged',onData);
+    dbg('evt','Listening for data','dg');
+
+    // v13.10: also subscribe to status characteristic (0xFF03) for
+    // firmware log strings + ADC stats. Gracefully handle firmware that
+    // doesn't have the status char (pre-v4.12.1) by catching the error.
+    try {
+      statusChar = await svc.getCharacteristic(STATUS_CHR);
+      await statusChar.startNotifications();
+      statusChar.addEventListener('characteristicvaluechanged', onStatusData);
+      dbg('evt', 'Status char subscribed (firmware log + ADC stats)', 'dg');
+    } catch(e) {
+      dbg('evt', 'No status char available (older firmware)', 'dy');
+    }
+    // v13.10: resolve the control characteristic (0xFF01) for sending
+    // commands to firmware — mode switches, scan toggle, etc. Optional;
+    // dashboard works read-only without it.
+    try {
+      ctrlChar = await svc.getCharacteristic(CTRL_CHR);
+      dbg('evt', 'Control char ready (can send FW commands)', 'dg');
+    } catch(e) {
+      dbg('evt', 'No control char available', 'dy');
+    }
+    connected=true;btn.textContent='Disconnect';btn.classList.add('on');btn.disabled=false;
+    $('bleDot').classList.add('ok');$('bleSt').textContent=bleDevice.name;
+    if(!sessStart){sessStart=Date.now();sessIv=setInterval(updTmr,1000)}
+    requestAnimationFrame(render);
+  }catch(e){
+    dbg('evt',`Attempt ${attempt} failed: ${e.message}`,'dr');
+    if(attempt<3){dbg('evt','Retrying...','dy');return doConnect(attempt+1)}
+    btn.textContent='Connect';btn.disabled=false;
+  }
+}
+
+function onDisc(){
+  const was=connected;connected=false;
+  statusChar=null;  // v13.10: drop ref so reconnect re-subscribes cleanly
+  ctrlChar=null;    // v13.10: same for control char
+  // v13.10: tear down smoothing queue so packets don't process into a
+  // disconnected state and the timer isn't orphaned
+  packetQueue = [];
+  if (smoothingTimer !== null) { clearInterval(smoothingTimer); smoothingTimer = null; }
+  smoothingHeadroomOk = false;
+  // clear ADC stats so stale values don't show after disconnect
+  fwAdcMin = fwAdcMax = fwAdcMean = null;
+  fwAdcMinRing = []; fwAdcMaxRing = []; fwAdcMeanRing = [];  // v13.20
+  $('adcStats').innerHTML = '<span style="color:var(--text-dim)">ADC</span> <span style="color:var(--text-dim)">—</span>';
+  // v13.21: clear health panel
+  const hr = $('healthRows');
+  if (hr) hr.innerHTML = '<div style="color:var(--text-dim)">Waiting for 0xF3 packets…</div>';
+  // v13.10: also clear firmware coherence state
+  fwCoh = null;
+  fwCohRespRing = [];  // v13.13: clear resp averaging ring
+  ['mFwCoh','mFwResp','mFwRespAvg','mFwRespBpm','mFwVlf','mFwLf','mFwHf','mFwTP','mFwLfNorm','mFwHfNorm','mFwLfHf','mFwCohN','mFwCohAgree'].forEach(id => {
+    const el = $(id); if (el) { el.textContent = '—'; el.style.color = ''; }
+  });
+  $('conBtn').classList.remove('on');$('bleDot').classList.remove('ok');$('bleSt').textContent='Disconnected';
+  if(!manualDisc&&was&&bleDevice){
+    dbg('evt','Unexpected disconnect — reconnecting...','dy');
+    $('conBtn').disabled=true;$('conBtn').textContent='Reconnecting…';
+    setTimeout(()=>{if(!connected&&bleDevice&&!manualDisc)doConnect(1)},1000);
+  }else{dbg('evt','Disconnected','dy');$('conBtn').textContent='Connect';$('conBtn').disabled=false;clearInterval(sessIv)}
+}
+
+// ═══════════════════════════════════════════════════════════
+// DATA HANDLER — parse raw, run all processing
+// ═══════════════════════════════════════════════════════════
+let lastStatT=0;
+
+// v13.10: handler for the status characteristic (0xFF03).
+// Firmware v4.12.1+ emits two packet types here:
+//   [0xF0] ADC stats (11 bytes): min/max/mean of last 25 raw reads + count
+//   [0xF1] ASCII log string: up to 48 chars of formatted firmware output
+// Older firmware (v4.11.x, v4.12.0) only uses this char for OTA status,
+// which the dashboard doesn't subscribe to — so if we're seeing any of
+// those older OTA-format messages here, just ignore them.
+function onStatusData(ev) {
+  const dv = ev.target.value;
+  if (dv.byteLength < 1) return;
+  const type = dv.getUint8(0);
+
+  if (type === 0xF0) {
+    // ADC stats — critical diagnostic for "is the sensor actually producing signal"
+    if (dv.byteLength < 11) return;
+    fwAdcMin = dv.getUint16(1, true);
+    fwAdcMax = dv.getUint16(3, true);
+    fwAdcMean = dv.getUint16(5, true);
+    fwAdcCount = dv.getUint8(7);
+    fwAdcLastRxMs = Date.now();
+
+    // v13.20: push into rolling rings for 5-second moving average.
+    // 0xF0 arrives ~2 Hz so 10 entries = 5 sec window.
+    fwAdcMinRing.push(fwAdcMin);
+    if (fwAdcMinRing.length > FW_ADC_RING_MAX) fwAdcMinRing.shift();
+    fwAdcMaxRing.push(fwAdcMax);
+    if (fwAdcMaxRing.length > FW_ADC_RING_MAX) fwAdcMaxRing.shift();
+    fwAdcMeanRing.push(fwAdcMean);
+    if (fwAdcMeanRing.length > FW_ADC_RING_MAX) fwAdcMeanRing.shift();
+
+    const avg = arr => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+    const minA  = avg(fwAdcMinRing);
+    const maxA  = avg(fwAdcMaxRing);
+    const meanA = avg(fwAdcMeanRing);
+    const spanA = maxA - minA;
+
+    // Paint status-bar indicator. Span (max-min) tells you at a glance
+    // whether there's any AC signal vs flatline noise. Using the 5-sec
+    // averaged values now — jitter from window-to-window variation in
+    // the firmware's 500ms stats window is filtered out.
+    $('adcStats').innerHTML =
+      `<span style="color:var(--text-dim)">ADC (5s avg)</span> min=${minA} max=${maxA} mean=${meanA} ` +
+      `span=<span style="color:${spanA < 20 ? 'var(--red)' : spanA < 100 ? 'var(--yellow)' : 'var(--green)'}">${spanA}</span>`;
+  } else if (type === 0xF1) {
+    // Firmware log string — decode ASCII from byte 1 onward
+    let msg = '';
+    for (let i = 1; i < dv.byteLength; i++) {
+      const c = dv.getUint8(i);
+      if (c === 0) break;
+      msg += String.fromCharCode(c);
+    }
+    if (msg.length > 0) {
+      const ts = new Date().toLocaleTimeString('en-US', {
+        hour12: false, hour: '2-digit', minute: '2-digit',
+        second: '2-digit', fractionalSecondDigits: 3
+      });
+      fwLogLines.push(`[${ts}] ${msg}`);
+      if (fwLogLines.length > FW_LOG_MAX) fwLogLines.shift();
+      if (dbgVis && dbgTab === 'fwlog') renderDbg();
+    }
+  } else if (type === 0xF2) {
+    // v13.10: firmware-computed coherence + frequency-domain HRV
+    //   (18 bytes, firmware v4.13.0+)
+    //   [0]     0xF2
+    //   [1]     coherence 0-100
+    //   [2-3]   resp peak freq in mHz
+    //   [4-5]   vlf power (scaled u16)
+    //   [6-7]   lf power
+    //   [8-9]   hf power
+    //   [10-11] total power
+    //   [12]    lf_norm %
+    //   [13]    hf_norm %
+    //   [14-15] lf_hf ratio × 256 (fixed point 8.8)
+    //   [16]    n_ibis used
+    //   [17]    reserved
+    if (dv.byteLength < 18) return;
+    fwCoh       = dv.getUint8(1);
+    fwCohRespMhz= dv.getUint16(2, true);
+    fwCohVlf    = dv.getUint16(4, true);
+    fwCohLf     = dv.getUint16(6, true);
+    fwCohHf     = dv.getUint16(8, true);
+    fwCohTotal  = dv.getUint16(10, true);
+    fwCohLfNorm = dv.getUint8(12);
+    fwCohHfNorm = dv.getUint8(13);
+    fwCohLfHf   = dv.getUint16(14, true);
+    fwCohNIbis  = dv.getUint8(16);
+    fwCohLastMs = Date.now();
+
+    // Paint the Firmware HRV panel (created below in the markup).
+    // Coherence gets color-coded the same way as client coherence:
+    // high (green) / medium (yellow) / low (red).
+    const cohEl = $('mFwCoh');
+    if (cohEl) {
+      cohEl.textContent = fwCoh;
+      // v13.15: FW coherence coloring uses same difficulty thresholds.
+      const [diffLoFw, diffHiFw] = DIFF_THRESHOLDS[difficulty];
+      cohEl.style.color = fwCoh >= diffHiFw ? 'var(--green)' :
+                          fwCoh >= diffLoFw ? 'var(--yellow)' : 'var(--red)';
+    }
+    sv('mFwResp', (fwCohRespMhz / 1000).toFixed(3), 'Hz');
+
+    // v13.13: push peak-freq sample into 15s ring, compute average.
+    // Only push nonzero values so pre-warmup zeros don't drag the
+    // average down. Ring fills over 15 seconds after first valid packet.
+    if (fwCohRespMhz > 0) {
+      fwCohRespRing.push(fwCohRespMhz);
+      if (fwCohRespRing.length > FW_RESP_RING_MAX) fwCohRespRing.shift();
+    }
+    if (fwCohRespRing.length > 0) {
+      const avgMhz = fwCohRespRing.reduce((a, b) => a + b, 0) / fwCohRespRing.length;
+      const avgHz = avgMhz / 1000;
+      sv('mFwRespAvg', avgHz.toFixed(3), 'Hz');
+      sv('mFwRespBpm', (avgHz * 60).toFixed(1), 'br/min');
+    }
+    sv('mFwVlf', fwCohVlf, '');
+    sv('mFwLf', fwCohLf, '');
+    sv('mFwHf', fwCohHf, '');
+    sv('mFwTP', fwCohTotal, '');
+    sv('mFwLfNorm', fwCohLfNorm, '%');
+    sv('mFwHfNorm', fwCohHfNorm, '%');
+    sv('mFwLfHf', (fwCohLfHf / 256).toFixed(2), '');
+    $('mFwCohN').textContent = fwCohNIbis;
+
+    // Coherence agreement: delta between firmware coherence and client.
+    // When the two agree within ±5, firmware-side math is validated and
+    // we can use it to drive lens modulation.
+    const clientCoh = parseInt($('cohScore').textContent.replace(/[^0-9]/g,''), 10);
+    if (!isNaN(clientCoh) && clientCoh > 0) {
+      const delta = fwCoh - clientCoh;
+      const sign = delta >= 0 ? '+' : '';
+      const el = $('mFwCohAgree');
+      if (el) {
+        el.innerHTML = sign + delta + '<span class="mu">Δ</span>';
+        const abs = Math.abs(delta);
+        el.style.color = abs <= 5 ? 'var(--green)' :
+                         abs <= 15 ? 'var(--yellow)' : 'var(--red)';
+      }
+    }
+  } else if (type === 0xF3) {
+    // v13.21: system health packet (20 bytes, firmware v4.14.36+)
+    //   [0]     0xF3
+    //   [1-4]   uptime (seconds, u32 LE)
+    //   [5-8]   heap_free (bytes, u32 LE)
+    //   [9-12]  heap_min (bytes, u32 LE)
+    //   [13-14] ppg stack HWM (words, u16 LE)
+    //   [15-16] BLE send errors (u16 LE)
+    //   [17-18] jitter max (µs, u16 LE)
+    //   [19]    jitter ticks over (count, u8)
+    if (dv.byteLength < 20) return;
+    const uptime = dv.getUint32(1, true);
+    const heapFree = dv.getUint32(5, true);
+    const heapMin  = dv.getUint32(9, true);
+    const stackHwm = dv.getUint16(13, true);
+    const bleErr   = dv.getUint16(15, true);
+    const jitMax   = dv.getUint16(17, true);
+    const jitOver  = dv.getUint8(19);
+    renderHealth(uptime, heapFree, heapMin, stackHwm, bleErr, jitMax, jitOver);
+  }
+  // Ignore any other type bytes — probably OTA status from older firmware.
+}
+
+// v13.21: render System Health panel from 0xF3 packet data.
+// Color thresholds:
+//   Heap free:   green ≥80KB, yellow 40-80KB, red <40KB
+//   Heap min:    green ≥40KB, yellow 20-40KB, red <20KB
+//   Stack HWM:   green ≥512 words, yellow 256-512, red <256
+//   BLE errors:  green 0, yellow 1-10, red >10
+//   Jitter max:  green <5ms, yellow 5-10ms, red >10ms
+//   Overruns:    green 0, yellow 1-3, red >3
+function renderHealth(uptimeS, heapFree, heapMin, stackHwm, bleErr, jitMaxUs, jitOver) {
+  const fmtBytes = n => (n / 1024).toFixed(1) + ' KB';
+  const fmtUptime = s => {
+    if (s < 60) return s + ' s';
+    if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+  };
+  const color = (v, green, yellow) => {
+    // Higher is better for heap/stack. Use green→yellow→red via thresholds.
+    if (v >= green) return 'var(--green)';
+    if (v >= yellow) return 'var(--yellow)';
+    return 'var(--red)';
+  };
+  const colorReverse = (v, green, yellow) => {
+    // Lower is better for errors/jitter. Green ≤green, yellow ≤yellow, red >yellow.
+    if (v <= green) return 'var(--green)';
+    if (v <= yellow) return 'var(--yellow)';
+    return 'var(--red)';
+  };
+  const row = (label, val, color) =>
+    `<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--text-dim)">${label}</span><span style="color:${color};text-align:right">${val}</span></div>`;
+
+  const heapFreeC = color(heapFree, 80*1024, 40*1024);
+  const heapMinC  = color(heapMin,  40*1024, 20*1024);
+  const stackC    = color(stackHwm, 512, 256);
+  const bleErrC   = colorReverse(bleErr, 0, 10);
+  const jitMaxC   = colorReverse(jitMaxUs, 5000, 10000);
+  const jitOverC  = colorReverse(jitOver, 0, 3);
+
+  $('healthRows').innerHTML =
+    row('Uptime',       fmtUptime(uptimeS),                'var(--text)') +
+    row('Heap free',    fmtBytes(heapFree),                heapFreeC) +
+    row('Heap min',     fmtBytes(heapMin),                 heapMinC) +
+    row('PPG stack',    stackHwm + ' words',               stackC) +
+    row('BLE errors',   bleErr,                            bleErrC) +
+    row('Jitter max',   (jitMaxUs/1000).toFixed(1) + ' ms', jitMaxC) +
+    row('Late ticks',   jitOver + ' (in window)',          jitOverC);
+}
+
+// v13.10: PC-side jitter smoothing via replay buffer.
+//
+// Problem this solves: Windows BLE delivers notifications in bursts —
+// the *total* throughput is fine (50Hz average) but packets arrive
+// clumped ("got 4 packets, then silence for 80ms, then 3 more"). The
+// client detector pipeline runs per-sample, so clumped arrival +
+// immediate processing means the detector sees sample times that are
+// nothing like uniform 20ms spacing. Filter ringing, toggling blocks,
+// worse NCC template alignment.
+//
+// Fix: enqueue arriving packets (preserving firmware ts so we never
+// actually lose temporal accuracy for HRV). A 20ms setInterval drains
+// one packet per tick, giving the detector a uniform stream regardless
+// of Windows burst pattern.
+//
+// Cost: SMOOTH_BUFFER_MS added latency (default 150ms). Invisible for
+// HRV/coherence; unnoticeable for pulse-on-beat visualization.
+//
+// Toggle: user can turn this off via the "PC Smoothing" checkbox if
+// they're on tablet (where wire IS uniform) or want to see raw
+// behavior for debugging.
+const SMOOTH_BUFFER_MS = 150;
+let packetQueue = [];        // queued parsed packets waiting to be processed
+let smoothingEnabled = true;   // v13.26: default ON (was OFF in v13.x for back-compat)
+let smoothingTimer = null;
+let smoothingHeadroomOk = false;  // turns true once buffer is pre-filled
+
+// Enqueue one arriving packet. Called from raw onData.
+// obj is the parsed packet ready for processSample().
+function queuePacket(obj) {
+  packetQueue.push(obj);
+  // Start the drain timer on first packet after smoothing was enabled
+  if (smoothingEnabled && smoothingTimer === null) {
+    smoothingHeadroomOk = false;
+    smoothingTimer = setInterval(drainSmoothingQueue, 20);
+  }
+}
+
+// Drain timer fires every 20ms. Process the oldest packet if we have
+// enough headroom, i.e. the queue holds at least SMOOTH_BUFFER_MS/20 = 7.5
+// packets deep — that ensures a brief Windows burst-silence doesn't
+// underrun us.
+function drainSmoothingQueue() {
+  if (packetQueue.length === 0) return;
+  // Initial fill — wait until we have the buffer depth before starting
+  if (!smoothingHeadroomOk) {
+    if (packetQueue.length < SMOOTH_BUFFER_MS / 20) return;
+    smoothingHeadroomOk = true;
+  }
+  // Handle backlog — if we fell behind (browser hiccup), catch up by
+  // processing multiple packets this tick. Cap at 3/tick to avoid
+  // doing all the work in one render frame.
+  const backlog = packetQueue.length - Math.ceil(SMOOTH_BUFFER_MS / 20);
+  const toProcess = Math.min(3, Math.max(1, backlog + 1));
+  for (let i = 0; i < toProcess && packetQueue.length > 0; i++) {
+    processSample(packetQueue.shift());
+  }
+}
+
+function toggleSmoothing() {
+  smoothingEnabled = $('smoothChk').checked;
+  if (!smoothingEnabled) {
+    // Drain any queued packets immediately
+    while (packetQueue.length > 0) processSample(packetQueue.shift());
+    if (smoothingTimer !== null) {
+      clearInterval(smoothingTimer);
+      smoothingTimer = null;
+    }
+    smoothingHeadroomOk = false;
+  }
+  dbg('evt', `PC jitter smoothing: ${smoothingEnabled ? 'ON (150ms buffer)' : 'OFF (direct)'}`, 'dy');
+}
+
+function onData(ev){
+  const dv=ev.target.value;
+  const bytes=new Uint8Array(dv.buffer);
+  pktNum++;
+
+  if(pktNum<=20||pktNum%100===0) dbg('pkt',`#${pktNum} [${bytes.length}B] ${hex(bytes)}`,'dh');
+
+  // v13.2: dual-format packet parser.
+  //   0x01 (legacy):    9 bytes — [type][raw u16][idx u16][ts u32]
+  //   0x02 (v4.12.0):  13 bytes — adds [flags][fw_ibi u16][fw_bpm] at end
+  //   0x03 (v4.14.9):  batched N samples per packet.
+  //     Header  = [0x03][N:u8][base_ts:u32]                            (6 bytes)
+  //     Sample  = [raw:u16][idx:u16][flags:u8][ibi:u16][bpm:u8]        (8 bytes each)
+  //     Total   = 6 + N*8 bytes. Per-sample ts reconstructed as
+  //               base_ts + i*20 (50Hz nominal spacing).
+  const pktType = dv.byteLength >= 1 ? dv.getUint8(0) : 0;
+  if (pktType !== 0x01 && pktType !== 0x02 && pktType !== 0x03) return;
+  if (pktType === 0x01 && dv.byteLength < 9)  return;
+  if (pktType === 0x02 && dv.byteLength < 13) return;
+  if (pktType === 0x03 && dv.byteLength < 6)  return;
+
+  // v4.14.9: 0x03 batched format. Parse N samples and dispatch each
+  // through the same pipeline as a per-sample packet. We need the
+  // individual samples to pass into processSample separately so that
+  // all downstream logic (detection, buffers, beat events, coherence
+  // IBI push, UI redraw timing) keeps working unchanged.
+  if (pktType === 0x03) {
+    const N = dv.getUint8(1);
+    const baseTs = dv.getUint32(2, true);
+    const expectedLen = 6 + N * 8;
+    if (dv.byteLength < expectedLen) return;
+
+    const arrivalMs = performance.now();
+    const arrivalDateMs = Date.now();
+
+    for (let i = 0; i < N; i++) {
+      const off = 6 + i * 8;
+      const raw   = dv.getUint16(off + 0, true);
+      const idx   = dv.getUint16(off + 2, true);
+      const flags = dv.getUint8 (off + 4);
+      const ibi   = dv.getUint16(off + 5, true);
+      const bpm   = dv.getUint8 (off + 7);
+      const ts    = baseTs + i * 20;  // 50Hz nominal, 20ms per sample
+
+      const sample = {
+        pktType: 0x03,
+        raw, idx, ts,
+        fwBeatThisSample: (flags & 0x01) !== 0,
+        fwInBlock:        (flags & 0x02) !== 0,
+        fwIBI: ibi,
+        fwBPM: bpm,
+        arrivalMs,           // all samples in a batch share the JS arrival time
+        arrivalDateMs,
+      };
+
+      if (smoothingEnabled) {
+        queuePacket(sample);
+      } else {
+        processSample(sample);
+      }
+    }
+    return;
+  }
+
+  // Fast-path parsing (0x01/0x02): turn raw bytes into a structured sample object.
+  // Everything detector-related happens in processSample() via either
+  // direct call (no smoothing) or via the queue+drain path.
+  const sample = {
+    pktType,
+    raw: dv.getUint16(1, true),
+    idx: dv.getUint16(3, true),
+    ts:  dv.getUint32(5, true),
+    fwBeatThisSample: false,
+    fwInBlock: false,
+    fwIBI: 0,
+    fwBPM: 0,
+    arrivalMs: performance.now(),
+    arrivalDateMs: Date.now(),
+  };
+  if (pktType === 0x02) {
+    const flags = dv.getUint8(9);
+    sample.fwBeatThisSample = (flags & 0x01) !== 0;
+    sample.fwInBlock = (flags & 0x02) !== 0;
+    sample.fwIBI = dv.getUint16(10, true);
+    sample.fwBPM = dv.getUint8(12);
+  }
+
+  if (smoothingEnabled) {
+    queuePacket(sample);
+  } else {
+    processSample(sample);
+  }
+}
+
+// processSample — the original onData body, renamed. Accepts a parsed
+// sample object (from either direct dispatch or the smoothing queue)
+// and runs the full client pipeline: detection, buffers, UI.
+function processSample(sample){
+  const { pktType, raw, idx, ts, fwBeatThisSample, fwInBlock: fwib,
+          fwIBI: fib, fwBPM: fbpm } = sample;
+  // Hoist into existing globals (rest of pipeline reads these by name)
+  fwInBlock = fwib;
+  fwIBI = fib;
+  fwBPM = fbpm;
+
+  // Detect firmware version transition — first 0x02 packet in session
+  // tells us we're talking to v4.12.0+. First 0x03 = v4.14.9+ (batched).
+  if (pktType !== fwPktType) {
+    fwPktType = pktType;
+    const label = pktType === 0x03 ? '0x03 (v4.14.9+ batched)'
+                : pktType === 0x02 ? '0x02 (v4.12.0+ PPG)'
+                : '0x01 (legacy)';
+    $('mFwPktType').textContent = label;
+    dbg('evt', `Packet format: ${label}`, pktType >= 0x02 ? 'dg' : 'dy');
+  }
+
+  smpCount++;
+  const now=performance.now();
+  const nowMs=Date.now();
+  bleTimes.push(now);while(bleTimes.length&&bleTimes[0]<now-2000)bleTimes.shift();
+
+  // v13.10: measure wire rate (from firmware ts) vs JS rate (from JS clock)
+  // vs event gap (longest stall between onData calls). These three numbers
+  // together diagnose exactly where the browser is choking:
+  //   wire stays 50Hz, JS drops    → browser/renderer is throttled (focus, CPU)
+  //   both drop together           → Windows BLE stack is delivering slowly
+  //   wire 50Hz, JS 50Hz, gap>>20  → bursty event delivery (batched)
+  wireTsHistory.push(ts);
+  if (wireTsHistory.length > 100) wireTsHistory.shift();
+  jsTsHistory.push(now);
+  if (jsTsHistory.length > 100) jsTsHistory.shift();
+
+  if (lastOnDataMs > 0) {
+    const gap = now - lastOnDataMs;
+    if (gap > evtGapMax) evtGapMax = gap;
+  }
+  lastOnDataMs = now;
+
+  // Update readouts every ~50 packets (~1 second at 50 Hz)
+  if (smpCount % 50 === 0) {
+    if (wireTsHistory.length >= 2) {
+      const wDur = wireTsHistory[wireTsHistory.length-1] - wireTsHistory[0];
+      const wHz = wDur > 0 ? (wireTsHistory.length - 1) * 1000 / wDur : 0;
+      $('mWireHz').textContent = wHz.toFixed(1);
+      $('mWireHz').style.color = wHz >= 45 ? 'var(--green)' : wHz >= 30 ? 'var(--yellow)' : 'var(--red)';
+    }
+    if (jsTsHistory.length >= 2) {
+      const jDur = jsTsHistory[jsTsHistory.length-1] - jsTsHistory[0];
+      const jHz = jDur > 0 ? (jsTsHistory.length - 1) * 1000 / jDur : 0;
+      $('mJsHz').textContent = jHz.toFixed(1);
+      $('mJsHz').style.color = jHz >= 45 ? 'var(--green)' : jHz >= 30 ? 'var(--yellow)' : 'var(--red)';
+    }
+    $('mEvtGap').textContent = evtGapMax.toFixed(0);
+    $('mEvtGap').style.color = evtGapMax < 40 ? 'var(--green)' : evtGapMax < 100 ? 'var(--yellow)' : 'var(--red)';
+    evtGapMax = 0;  // reset for next window
+  }
+
+  // ── Client-side signal processing ─────────────────────────
+  const filtered = bandpass(raw);
+
+  rawBuf.push(raw);
+  filtBuf.push(filtered);
+  beatMarks.push(0);  // default 0; may be set to 1 retroactively when
+                      // a beat is CONFIRMED by the delayed detector
+  // v13.2: firmware-emitted beats arrive WITHOUT lookahead delay (the
+  // firmware detector runs block-end → beat with ~100-150ms latency,
+  // no template matching). So fwBeatMarks is set IMMEDIATELY for the
+  // sample the firmware flagged as a beat, not retroactively.
+  fwBeatMarks.push(fwBeatThisSample ? 1 : 0);
+
+  if(rawBuf.length>PPG_LEN){
+    rawBuf.shift();filtBuf.shift();beatMarks.shift();fwBeatMarks.shift();
+  }
+
+  // v13.2: log firmware beat events + update agreement tracker.
+  if (fwBeatThisSample) {
+    fwBeatCount++;
+    $('mFwBeats').textContent = fwBeatCount;
+
+    // v13.25: push into FW-driven tachogram buffer. Only when we have
+    // a valid IBI (firmware reports 0 for the very first beat).
+    if (fwIBI > 0) {
+      ibiBufFw.push({ time: nowMs, ibi: fwIBI, artifact: false });
+      if (ibiBufFw.length > IBI_BUF_FW_MAX) ibiBufFw.shift();
+    }
+
+    // Record firmware beat time for agreement matching. The client
+    // emits its own beats ~250-400ms later (template lookahead), so
+    // we stash the firmware beat time and let each client beat match
+    // back against recent firmware beats.
+    // v13.10: push with timestamp, prune by age rather than count
+    agreementWindow.push({fwMs: nowMs, clientMs: null, ts: nowMs});
+    pruneAgreement(nowMs);
+
+    dbg('evt', `FW BEAT #${fwBeatCount} IBI=${fwIBI}ms BPM=${fwBPM}`, 'dc');
+  }
+
+  // Update firmware UI (cheap — once per sample at 50Hz is fine)
+  // v13.12: added 0x03 to the packet-type check. Was gated only on 0x02,
+  // so with batched firmware (v4.14.9+) the FW HR/IBI/In-Block fields
+  // never got updated even though the packet carried those fields per
+  // sample. Agreement metrics were also stuck at "—" for the same reason.
+  if (pktType === 0x02 || pktType === 0x03) {
+    if (fwBPM > 0) $('mFwBPM').innerHTML = fwBPM + '<span class="mu">bpm</span>';
+    if (fwIBI > 0) $('mFwIBI').innerHTML = fwIBI + '<span class="mu">ms</span>';
+    $('mFwInBlock').textContent = fwInBlock ? 'YES' : 'no';
+    $('mFwInBlock').style.color = fwInBlock ? 'var(--cyan)' : 'var(--text-dim)';
+
+    // HR agreement: delta between firmware BPM and client BPM
+    // (client BPM is whatever's currently in mBPM display)
+    const clientBpmTxt = $('mBPM').textContent.replace(/[^0-9]/g,'');
+    const clientBpm = parseInt(clientBpmTxt, 10);
+    if (!isNaN(clientBpm) && clientBpm > 0 && fwBPM > 0) {
+      const delta = fwBPM - clientBpm;
+      const sign = delta >= 0 ? '+' : '';
+      $('mAgree').innerHTML = sign + delta + '<span class="mu">Δbpm</span>';
+      // color code by |delta|: green <=2, yellow <=5, red >5
+      const abs = Math.abs(delta);
+      $('mAgree').style.color = abs <= 2 ? 'var(--green)' :
+                                 abs <= 5 ? 'var(--yellow)' : 'var(--red)';
+    }
+  }
+
+  // v13: Elgendi detector + adaptive ML layer.
+  // Uses Date.now() for timestamps (JS event-loop jitter is ~1-2 ms,
+  // well below HRV noise floor). The detector returns an array of
+  // beats CONFIRMED this sample — each beat was actually detected
+  // at its peak ~400 ms ago, but required HALF samples of look-ahead
+  // for the template-matching stage before we could accept it.
+  const confirmed = detectPeaks(raw, nowMs, filtered);
+
+  // Signal quality
+  const qual = calcQuality();
+  $('sigQ').textContent=qual+'%';$('mSigQ').textContent=qual;
+  $('sigDot').className='dot '+(qual>60?'ok':qual>30?'warn':'');
+
+  if(pktNum%25===0) dbg('sig',`raw=${raw} filt=${filtered.toFixed(1)} qual=${qual}% MAp=${DET.lastMApeak.toFixed(0)} MAb=${DET.lastMAbeat.toFixed(0)} α=${DET.alpha.toFixed(3)} IBI=${DET.IBI.toFixed(0)} NCC=${TPL.lastNCC.toFixed(2)}`,'dc');
+
+  // ── Beat handling (for each confirmed beat) ──────────────
+  for (const beat of confirmed) {
+    beatCount++;
+    $('nBeats').textContent=beatCount;
+
+    // Retroactively place the beat marker at the peak's actual sample
+    // position in rawBuf. The peak is ~HALF samples behind smpCount.
+    const sampleLag = smpCount - 1 - beat.peakAbsIdx;
+    const bufPos = beatMarks.length - 1 - sampleLag;
+    if (bufPos >= 0 && bufPos < beatMarks.length) {
+      beatMarks[bufPos] = 1;
+    }
+
+    const beatTime = beat.peakMs;
+
+    // v13.2: beat-agreement matching. Client's confirmed beatTime is
+    // the actual peak time (not the emission time — that's ~400ms later).
+    // Firmware beats arrive at block-end, ~100-150ms after the peak.
+    // So we expect client beatTime and firmware fwMs to differ by
+    // ~100-150ms for the SAME physical beat (firmware is LATE by its
+    // detection latency, relative to the peak).
+    // Match window: ±300ms covers the typical spread.
+    if (fwPktType === 0x02) {
+      let matched = null;
+      for (let i = agreementWindow.length - 1; i >= 0; i--) {
+        const entry = agreementWindow[i];
+        if (entry.clientMs !== null) continue;  // already claimed
+        if (Math.abs(entry.fwMs - beatTime) <= 300) {
+          entry.clientMs = beatTime;
+          matched = entry;
+          break;
+        }
+      }
+      if (!matched) {
+        // Client beat with no firmware partner. Record so agreement
+        // percentage reflects it as a miss on the firmware side.
+        agreementWindow.push({fwMs: null, clientMs: beatTime, ts: beatTime});
+        pruneAgreement(beatTime);
+      } else {
+        pruneAgreement(beatTime);
+      }
+
+      // Compute agreement: fraction of paired entries / total entries
+      const total = agreementWindow.length;
+      const paired = agreementWindow.filter(e => e.fwMs !== null && e.clientMs !== null).length;
+      if (total >= 3) {
+        const pct = Math.round(paired / total * 100);
+        $('mBeatAgree').innerHTML = pct + '<span class="mu">%</span>';
+        $('mBeatAgree').style.color = pct >= 90 ? 'var(--green)' :
+                                       pct >= 70 ? 'var(--yellow)' : 'var(--red)';
+      }
+    }
+
+    if(beatCount === 1){
+      lastBeatStamp = beatTime;
+      dbg('evt',`First beat at ${beatTime} (NCC=${beat.ncc.toFixed(2)})`,'dy');
+    } else {
+      const ibi = beatTime - lastBeatStamp;
+      lastBeatStamp = beatTime;
+
+      if(ibi >= 300 && ibi <= 2000){
+        const obj={time:beatTime, ibi};
+        // v13.10: the beat AFTER a flagged ectopic is almost always a
+        // compensatory pause, which wouldn't flag on dRR (its dRR vs the
+        // short coupled interval is small) but is still spurious for HRV.
+        // pendingCompensatoryCheck is set when the prior beat was flagged.
+        const isEctopic = isArtifact(ibi);
+        const isCompensatory = pendingCompensatoryCheck && !isEctopic
+                               && Math.abs(ibi - lastMedianIBI) / lastMedianIBI > 0.10;
+        pendingCompensatoryCheck = isEctopic;
+        if (!isEctopic && !isCompensatory){
+          ibiBuf.push(obj);ibiClean.push(obj);
+          if(ibiBuf.length>300)ibiBuf.shift();if(ibiClean.length>300)ibiClean.shift();
+          // Update median for next beat's compensatory check
+          if (ibiClean.length >= 5) {
+            const rec = ibiClean.slice(-10).map(x=>x.ibi).sort((a,b)=>a-b);
+            lastMedianIBI = rec[Math.floor(rec.length/2)];
+          }
+          const bpm=Math.round(60000/ibi);
+          sv('mBPM',bpm,'bpm');sv('mIBI',ibi,'ms');
+          dbg('evt',`BEAT #${beatCount} IBI=${ibi}ms BPM=${bpm} NCC=${beat.ncc.toFixed(2)} α=${DET.alpha.toFixed(3)}`,'dg');
+        } else {
+          ectCount++;
+          ibiBuf.push({...obj,artifact:true});
+          if(ibiBuf.length>300)ibiBuf.shift();
+          const kind = isEctopic ? 'ectopic' : 'compensatory';
+          dbg('evt',`ARTIFACT IBI=${ibi}ms (${kind} #${ectCount})`,'dr');
+        }
+      } else {
+        dbg('evt',`BEAT #${beatCount} IBI=${ibi}ms OUT OF RANGE (ignored)`,'dy');
+      }
+    }
+
+    if(ibiClean.length>=8) computeHRV();
+  }
+
+  // ── Update Detector UI (every sample is cheap enough at 50 Hz) ──
+  $('mNCC').textContent = TPL.lastNCC.toFixed(2);
+  $('mAlpha').textContent = DET.alpha.toFixed(3);
+  $('mLearned').textContent = TPL.beatsLearned;
+  $('mKalIBI').innerHTML = KAL.initialized ? KAL.x.toFixed(0)+'<span class="mu">ms</span>' : '—<span class="mu">ms</span>';
+  $('mNCCrej').textContent = TPL.rejectedByNCC;
+  $('mKalRej').textContent = KAL.rejectedByKalman;
+  $('mResets').textContent = TPL.resetsCount;
+
+  $('nSamp').textContent=smpCount;$('mEct').textContent=ectCount;
+
+  // Stats
+  if(now-lastStatT>5000){
+    lastStatT=now;
+    const rate=bleTimes.length>1?(bleTimes.length/2).toFixed(1):'?';
+    let mn=4095,mx=0;for(const v of rawBuf.slice(-100)){if(v<mn)mn=v;if(v>mx)mx=v;}
+    dbg('stat',`pkts=${pktNum} smp=${smpCount} beats=${beatCount} ect=${ectCount} rate=${rate}Hz`,'dc');
+    dbg('stat',`rawRange=[${mn},${mx}] span=${mx-mn} qual=${qual}%`,'dd');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// HRV CALCULATIONS
+// ═══════════════════════════════════════════════════════════
+// v13.10: Interpolate flagged artifacts in place.
+// Task Force 1996 (and modern Kubios-style pipelines) recommend:
+//   time-domain metrics (SDNN, RMSSD, pNN50) should skip artifacts
+//   frequency-domain metrics should interpolate so the time series
+//     stays contiguous and PSD estimates aren't biased by gaps
+//
+// ibiBuf holds all beats with artifact flags. For frequency-domain
+// use, we walk ibiBuf and replace flagged entries with cubic-spline
+// interpolation from the nearest clean neighbors (up to 3 on each
+// side). Linear fallback when fewer neighbors exist.
+function interpolateArtifacts(buf) {
+  if (buf.length < 4) return buf.map(x => x.ibi);
+  const out = buf.map(x => x.ibi);
+  const flagged = buf.map(x => !!x.artifact);
+  for (let i = 0; i < buf.length; i++) {
+    if (!flagged[i]) continue;
+    // Collect up to 3 clean neighbors on each side
+    const left = [];
+    for (let j = i - 1; j >= 0 && left.length < 3; j--) {
+      if (!flagged[j]) left.push({ idx: j, v: out[j] });
+    }
+    const right = [];
+    for (let j = i + 1; j < buf.length && right.length < 3; j++) {
+      if (!flagged[j]) right.push({ idx: j, v: out[j] });
+    }
+    if (left.length === 0 && right.length === 0) {
+      out[i] = 800;  // fallback to physiological default
+    } else if (left.length === 0) {
+      out[i] = right[0].v;
+    } else if (right.length === 0) {
+      out[i] = left[0].v;
+    } else {
+      // Simple Catmull-Rom-ish: weighted combo of immediate neighbors.
+      // For 1–2 isolated artifacts this is as accurate as cubic spline
+      // and avoids edge-case instabilities.
+      const l = left[0], r = right[0];
+      const frac = (i - l.idx) / (r.idx - l.idx);
+      out[i] = l.v + frac * (r.v - l.v);
+    }
+  }
+  return out;
+}
+
+function computeHRV(){
+  // v13.10: time-domain metrics use ibiClean (artifact-free).
+  //         frequency-domain uses interpolated ibiBuf to preserve timing.
+  const ibis=ibiClean.slice(-120).map(x=>x.ibi);
+  const n=ibis.length;if(n<10)return;
+  const mean=ibis.reduce((a,b)=>a+b)/n;
+  const sdnn=Math.sqrt(ibis.reduce((s,v)=>s+(v-mean)**2,0)/(n-1));
+  let sqD=0,nn50=0;for(let i=1;i<n;i++){const d=ibis[i]-ibis[i-1];sqD+=d*d;if(Math.abs(d)>50)nn50++}
+  const rmssd=Math.sqrt(sqD/(n-1)),pnn50=nn50/(n-1)*100,cv=sdnn/mean*100;
+  sv('mSDNN',sdnn.toFixed(1),'ms');sv('mRMSSD',rmssd.toFixed(1),'ms');sv('mPNN50',pnn50.toFixed(1),'%');
+  sv('mMeanRR',mean.toFixed(0),'ms');sv('mCV',cv.toFixed(2),'%');
+
+  // v13.10: frequency-domain work (Lomb-Scargle + band powers + coherence)
+  // is ~3-10ms per call. Running it every beat makes scrolling painful.
+  // Stride to every 5 beats — coherence changes on timescales of ~30s
+  // minimum (LF band physics), so 5-beat updates are plenty responsive.
+  // Always update on the first beat (hrvBeatCounter starts at 0) so
+  // users see numbers populate immediately at session start.
+  const runFD = (hrvBeatCounter++ % HRV_FD_STRIDE === 0);
+  const as_now=artScore();$('artPct').textContent=as_now+'%';sv('mArt',as_now,'%');$('artBar').style.width=as_now+'%';$('mClean').textContent=ibiClean.length;
+  if (!runFD) return;
+
+  // Frequency domain
+  // v13.10: Frequency-domain uses interpolated (artifact-replaced) series
+  // so the time axis stays physiologically continuous. Time-domain
+  // metrics above still use ibiClean (artifacts skipped).
+  const ibisFD = interpolateArtifacts(ibiBuf.slice(-120));
+  const meanFD = ibisFD.reduce((a,b)=>a+b) / ibisFD.length;
+  const times=[];let ct=0;for(const v of ibisFD){ct+=v/1000;times.push(ct)}
+  const centered=ibisFD.map(v=>v-meanFD),freqs=[],nF=200;
+  for(let i=0;i<nF;i++)freqs.push(0.003+(0.4-0.003)*i/(nF-1));
+  const psd=lombScargle(times,centered,freqs),df=0.397/199;
+
+  // Band powers + peak finding
+  let vlf=0,lf=0,hf=0,tp=0;
+  let pkP=0,pkF=0;        // overall peak
+  let hfPkP=0,hfPkF=0;    // HF band peak
+  let lfPkP=0,lfPkF=0;    // LF band peak
+  let respPkP=0,respPkF=0; // respiratory peak (LF+HF combined, 0.04-0.4 Hz)
+
+  for(let i=0;i<nF;i++){
+    const f=freqs[i],p=psd[i]*df;
+    tp+=p;
+    if(f>=0.003&&f<0.04) vlf+=p;
+    if(f>=0.04&&f<0.15){ lf+=p; if(psd[i]>lfPkP){lfPkP=psd[i];lfPkF=f} }
+    if(f>=0.15&&f<=0.4){ hf+=p; if(psd[i]>hfPkP){hfPkP=psd[i];hfPkF=f} }
+    if(psd[i]>pkP){pkP=psd[i];pkF=f}
+    // Respiratory peak: dominant oscillation in physiological range (0.04-0.4 Hz)
+    if(f>=0.04&&f<=0.4&&psd[i]>respPkP){respPkP=psd[i];respPkF=f}
+  }
+
+  const lfhf=hf>0?lf/hf:0;
+  $('fVLF').textContent=vlf.toFixed(0);$('fLF').textContent=lf.toFixed(0);$('fHF').textContent=hf.toFixed(0);
+  const mx=Math.max(vlf,lf,hf,1);
+  $('bVLF').style.height=(vlf/mx*100)+'%';$('bLF').style.height=(lf/mx*100)+'%';$('bHF').style.height=(hf/mx*100)+'%';
+  $('mLFHF').textContent=lfhf.toFixed(2);
+  sv('mTP',tp.toFixed(0),'ms²');
+  sv('mPkF',pkF.toFixed(3),'Hz');
+  sv('mHFpk',hfPkF.toFixed(3),'Hz');
+
+  // ── Respiration rate from dominant peak across LF+HF ──────
+  // Works for both normal breathing (HF) and resonance breathing (LF)
+  sv('mRespF',respPkF.toFixed(3),'Hz');
+  if(respPkF>0) sv('mResp',(respPkF*60).toFixed(1),'br/min');
+
+  // ── Coherence: LF resonance method (Lehrer/Vaschillo) ─────
+  // Primary metric: ratio of power in narrow band around LF peak
+  // to total power. During resonance, nearly all power collapses
+  // into one sharp LF peak.
+
+  // Find resonance peak: highest peak in LF band (0.04-0.15 Hz)
+  const resPeakF = lfPkF;
+  // Sum power in narrow window around resonance peak (±0.015 Hz)
+  let resP=0;
+  for(let i=0;i<nF;i++){
+    if(Math.abs(freqs[i]-resPeakF)<=0.015) resP+=psd[i]*df;
+  }
+
+  // Coherence ratio: resonance band power / total power
+  const cohR = tp>0 ? resP/tp : 0;
+  // v13.17: scale changed 250 → 100 to match firmware v4.14.31+.
+  // Old 250x saturated at 100 for ratios above 0.40, destroying
+  // dynamic range. Score now tracks ratio directly as a percentage
+  // — a ratio of 0.76 reads as 76, not clamped to 100.
+  const cohS = Math.min(100, Math.round(cohR * 100));
+
+  // LF concentration: % of LF+HF power that sits in LF
+  // During resonance this should be >80%
+  const lfhfTotal = lf+hf;
+  const lfConc = lfhfTotal>0 ? (lf/lfhfTotal)*100 : 0;
+
+  // IBI swing amplitude: peak-to-trough of dominant oscillation
+  // Approximated from PSD: amplitude ≈ 2 * sqrt(resonance_band_power)
+  // This gives the sinusoidal amplitude in ms
+  const ibiSwing = Math.round(2 * Math.sqrt(resP));
+
+  $('cohScore').textContent=cohS;
+  $('mCohR').textContent=cohR.toFixed(3);
+  sv('mResP',resP.toFixed(0),'ms²');
+  sv('mResF',resPeakF.toFixed(3),'Hz');
+  sv('mSwing',ibiSwing,'ms');
+  sv('mLFconc',lfConc.toFixed(0),'%');
+
+  let zone,zc;
+  // v13.15: zone thresholds come from difficulty table rather than
+  // hardcoded 30/60. Raw coherence score is unchanged — only the
+  // color-coded zone boundaries shift as difficulty increases.
+  const [diffLo, diffHi] = DIFF_THRESHOLDS[difficulty];
+  if(cohS>=diffHi){zone='High Coherence';zc='var(--green)';zHist.hi++}
+  else if(cohS>=diffLo){zone='Medium Coherence';zc='var(--yellow)';zHist.md++}
+  else{zone='Low Coherence';zc='var(--red)';zHist.lo++}
+  $('cohZone').textContent=zone;$('cohZone').style.color=zc;
+  $('cohScore').style.color=zc;$('cohScore').style.textShadow='0 0 40px '+zc+'44';
+  const zt=zHist.lo+zHist.md+zHist.hi||1;
+  $('zLo').style.width=(zHist.lo/zt*100)+'%';$('zMd').style.width=(zHist.md/zt*100)+'%';$('zHi').style.width=(zHist.hi/zt*100)+'%';
+
+  // artScore + artifact% now updated unconditionally earlier in this
+  // function so they stay live even on non-FD-compute beats.
+  lastPSD={freqs,psd};
+}
+
+function lombScargle(t,v,f){
+  const n=t.length,p=new Float64Array(f.length);
+  for(let fi=0;fi<f.length;fi++){const w=2*Math.PI*f[fi];let s2=0,c2=0;
+    for(let i=0;i<n;i++){s2+=Math.sin(2*w*t[i]);c2+=Math.cos(2*w*t[i])}
+    const tau=Math.atan2(s2,c2)/(2*w);let cn=0,sn=0,cd=0,sd=0;
+    for(let i=0;i<n;i++){const ct=Math.cos(w*(t[i]-tau)),st=Math.sin(w*(t[i]-tau));cn+=v[i]*ct;sn+=v[i]*st;cd+=ct*ct;sd+=st*st}
+    p[fi]=.5*(cn*cn/(cd||1e-10)+sn*sn/(sd||1e-10))}return p;
+}
+
+// ═══════════════════════════════════════════════════════════
+// RENDERING
+// ═══════════════════════════════════════════════════════════
+function render(){
+  // v13.10: track raf rate — if browser throttles the tab this drops
+  // from ~60Hz to ~1Hz. A huge signal of "you minimized or unfocused
+  // this window." If you're not looking at the tab, Chrome will
+  // still call onData, but raf stalls — and the dashboard *rendering*
+  // pipeline (which ingests rawBuf → beatMarks → canvas) falls behind.
+  const rafNow = performance.now();
+  rafTimes.push(rafNow);
+  while (rafTimes.length && rafTimes[0] < rafNow - 2000) rafTimes.shift();
+  if (rafTimes.length > 1) {
+    const rafHz = rafTimes.length / 2;
+    $('mRafHz').textContent = rafHz.toFixed(0);
+    $('mRafHz').style.color = rafHz >= 30 ? 'var(--green)' : rafHz >= 10 ? 'var(--yellow)' : 'var(--red)';
+  }
+
+  drawECG();drawPPG();drawIBI();drawPSD();drawTemplate();
+  $('bleHz').textContent=bleTimes.length>1?(bleTimes.length/2).toFixed(0):'—';
+  if(connected)requestAnimationFrame(render);
+}
+
+// v13: draw the learned beat template in the Detector sidebar.
+// The template is the mean z-scored PPG waveform over the last ~10
+// accepted beats. As more beats accumulate, this curve sharpens and
+// reveals the person's specific PPG morphology (upstroke, systolic
+// peak, dicrotic notch, diastolic bump). If the curve is still flat
+// or noisy, the detector hasn't learned a stable template yet.
+function drawTemplate(){
+  const c=$('cTpl'); if(!c) return;
+  const x=c.getContext('2d'), r=devicePixelRatio||1;
+  c.width=c.clientWidth*r; c.height=c.clientHeight*r; x.scale(r,r);
+  const W=c.clientWidth, H=c.clientHeight;
+  x.clearRect(0,0,W,H);
+
+  const tpl = TPL.template;
+  if (!tpl) {
+    x.fillStyle='#555566'; x.font='10px IBM Plex Mono, monospace';
+    x.textAlign='center';
+    x.fillText('Learning...', W/2, H/2+3);
+    return;
+  }
+
+  // Baseline
+  x.strokeStyle='#ffffff10'; x.lineWidth=1;
+  x.beginPath(); x.moveTo(0,H/2); x.lineTo(W,H/2); x.stroke();
+
+  // Find min/max of template for scaling
+  let mn=Infinity, mx=-Infinity;
+  for (let i=0;i<tpl.length;i++){ if(tpl[i]<mn)mn=tpl[i]; if(tpl[i]>mx)mx=tpl[i]; }
+  const range = mx-mn || 1;
+
+  // Draw template curve
+  x.strokeStyle = TPL.beatsLearned >= TPL.WARMUP_BEATS ? '#00e5ff' : '#ffcc00';
+  x.lineWidth = 1.5;
+  x.beginPath();
+  for (let i=0;i<tpl.length;i++){
+    const px = (i/(tpl.length-1))*W;
+    const py = H - 4 - ((tpl[i]-mn)/range)*(H-8);
+    if (i===0) x.moveTo(px,py); else x.lineTo(px,py);
+  }
+  x.stroke();
+
+  // Mark the peak (center of window)
+  const peakIdx = TPL.HALF;
+  const peakPx = (peakIdx/(tpl.length-1))*W;
+  x.strokeStyle='#ff336688'; x.lineWidth=1;
+  x.beginPath(); x.moveTo(peakPx,0); x.lineTo(peakPx,H); x.stroke();
+}
+
+// v10: synthesized ECG visualization.
+// For each detected beat in the current PPG window, draw a canonical
+// P-QRS-T waveform at the same x-coordinate. The x-axis is aligned
+// with the PPG canvas below so dots on both panels line up.
+//
+// IMPORTANT: this is a VISUALIZATION ONLY. Only the R-peak timing
+// (x-position) reflects real physiological data — derived from the
+// PPG beat detector. The P/Q/R/S/T amplitudes and shapes are drawn
+// from a fixed template. A real ECG requires electrodes; this device
+// measures optical PPG. The synthesis is a UI convention to make the
+// heartbeat rhythm visually recognizable.
+//
+// Template: quick P bump, brief flat PQ segment, sharp QRS complex
+// (downward Q, tall narrow R spike, downward S), ST segment, rounded
+// T wave. Drawn as relative offsets in pixels/fractions of beat width.
+function drawECG(){
+  const c=$('cECG'), x=c.getContext('2d'), r=devicePixelRatio||1;
+  c.width=c.clientWidth*r; c.height=c.clientHeight*r; x.scale(r,r);
+  const W=c.clientWidth, H=c.clientHeight;
+  x.clearRect(0,0,W,H);
+
+  // Baseline
+  const baseY = H * 0.60;
+  x.strokeStyle='#ffffff10';
+  x.lineWidth=1;
+  x.beginPath(); x.moveTo(0,baseY); x.lineTo(W,baseY); x.stroke();
+
+  if(rawBuf.length < 2) return;
+
+  // Find the x-positions of beats in the current window. beatMarks[i]==1
+  // corresponds to rawBuf[i], and rawBuf is drawn across full width in
+  // drawPPG with px = i/PPG_LEN * W. Use the same mapping here.
+  const beatIdxs = [];
+  for(let i=0;i<beatMarks.length;i++){
+    if(beatMarks[i]) beatIdxs.push(i);
+  }
+
+  // If no beats in window, just show a flat line
+  if(beatIdxs.length === 0) return;
+
+  // Template: each element is [xOffsetPx, yOffsetFraction]
+  // Drawn relative to the R-peak x-coord, y-fractions of H.
+  // Negative xOffset = before R, positive = after R.
+  // Negative yOffset = upward on screen (canvas y is inverted).
+  // R spike is at x=0.
+  const AMP = H * 0.45;   // peak amplitude of R relative to baseline
+  const tmpl = [
+    [-32, 0.00],   // baseline before
+    [-26, 0.00],
+    [-22, -0.08],  // P wave up
+    [-18, -0.12],  // P peak
+    [-14, -0.08],
+    [-10, 0.00],   // back to baseline (PQ segment)
+    [ -6, 0.00],
+    [ -3, 0.10],   // Q dip down
+    [  0, -1.00],  // R spike up (full AMP)
+    [  3, 0.20],   // S dip down
+    [  6, 0.00],   // back to baseline
+    [ 14, 0.00],   // ST segment
+    [ 22, -0.15],  // T wave up
+    [ 28, -0.20],  // T peak
+    [ 34, -0.12],
+    [ 40, 0.00],   // back to baseline
+  ];
+
+  // Draw approach: walk pixel-by-pixel across the canvas. At each
+  // column, if that column falls within the template range of any
+  // beat, use the template-interpolated y; otherwise draw baseline.
+  // This produces one continuous polyline from left to right.
+
+  const tmplStart = tmpl[0][0];
+  const tmplEnd = tmpl[tmpl.length-1][0];
+
+  // Precompute beat center pixel positions
+  const beatPx = beatIdxs.map(i => i / PPG_LEN * W);
+
+  x.strokeStyle='#00e5ff';
+  x.lineWidth=1.5;
+  x.beginPath();
+  for(let px=0; px<=W; px++){
+    // Find nearest beat that this pixel could belong to
+    let y = baseY;
+    for(const bpx of beatPx){
+      const dx = px - bpx;
+      if(dx < tmplStart || dx > tmplEnd) continue;
+      // Interpolate template at dx
+      let p0 = tmpl[0], p1 = tmpl[tmpl.length-1];
+      for(let k=0;k<tmpl.length-1;k++){
+        if(tmpl[k][0] <= dx && tmpl[k+1][0] >= dx){
+          p0 = tmpl[k]; p1 = tmpl[k+1];
+          break;
+        }
+      }
+      const span = p1[0] - p0[0] || 1;
+      const t = (dx - p0[0]) / span;
+      const yFrac = p0[1] + (p1[1] - p0[1]) * t;
+      y = baseY + yFrac * AMP;
+      break;
+    }
+    if(px===0) x.moveTo(px, y); else x.lineTo(px, y);
+  }
+  x.stroke();
+
+  // Beat markers (dots + vertical line) at same x-coords as PPG panel
+  for(const bpx of beatPx){
+    x.fillStyle='#ff336688';
+    x.beginPath(); x.arc(bpx, 10, 4, 0, Math.PI*2); x.fill();
+    x.strokeStyle='#ff336622';
+    x.lineWidth=1;
+    x.beginPath(); x.moveTo(bpx, 0); x.lineTo(bpx, H); x.stroke();
+  }
+}
+
+function drawPPG(){
+  const c=$('cPPG'),x=c.getContext('2d'),r=devicePixelRatio||1;
+  c.width=c.clientWidth*r;c.height=c.clientHeight*r;x.scale(r,r);
+  const W=c.clientWidth,H=c.clientHeight;x.clearRect(0,0,W,H);if(rawBuf.length<2)return;
+
+  // v9: styling swapped and made toggleable.
+  // - Raw is now the primary trace (cyan, solid 1.5px) — shows real PPG shape
+  //   including upstroke and dicrotic notch. This is what people expect to see
+  //   on a pulse-oximeter-style display.
+  // - Filtered is secondary (dim cyan, 1px) — the internal HRV pipeline signal
+  //   used for peak detection. Useful for debugging filter behavior but not
+  //   what most viewers want by default.
+  // Scale each visible trace independently so one doesn't compress the other.
+
+  // Raw (primary — bright cyan)
+  if(ppgShowRaw){
+    let a=Infinity,b=-Infinity;for(const v of rawBuf){if(v<a)a=v;if(v>b)b=v}
+    const d=b-a||1;
+    x.strokeStyle='#00e5ff';x.lineWidth=1.5;x.beginPath();
+    for(let i=0;i<rawBuf.length;i++){
+      const px=i/PPG_LEN*W, py=H-((rawBuf[i]-a)/d)*(H-20)-10;
+      i?x.lineTo(px,py):x.moveTo(px,py);
+    }
+    x.stroke();
+  }
+
+  // Filtered (secondary — dim cyan)
+  if(ppgShowFilt){
+    let e=Infinity,f=-Infinity;for(const v of filtBuf){if(v<e)e=v;if(v>f)f=v}
+    const g=f-e||1;
+    x.strokeStyle=ppgShowRaw?'#00e5ff55':'#00e5ff';
+    x.lineWidth=ppgShowRaw?1:1.5;
+    x.beginPath();
+    for(let i=0;i<filtBuf.length;i++){
+      const px=i/PPG_LEN*W, py=H-((filtBuf[i]-e)/g)*(H-20)-10;
+      i?x.lineTo(px,py):x.moveTo(px,py);
+    }
+    x.stroke();
+  }
+
+  // Beat markers
+  // Client beats: pink dots + vertical line (top of canvas)
+  for(let i=0;i<beatMarks.length;i++){if(beatMarks[i]){const px=i/PPG_LEN*W;
+    x.fillStyle='#ff336688';x.beginPath();x.arc(px,10,4,0,Math.PI*2);x.fill();
+    x.strokeStyle='#ff336633';x.lineWidth=1;x.beginPath();x.moveTo(px,0);x.lineTo(px,H);x.stroke()}}
+
+  // v13.2: firmware beats — green downward triangles at BOTTOM of canvas.
+  // Positioned opposite from client dots so both can be compared at a
+  // glance. When firmware and client agree, you'll see a pink dot at
+  // top and a green triangle at bottom of the same PPG peak — forming
+  // vertical "sandwich" pairs on real beats.
+  if (fwPktType === 0x02) {
+    for (let i = 0; i < fwBeatMarks.length; i++) {
+      if (fwBeatMarks[i]) {
+        const px = i / PPG_LEN * W;
+        x.fillStyle = '#00ff88bb';
+        x.beginPath();
+        x.moveTo(px - 5, H - 2);
+        x.lineTo(px + 5, H - 2);
+        x.lineTo(px, H - 10);
+        x.closePath();
+        x.fill();
+        x.strokeStyle = '#00ff8833';
+        x.lineWidth = 1;
+        x.beginPath();
+        x.moveTo(px, 0);
+        x.lineTo(px, H);
+        x.stroke();
+      }
+    }
+  }
+}
+
+// v9: toggle which PPG traces are drawn. Clicking the currently-lit button
+// while the other is off is a no-op (we never hide both — something must be
+// visible). If both are lit and you click one, that one turns off.
+function togglePPG(which){
+  if(which==='raw'){
+    if(ppgShowRaw && !ppgShowFilt) return;  // would hide both
+    ppgShowRaw = !ppgShowRaw;
+  } else {
+    if(ppgShowFilt && !ppgShowRaw) return;  // would hide both
+    ppgShowFilt = !ppgShowFilt;
+  }
+  $('ppgRawBtn').classList.toggle('on', ppgShowRaw);
+  $('ppgFiltBtn').classList.toggle('on', ppgShowFilt);
+}
+
+function drawIBI(){
+  const c=$('cIBI'),x=c.getContext('2d'),r=devicePixelRatio||1;
+  c.width=c.clientWidth*r;c.height=c.clientHeight*r;x.scale(r,r);
+  const W=c.clientWidth,H=c.clientHeight;x.clearRect(0,0,W,H);
+
+  // v13.23: read toggle states. Defaults: interpolate ON, smooth OFF.
+  // Both checkboxes may be absent at very early startup — default gracefully.
+  const iEl = $('ibiInterpChk');
+  const sEl = $('ibiSmoothChk');
+  const srcEl = $('ibiSrcChk');
+  const doInterp = iEl ? iEl.checked : true;
+  const doSmooth = sEl ? sEl.checked : false;
+  // v13.25: source toggle — checked = firmware beats (default, more reliable),
+  // unchecked = client-side detector (legacy; can pause during detector resets).
+  const useFwSource = srcEl ? srcEl.checked : true;
+
+  const source = useFwSource ? ibiBufFw : ibiBuf;
+  const dd = source.slice(-100);
+  if(dd.length<2)return;
+
+  // Y-axis auto-range on raw IBI values (smoothing might pull range in
+  // slightly, but raw dots must still fit, so base range on raw).
+  let mn=Infinity,mx=-Infinity;
+  for(const d of dd){if(d.ibi<mn)mn=d.ibi;if(d.ibi>mx)mx=d.ibi}
+  const p=Math.max((mx-mn)*.15,30);mn-=p;mx+=p;const rn=mx-mn||1;
+  const toY = v => H - ((v - mn)/rn)*(H-20) - 10;
+
+  // Raw dot x-positions: one per beat, evenly spaced across the canvas.
+  const beatX = i => i / (dd.length-1) * W;
+
+  // ─── v13.23 INTERPOLATION ───
+  // Catmull-Rom spline between consecutive beat points gives a smooth curve
+  // that passes through every dot. Sampled at 8 points per segment for a
+  // total of ~800 polyline samples when 100 beats are shown. Without this
+  // the tachogram was one straight line between each dot (visibly angular).
+  //
+  // If interp is off, fall back to the old straight-line plot.
+  const POINTS_PER_SEG = 8;
+  x.strokeStyle='#00e5ff';x.lineWidth=1.5;x.beginPath();
+
+  if (doInterp && dd.length >= 2) {
+    // Build a simple Catmull-Rom through dd[i].ibi values. Tension 0.5.
+    for (let i = 0; i < dd.length - 1; i++) {
+      const p0 = dd[Math.max(0, i-1)].ibi;
+      const p1 = dd[i].ibi;
+      const p2 = dd[i+1].ibi;
+      const p3 = dd[Math.min(dd.length-1, i+2)].ibi;
+      const x0 = beatX(i), x1 = beatX(i+1);
+      for (let t = 0; t < POINTS_PER_SEG; t++) {
+        const u = t / POINTS_PER_SEG;
+        const u2 = u*u, u3 = u2*u;
+        // Catmull-Rom basis
+        const y = 0.5 * (
+          (2*p1) +
+          (-p0 + p2)*u +
+          (2*p0 - 5*p1 + 4*p2 - p3)*u2 +
+          (-p0 + 3*p1 - 3*p2 + p3)*u3
+        );
+        const px = x0 + (x1 - x0)*u;
+        const py = toY(y);
+        (i===0 && t===0) ? x.moveTo(px, py) : x.lineTo(px, py);
+      }
+    }
+    // Close with last dot
+    x.lineTo(beatX(dd.length-1), toY(dd[dd.length-1].ibi));
+  } else {
+    // Plain polyline
+    for (let i = 0; i < dd.length; i++) {
+      const px = beatX(i), py = toY(dd[i].ibi);
+      i ? x.lineTo(px, py) : x.moveTo(px, py);
+    }
+  }
+  x.stroke();
+
+  // ─── v13.23 SMOOTHING OVERLAY ───
+  // 5-beat centered moving average drawn on top of the raw line. When
+  // paced breathing is working, this overlay should show a clean low-
+  // frequency oscillation even if beat-to-beat jitter is noisy.
+  if (doSmooth && dd.length >= 5) {
+    const WIN = 5;
+    const half = Math.floor(WIN/2);
+    x.strokeStyle = '#ffcc00'; // amber
+    x.lineWidth = 2;
+    x.beginPath();
+    let started = false;
+    for (let i = 0; i < dd.length; i++) {
+      let sum = 0, n = 0;
+      for (let k = Math.max(0, i-half); k <= Math.min(dd.length-1, i+half); k++) {
+        sum += dd[k].ibi; n++;
+      }
+      const avg = sum/n;
+      const px = beatX(i), py = toY(avg);
+      started ? x.lineTo(px, py) : (x.moveTo(px, py), started = true);
+    }
+    x.stroke();
+  }
+
+  // ─── Raw dots (always drawn on top, with artifact coloring) ───
+  for (let i = 0; i < dd.length; i++) {
+    const px = beatX(i), py = toY(dd[i].ibi);
+    x.fillStyle = dd[i].artifact ? '#ff3366' : '#00e5ff';
+    x.beginPath(); x.arc(px, py, 3, 0, Math.PI*2); x.fill();
+  }
+}
+
+function drawPSD(){
+  const c=$('cPSD'),x=c.getContext('2d'),r=devicePixelRatio||1;
+  c.width=c.clientWidth*r;c.height=c.clientHeight*r;x.scale(r,r);
+  const W=c.clientWidth,H=c.clientHeight;x.clearRect(0,0,W,H);if(!lastPSD)return;
+  const{freqs,psd}=lastPSD;let mp=0;for(const p of psd)if(p>mp)mp=p;if(!mp)return;
+
+  // v13.13: leave room at bottom and left for axis labels.
+  const padL = 34;   // left margin for y-axis power labels
+  const padR = 6;    // right margin so last tick label isn't clipped
+  const padT = 6;    // top padding
+  const padB = 16;   // bottom margin for x-axis freq labels
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const fMin = 0.003, fMax = 0.4;
+  const fX = f => padL + ((f - fMin) / (fMax - fMin)) * plotW;
+
+  // Band shading (same as before but translated to plot area).
+  x.fillStyle = '#ffffff06';
+  x.fillRect(fX(0.003), padT, fX(0.04) - fX(0.003), plotH);
+  x.fillStyle = '#ffcc0008';
+  x.fillRect(fX(0.04), padT, fX(0.15) - fX(0.04), plotH);
+  x.fillStyle = '#00e5ff08';
+  x.fillRect(fX(0.15), padT, fX(0.4) - fX(0.15), plotH);
+
+  // Band labels inside the shaded areas.
+  x.font = '9px IBM Plex Mono';
+  x.fillStyle = '#ffffff22';
+  x.fillText('VLF', fX(0.015), padT + 10);
+  x.fillText('LF',  fX(0.085), padT + 10);
+  x.fillText('HF',  fX(0.26),  padT + 10);
+
+  // v13.13: x-axis frequency ticks. Ticks every 0.05Hz; major labels at
+  // 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40 Hz. Also include the
+  // physiological boundary frequencies 0.04 (VLF/LF) and 0.15 (LF/HF)
+  // since those are the most useful reference points.
+  x.strokeStyle = '#ffffff20';
+  x.lineWidth = 1;
+  x.fillStyle = '#ffffff60';
+  x.textAlign = 'center';
+  x.textBaseline = 'top';
+  const xTicks = [0.04, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40];
+  for (const f of xTicks) {
+    const px = fX(f);
+    x.beginPath();
+    x.moveTo(px, padT + plotH);
+    x.lineTo(px, padT + plotH + 3);
+    x.stroke();
+    x.fillText(f.toFixed(2), px, padT + plotH + 4);
+  }
+
+  // v13.13: y-axis power ticks (quartiles of max power).
+  // Since we're normalizing to max, show relative scale: 25/50/75/100%.
+  x.textAlign = 'right';
+  x.textBaseline = 'middle';
+  for (let q = 0; q <= 4; q++) {
+    const py = padT + plotH - (q / 4) * plotH;
+    x.beginPath();
+    x.moveTo(padL - 3, py);
+    x.lineTo(padL, py);
+    x.stroke();
+    x.fillText((q * 25) + '%', padL - 5, py);
+    // Faint horizontal grid line across the plot area.
+    if (q > 0 && q < 4) {
+      x.strokeStyle = '#ffffff0d';
+      x.beginPath();
+      x.moveTo(padL, py);
+      x.lineTo(padL + plotW, py);
+      x.stroke();
+      x.strokeStyle = '#ffffff20';
+    }
+  }
+
+  // Y-axis title (rotated). Small and subtle.
+  x.save();
+  x.translate(8, padT + plotH / 2);
+  x.rotate(-Math.PI / 2);
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.fillStyle = '#ffffff40';
+  x.fillText('Power (norm)', 0, 0);
+  x.restore();
+
+  // X-axis title, centered under the ticks.
+  x.textAlign = 'center';
+  x.textBaseline = 'bottom';
+  x.fillStyle = '#ffffff40';
+  x.fillText('Frequency (Hz)', padL + plotW / 2, H - 1);
+
+  // Data trace. Drawn into the plot area using the same mapping as
+  // the ticks so everything aligns.
+  x.strokeStyle = '#00e5ff';
+  x.lineWidth = 1.5;
+  x.beginPath();
+  for (let i = 0; i < freqs.length; i++) {
+    const px = fX(freqs[i]);
+    const py = padT + plotH - (psd[i] / mp) * plotH;
+    if (i) x.lineTo(px, py);
+    else x.moveTo(px, py);
+  }
+  x.stroke();
+
+  // Fill under the curve, closed back to the baseline.
+  x.lineTo(fX(freqs[freqs.length - 1]), padT + plotH);
+  x.lineTo(fX(freqs[0]),                 padT + plotH);
+  x.closePath();
+  x.fillStyle = '#00e5ff0a';
+  x.fill();
+}
+
+function updTmr(){if(!sessStart)return;const s=Math.floor((Date.now()-sessStart)/1000);$('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
+if(!navigator.bluetooth){$('conBtn').disabled=true;$('conBtn').textContent='No Web BT';dbg('evt','Web Bluetooth not available. Use Chrome/Edge.','dr')}
+</script>
+</body>
+</html>

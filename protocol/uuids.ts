@@ -35,8 +35,13 @@ export const NARBIS_CHR_CONFIG_WRITE_UUID = "129fbe56-cbd6-4f52-957b-d80834d6abf
 // Mode write (3-axis: transport / ble_profile / data_format)
 export const NARBIS_CHR_MODE_UUID = "71db6de8-5bff-480f-8db1-0d01c90d17d0";
 
-// OTA control (Nordic-style DFU; payload format owned by Stage 08)
-export const NARBIS_CHR_OTA_CONTROL_UUID = "a99ea74e-cc5b-469b-b6f8-333b3e7f9cdc";
+// OTA service — Edge-compatible 16-bit UUIDs (ported from existing Edge
+// firmware; see narbis_protocol.h). Three characteristics: control point,
+// data packets, status notifications. Page-based CRC32 transfer protocol.
+export const NARBIS_OTA_SVC_UUID16         = 0x00ff;
+export const NARBIS_OTA_CHR_CONTROL_UUID16 = 0xff01;
+export const NARBIS_OTA_CHR_DATA_UUID16    = 0xff02;
+export const NARBIS_OTA_CHR_STATUS_UUID16  = 0xff03;
 
 // Diagnostics notify (free heap, uptime, RSSI, etc.)
 export const NARBIS_CHR_DIAGNOSTICS_UUID = "31d99572-bf8a-4658-828e-4f7c138ca722";

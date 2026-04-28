@@ -69,6 +69,14 @@ esp_err_t transport_ble_send_battery(uint8_t soc_pct, uint16_t mv, uint8_t charg
 /* Re-emit the current runtime config snapshot to subscribed clients. */
 esp_err_t transport_ble_notify_config(void);
 
+/* Block until the first BLE central connects after boot, or `timeout_ms`
+ * elapses. Returns ESP_OK on connect, ESP_ERR_TIMEOUT otherwise. The
+ * latch is one-shot per boot — subsequent calls return ESP_OK
+ * immediately if a connect already happened. Used by the OTA validity
+ * self-test to commit a freshly OTA'd image after the dashboard
+ * reconnects. */
+esp_err_t transport_ble_wait_first_connect(uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

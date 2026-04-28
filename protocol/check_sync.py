@@ -54,6 +54,9 @@ ENUM_ALIASES = {
     "narbis_ble_profile_t": "NarbisBleProfile",
     "narbis_data_format_t": "NarbisDataFormat",
     "narbis_config_ack_status_t": "NarbisConfigAckStatus",
+    "narbis_ota_opcode_t": "NarbisOtaOpcode",
+    "narbis_ota_status_t": "NarbisOtaStatus",
+    "narbis_ota_error_t": "NarbisOtaError",
 }
 
 # C enum value name → TS enum member name. C convention is
@@ -65,6 +68,9 @@ ENUM_MEMBER_PREFIX_STRIP = {
     "narbis_ble_profile_t": "NARBIS_BLE_",
     "narbis_data_format_t": "NARBIS_DATA_",
     "narbis_config_ack_status_t": "NARBIS_CFG_ACK_",
+    "narbis_ota_opcode_t": "NARBIS_OTA_OP_",
+    "narbis_ota_status_t": "NARBIS_OTA_ST_",
+    "narbis_ota_error_t": "NARBIS_OTA_ERR_",
 }
 
 

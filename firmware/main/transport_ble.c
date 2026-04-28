@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "nimble/nimble_port.h"
@@ -28,6 +29,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "ble_ota.h"
 #include "ble_service_battery.h"
 #include "ble_service_dis.h"
 #include "ble_service_hrs.h"
@@ -47,6 +49,12 @@ static char g_device_name[32];
 /* Subscription state per characteristic. Indexed by ble_subscription_t. */
 static bool g_subscribed[BLE_SUB_COUNT];
 static uint16_t g_val_handles[BLE_SUB_COUNT];
+
+/* One-shot latch: given exactly once on the first successful BLE_GAP_EVENT_CONNECT
+ * after boot. Used by the OTA validity self-test (ble_ota.c) to commit a
+ * freshly OTA'd image once the dashboard reconnects. */
+static SemaphoreHandle_t g_first_connect_sem;
+static bool              g_first_connect_seen;
 
 static int gap_event_handler(struct ble_gap_event *event, void *arg);
 static void start_advertising(void);
@@ -192,6 +200,21 @@ esp_err_t transport_ble_notify_config(void)
     return ble_service_narbis_notify_config();
 }
 
+esp_err_t transport_ble_wait_first_connect(uint32_t timeout_ms)
+{
+    if (g_first_connect_sem == NULL) return ESP_ERR_INVALID_STATE;
+    if (g_first_connect_seen)        return ESP_OK;
+    TickType_t ticks = (timeout_ms == UINT32_MAX) ? portMAX_DELAY
+                                                  : pdMS_TO_TICKS(timeout_ms);
+    if (xSemaphoreTake(g_first_connect_sem, ticks) == pdTRUE) {
+        /* Re-give so subsequent waiters return immediately. The latch
+         * is one-shot per boot, but multiple consumers shouldn't deadlock. */
+        xSemaphoreGive(g_first_connect_sem);
+        return ESP_OK;
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 /* ============================================================================
  * GAP / advertising
  * ========================================================================= */
@@ -260,6 +283,12 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             g_conn_handle = event->connect.conn_handle;
             ESP_LOGI(TAG, "connected handle=%u", g_conn_handle);
+
+            /* Latch first-connect — wakes the OTA validity self-test. */
+            if (!g_first_connect_seen && g_first_connect_sem) {
+                g_first_connect_seen = true;
+                xSemaphoreGive(g_first_connect_sem);
+            }
 
             /* Negotiate higher MTU. */
             int rc = ble_gattc_exchange_mtu(g_conn_handle, NULL, NULL);
@@ -363,6 +392,7 @@ static void on_gatts_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
         ble_service_battery_on_register(ctxt);
         ble_service_hrs_on_register(ctxt);
         ble_service_narbis_on_register(ctxt);
+        ble_ota_on_register(ctxt);
     }
 }
 
@@ -376,6 +406,13 @@ esp_err_t transport_ble_init(void)
     g_mtu = 0;
     memset(g_subscribed, 0, sizeof(g_subscribed));
     memset(g_val_handles, 0, sizeof(g_val_handles));
+    if (g_first_connect_sem == NULL) {
+        g_first_connect_sem = xSemaphoreCreateBinary();
+        if (g_first_connect_sem == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    g_first_connect_seen = false;
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
@@ -402,6 +439,8 @@ esp_err_t transport_ble_init(void)
     if (rc != 0) { ESP_LOGE(TAG, "count_cfg hrs rc=%d", rc); return ESP_FAIL; }
     rc = ble_gatts_count_cfg(ble_service_narbis_svc_defs());
     if (rc != 0) { ESP_LOGE(TAG, "count_cfg narbis rc=%d", rc); return ESP_FAIL; }
+    rc = ble_gatts_count_cfg(ble_ota_svc_defs());
+    if (rc != 0) { ESP_LOGE(TAG, "count_cfg ota rc=%d", rc); return ESP_FAIL; }
 
     rc = ble_gatts_add_svcs(ble_service_dis_svc_defs());
     if (rc != 0) { ESP_LOGE(TAG, "add_svcs dis rc=%d", rc); return ESP_FAIL; }
@@ -411,6 +450,8 @@ esp_err_t transport_ble_init(void)
     if (rc != 0) { ESP_LOGE(TAG, "add_svcs hrs rc=%d", rc); return ESP_FAIL; }
     rc = ble_gatts_add_svcs(ble_service_narbis_svc_defs());
     if (rc != 0) { ESP_LOGE(TAG, "add_svcs narbis rc=%d", rc); return ESP_FAIL; }
+    rc = ble_gatts_add_svcs(ble_ota_svc_defs());
+    if (rc != 0) { ESP_LOGE(TAG, "add_svcs ota rc=%d", rc); return ESP_FAIL; }
 
     nimble_port_freertos_init(host_task);
 

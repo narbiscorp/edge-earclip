@@ -24,6 +24,9 @@ idf_component_register(
         esp_adc
         bt
         esp_app_format
+        app_update
+        esp_partition
+        bootloader_support
         narbis_protocol
         ppg_driver_max3010x
         ppg_channel

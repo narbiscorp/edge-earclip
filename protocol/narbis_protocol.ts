@@ -20,8 +20,11 @@ import {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
-  NARBIS_CHR_OTA_CONTROL_UUID,
   NARBIS_CHR_DIAGNOSTICS_UUID,
+  NARBIS_OTA_SVC_UUID16,
+  NARBIS_OTA_CHR_CONTROL_UUID16,
+  NARBIS_OTA_CHR_DATA_UUID16,
+  NARBIS_OTA_CHR_STATUS_UUID16,
 } from "./uuids";
 
 export {
@@ -33,8 +36,11 @@ export {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
-  NARBIS_CHR_OTA_CONTROL_UUID,
   NARBIS_CHR_DIAGNOSTICS_UUID,
+  NARBIS_OTA_SVC_UUID16,
+  NARBIS_OTA_CHR_CONTROL_UUID16,
+  NARBIS_OTA_CHR_DATA_UUID16,
+  NARBIS_OTA_CHR_STATUS_UUID16,
 };
 
 // =============================================================
@@ -89,6 +95,44 @@ export enum NarbisConfigAckStatus {
   UNKNOWN_FIELD = 2,
   REQUIRES_REBOOT = 3,
 }
+
+// OTA control-point opcodes (byte 0 of a 2-byte write to OTA control char).
+// Values match the Edge firmware byte-for-byte.
+export enum NarbisOtaOpcode {
+  START         = 0xa8,
+  FINISH        = 0xa9,
+  CANCEL        = 0xaa,
+  PAGE_CONFIRM  = 0xad,
+}
+
+// OTA status notification codes (byte 0 of a notify on OTA status char).
+export enum NarbisOtaStatus {
+  READY         = 0x01,
+  PROGRESS      = 0x02,
+  SUCCESS       = 0x03,
+  ERROR         = 0x04,
+  CANCELLED     = 0x05,
+  PAGE_CRC      = 0x06,
+  PAGE_OK       = 0x07,
+  PAGE_RESEND   = 0x08,
+}
+
+// OTA error codes (byte 1 of a NarbisOtaStatus.ERROR notification).
+// 0x01–0x05 match Edge; 0x06–0x08 are earclip additions.
+export enum NarbisOtaError {
+  BEGIN          = 0x01,
+  WRITE          = 0x02,
+  END            = 0x03,
+  NOT_IN_OTA     = 0x04,
+  NO_PARTITION   = 0x05,
+  LOW_BATTERY    = 0x06,
+  CHIP_MISMATCH  = 0x07,
+  ALREADY_IN_OTA = 0x08,
+}
+
+// OTA wire constants.
+export const NARBIS_OTA_PAGE_SIZE  = 4096;
+export const NARBIS_OTA_CHUNK_SIZE = 244;
 
 // Beat-event flag bitmask (mirrors NARBIS_BEAT_FLAG_*).
 export const NARBIS_BEAT_FLAG_ARTIFACT = 0x01;

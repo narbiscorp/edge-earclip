@@ -150,6 +150,12 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_service_hrs_init());
     ESP_ERROR_CHECK(ble_service_narbis_init());
     ESP_ERROR_CHECK(ble_ota_init());
+    /* If we're running from a freshly-OTA'd partition that hasn't been
+     * marked valid yet, this kicks off a one-shot task that waits for
+     * the dashboard to reconnect and then commits the image. Times out
+     * silently (the bootloader rolls back on the next reset) when the
+     * running partition is the factory image or already validated. */
+    (void)ble_ota_validity_selftest_kickoff();
     ESP_ERROR_CHECK(diagnostics_init());
 
     ESP_ERROR_CHECK(ppg_channel_init());

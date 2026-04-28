@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EDGE OTA Updater</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#060810;--surface:#0d1017;--surface-2:#141820;--surface-3:#1a1f2a;--border:#1e2433;--border-h:#2a3348;--border-a:#4a7cff;--text:#e4e8f1;--t2:#a0a8bf;--t3:#5c6480;--t4:#3a4058;--acc:#4a7cff;--abg:rgba(74,124,255,0.08);--abg2:rgba(74,124,255,0.15);--grn:#22c55e;--gbg:rgba(34,197,94,0.08);--gbg2:rgba(34,197,94,0.15);--amb:#f59e0b;--ambg:rgba(245,158,11,0.08);--red:#ef4444;--rbg:rgba(239,68,68,0.08);--rbg2:rgba(239,68,68,0.15);--mono:'JetBrains Mono',monospace;--sans:'Outfit',system-ui,sans-serif}
+  *{margin:0;padding:0;box-sizing:border-box}html{-webkit-font-smoothing:antialiased}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh}
+  body::after{content:'';position:fixed;inset:0;background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");pointer-events:none;z-index:0}
+  .app{position:relative;z-index:1;max-width:620px;margin:0 auto;padding:48px 20px 100px}
+  .hdr{margin-bottom:40px}.hdr-row{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .hdr-icon{width:36px;height:36px;background:var(--abg2);border:1px solid rgba(74,124,255,0.18);border-radius:10px;display:flex;align-items:center;justify-content:center}.hdr-icon svg{color:var(--acc)}
+  .hdr h1{font-size:24px;font-weight:700;letter-spacing:-0.03em}.hdr-sub{color:var(--t3);font-size:14px;line-height:1.6;max-width:460px}
+  .hdr-sub code{background:var(--surface-2);padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:12px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:12px;transition:border-color .3s,box-shadow .3s}
+  .card.gl-b{border-color:var(--border-a);box-shadow:0 0 40px -10px rgba(74,124,255,.2)}.card.gl-g{border-color:var(--grn);box-shadow:0 0 40px -10px rgba(34,197,94,.2)}.card.gl-r{border-color:var(--red);box-shadow:0 0 40px -10px rgba(239,68,68,.2)}
+  .card-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .sn{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--t4);background:var(--surface-2);width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .3s}.sn.ok{color:var(--grn);background:var(--gbg)}
+  .ct{font-size:14px;font-weight:600;letter-spacing:-0.01em}
+  .btn{font-family:var(--sans);font-size:13px;font-weight:600;padding:10px 20px;border-radius:8px;border:none;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.btn:disabled{opacity:.3;cursor:not-allowed}
+  .btn-p{background:var(--acc);color:#fff;box-shadow:0 1px 12px rgba(74,124,255,.25)}.btn-p:hover:not(:disabled){background:#5d8bff;transform:translateY(-1px)}
+  .btn-g{background:var(--surface-2);color:var(--t2);border:1px solid var(--border)}.btn-g:hover:not(:disabled){border-color:var(--border-h);color:var(--text)}
+  .btn-d{background:var(--rbg);color:var(--red);border:1px solid rgba(239,68,68,.15)}.btn-d:hover:not(:disabled){background:var(--rbg2)}
+  .btn-s{background:none;color:var(--t3);border:none;font-size:12px;padding:6px 10px;font-family:var(--mono);border-radius:4px}.btn-s:hover{color:var(--acc);background:var(--abg)}
+  .btn-row{display:flex;gap:8px;flex-wrap:wrap}
+  .conn-row{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--t3);font-family:var(--mono)}
+  .cdot{width:7px;height:7px;border-radius:50%;background:var(--t4);flex-shrink:0;transition:all .3s}.cdot.on{background:var(--grn);box-shadow:0 0 6px rgba(34,197,94,.5)}
+  .rel-section{margin-bottom:0}.rel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .rel-label{font-size:12px;font-weight:600;color:var(--t2);text-transform:uppercase;letter-spacing:.06em}
+  .rel-list{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  .ri{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s}
+  .ri:hover{border-color:var(--border-h);background:var(--surface-3)}.ri.sel{border-color:var(--acc);background:var(--abg)}
+  .ri-radio{width:16px;height:16px;border-radius:50%;border:2px solid var(--t4);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s}
+  .ri.sel .ri-radio{border-color:var(--acc)}.ri.sel .ri-radio::after{content:'';width:8px;height:8px;border-radius:50%;background:var(--acc)}
+  .ri-info{flex:1;min-width:0}.ri-name{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}
+  .ri-tag{font-family:var(--mono);font-size:10px;color:var(--acc);background:var(--abg2);padding:2px 7px;border-radius:4px;font-weight:600}.ri-tag.latest{color:var(--grn);background:var(--gbg2)}
+  .ri-meta{font-size:11px;color:var(--t3);margin-top:3px;font-family:var(--mono)}.ri-sz{font-size:11px;color:var(--t3);font-family:var(--mono);flex-shrink:0}
+  .ri-ago{color:var(--acc);opacity:.85}
+  .rel-more{display:block;width:100%;margin-top:8px;padding:9px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--t2);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s}
+  .rel-more:hover{border-color:var(--border-h);color:var(--acc);background:var(--surface-3)}
+  .rel-msg{padding:20px;text-align:center;font-size:13px;color:var(--t3);background:var(--surface-2);border-radius:8px;line-height:1.6}.rel-msg.warn{color:var(--amb)}
+  .drop-prompt{margin-top:12px;padding:12px 16px;background:var(--abg);border:1px solid rgba(74,124,255,.15);border-radius:8px;font-size:13px;color:var(--acc);text-align:center;line-height:1.5;animation:fu .25s ease}
+  .drop-prompt span{color:var(--t2);font-size:12px;display:block;margin-top:4px}
+  .dz{border:1.5px dashed var(--border);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:all .15s;position:relative;margin-top:12px}
+  .dz:hover,.dz.over{border-color:var(--acc);background:var(--abg)}
+  .dz.pulse{border-color:var(--acc);animation:dzp 1s ease-in-out 3}
+  @keyframes dzp{0%,100%{border-color:var(--acc);background:transparent}50%{border-color:var(--grn);background:rgba(34,197,94,0.05)}}
+  .dz input{position:absolute;inset:0;opacity:0;cursor:pointer}.dz-label{font-size:13px;color:var(--t3)}.dz-sub{font-size:11px;color:var(--t4);margin-top:4px}
+  .fi{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);padding:10px 14px;border-radius:8px;margin-top:10px}
+  .fi-body{flex:1}.fi-name{font-family:var(--mono);font-size:12px;font-weight:500}.fi-size{font-size:11px;color:var(--t3)}
+  .fi-x{background:none;border:none;color:var(--t4);cursor:pointer;font-size:16px;padding:4px;line-height:1;border-radius:4px}.fi-x:hover{color:var(--red);background:var(--rbg)}
+  .fi-src{font-family:var(--mono);font-size:10px;color:var(--acc);background:var(--abg);padding:1px 6px;border-radius:3px;margin-left:6px}
+  .prog{margin-top:14px}.prog-top{display:flex;justify-content:space-between;margin-bottom:6px}.prog-lbl{font-size:12px;color:var(--t3)}.prog-pct{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--acc)}
+  .prog-bar{height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden}.prog-fill{height:100%;background:linear-gradient(90deg,var(--acc),#6a9bff);border-radius:3px;transition:width .3s}.prog-fill.done{background:linear-gradient(90deg,var(--grn),#4ade80)}
+  .prog-eta{text-align:center;margin-top:10px;font-family:var(--mono);font-size:18px;font-weight:600;color:var(--acc)}.prog-eta.done{color:var(--grn)}
+  .prog-stats{display:flex;justify-content:center;gap:24px;margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t4)}.prog-stats span{color:var(--t3)}
+  .prog-detail{text-align:center;margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--t4)}
+  .ptd{margin-top:14px}.pt-bar{display:flex;height:24px;border-radius:4px;overflow:hidden;border:1px solid var(--border);font-family:var(--mono);font-size:8px;font-weight:600}
+  .pt-s{display:flex;align-items:center;justify-content:center;color:var(--t4);transition:all .3s}
+  .pt-nvs{background:var(--surface-2);flex:16}.pt-od{background:var(--surface-3);flex:8}.pt-phy{background:var(--surface-2);flex:4}
+  .pt-0{background:#0c1a3d;flex:1536;border-right:1px solid var(--border)}.pt-1{background:#0c1a3d;flex:1536}
+  .pt-0.writing,.pt-1.writing{background:var(--ambg);color:var(--amb);animation:wp 1.2s ease-in-out infinite}
+  @keyframes wp{0%,100%{opacity:1}50%{opacity:.5}}
+  .pt-leg{display:flex;gap:12px;margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--t4)}
+  .banner{padding:12px 16px;border-radius:8px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:8px;margin-bottom:12px;animation:fu .25s ease}
+  @keyframes fu{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+  .banner.ok{background:var(--gbg);color:var(--grn);border:1px solid rgba(34,197,94,.15)}.banner.err{background:var(--rbg);color:var(--red);border:1px solid rgba(239,68,68,.15)}
+  .log-card{margin-top:24px}.log-head{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+  .log-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+  .log-n{font-family:var(--mono);font-size:10px;background:var(--surface-2);color:var(--t4);padding:2px 7px;border-radius:8px}
+  .log-chev{color:var(--t4);font-size:12px;transition:transform .2s}.log-chev.open{transform:rotate(180deg)}
+  .log-body{margin-top:12px;max-height:260px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.7;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  .le{padding:1px 0;display:flex;gap:8px}.le-t{color:var(--t4);flex-shrink:0}.le-m{color:var(--t3)}.le-m.i{color:var(--acc)}.le-m.s{color:var(--grn)}.le-m.e{color:var(--red)}.le-m.w{color:var(--amb)}
+  .bw{background:var(--ambg);border:1px solid rgba(245,158,11,.15);color:var(--amb);padding:14px 18px;border-radius:10px;margin-bottom:20px;font-size:13px;line-height:1.6}.bw a{color:var(--acc);text-decoration:underline}
+  @media(max-width:480px){.app{padding:28px 14px 60px}.hdr h1{font-size:20px}.btn{padding:9px 14px;font-size:12px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="hdr-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+      <h1>EDGE OTA Updater</h1>
+    </div>
+    <p class="hdr-sub">Update Smart Glasses firmware over Bluetooth. Select a release, then drop the downloaded file to flash.</p>
+  </div>
+  <div id="bw-slot"></div>
+  <div id="banner-slot"></div>
+  <div class="card" id="c-fw">
+    <div class="card-head"><div class="sn" id="s1">1</div><div class="ct">Select Firmware</div></div>
+    <div class="rel-section">
+      <div class="rel-header"><span class="rel-label">Firmware Releases</span><button class="btn-s" onclick="fetchReleases()">&#x21bb; refresh</button></div>
+      <div id="rel-list"><div class="rel-msg">Loading releases&hellip;</div></div>
+      <div id="rel-more-slot"></div>
+    </div>
+    <div id="drop-prompt"></div>
+    <div class="dz" id="dz">
+      <input type="file" id="fi" accept=".bin" onchange="pickFile(this.files[0])">
+      <div class="dz-label">Drop downloaded .bin file here or click to browse</div>
+      <div class="dz-sub">ESP32_Ble.bin &middot; Max 1.5 MB</div>
+    </div>
+    <div id="fi-slot"></div>
+  </div>
+  <div class="card" id="c-conn">
+    <div class="card-head"><div class="sn" id="s2">2</div><div class="ct">Connect to Glasses</div></div>
+    <div class="btn-row">
+      <button class="btn btn-p" id="b-conn" onclick="doConnect()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>Scan &amp; Connect</button>
+      <button class="btn btn-g" id="b-disc" onclick="doDisconnect()" disabled>Disconnect</button>
+    </div>
+    <div class="conn-row"><div class="cdot" id="cdot"></div><span id="clbl">Not connected</span></div>
+  </div>
+  <div class="card" id="c-flash">
+    <div class="card-head"><div class="sn" id="s3">3</div><div class="ct">Flash Firmware</div></div>
+    <div class="btn-row">
+      <button class="btn btn-p" id="b-flash" onclick="doFlash()" disabled><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Start OTA Update</button>
+      <button class="btn btn-d" id="b-cancel" onclick="doCancel()" disabled>Cancel</button>
+    </div>
+    <div id="prog-slot"></div>
+    <div class="ptd">
+      <div class="pt-bar"><div class="pt-s pt-nvs">nvs</div><div class="pt-s pt-od"></div><div class="pt-s pt-phy"></div><div class="pt-s pt-0" id="pt0">ota_0</div><div class="pt-s pt-1" id="pt1">ota_1</div></div>
+      <div class="pt-leg"><span>4 MB flash</span><span>&middot;</span><span>1.5 MB / slot</span></div>
+    </div>
+  </div>
+  <div class="card log-card">
+    <div class="log-head" onclick="toggleLog()"><div class="log-title">Console <span class="log-n" id="log-n">0</span></div><span class="log-chev" id="log-chev">&#x25BC;</span></div>
+    <div class="log-body" id="log-body" style="display:none"></div>
+  </div>
+</div>
+<a id="dl-link" style="display:none" download></a>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════════════
+const GH_OWNER='narbiscorp',GH_REPO='edge-firmware',BIN_NAME='ESP32_Ble.bin';
+
+// BLE UUIDs
+const SVC=0x00FF,C_CTRL=0xFF01,C_DATA=0xFF02,C_STAT=0xFF03;
+
+// OTA commands (sent to 0xFF01, all 2 bytes)
+const CMD_START=0xA8, CMD_FINISH=0xA9, CMD_CANCEL=0xAA;
+const CMD_PAGE_CONFIRM=0xAD;  // [0xAD, 0x01]=commit, [0xAD, 0x00]=resend
+
+// OTA status notifications (received from 0xFF03)
+const S_RDY=0x01, S_OK=0x03, S_ERR=0x04, S_CXL=0x05;
+const S_PAGE_CRC=0x06, S_PAGE_OK=0x07, S_PAGE_RESEND=0x08;
+
+// Transfer parameters
+const CHUNK_SIZE = 244;       // BLE MTU-safe chunk
+const PAGE_SIZE  = 4096;      // Firmware page buffer size
+const MAX_RETRIES = 3;        // Max retries per page
+
+const ERRS={1:'OTA begin failed',2:'Flash write failed',3:'OTA finalize failed',4:'Not in OTA mode',5:'No update partition'};
+
+// ═══════════════════════════════════════════════════════════════════
+// CRC32 (matches ESP-IDF esp_crc32_le with polynomial 0xEDB88320)
+// ═══════════════════════════════════════════════════════════════════
+const crcTable = new Uint32Array(256);
+for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);crcTable[i]=c;}
+function crc32(data){let crc=0xFFFFFFFF;for(let i=0;i<data.length;i++)crc=crcTable[(crc^data[i])&0xFF]^(crc>>>8);return(crc^0xFFFFFFFF)>>>0;}
+
+// ═══════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════
+let dev=null,srv=null,svc_=null,cC=null,cD=null,cS=null;
+let fw=null,fwN='',fwSrc='',flashing=false,cancelled=false,t0=0,logV=false;
+let oRes=null,oRej=null;       // For OTA ready/success promises
+let pageRes=null,pageRej=null; // For page CRC/confirm promises
+let pageRetries=0, totalRetries=0;
+
+if(!navigator.bluetooth){$('bw-slot').innerHTML='<div class="bw">&#x26A0; Web Bluetooth not available. Use <b>Chrome</b> or <b>Edge</b> on desktop/Android. On iOS try <a href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055">Bluefy</a>.</div>';$('b-conn').disabled=true;}
+function $(id){return document.getElementById(id)}
+
+// ═══════════════════════════════════════════════════════════════════
+// GITHUB RELEASES
+// ═══════════════════════════════════════════════════════════════════
+let allReleases=[];         // sorted array of {rel, asset} — newest first
+const INITIAL_SHOW=5;       // how many to show initially
+let shownCount=0;
+
+// Relative-time formatter: "2d 4h ago", "3m 20s ago", "just now"
+function relTime(iso){
+  const then=new Date(iso).getTime();
+  if(!isFinite(then))return '';
+  let s=Math.max(0,Math.floor((Date.now()-then)/1000));
+  if(s<5)return 'just now';
+  const d=Math.floor(s/86400);s-=d*86400;
+  const h=Math.floor(s/3600);s-=h*3600;
+  const m=Math.floor(s/60);s-=m*60;
+  const parts=[];
+  if(d)parts.push(d+'d');
+  if(h)parts.push(h+'h');
+  if(!d && m)parts.push(m+'m');
+  if(!d && !h && s)parts.push(s+'s');
+  return (parts.join(' ')||'0s')+' ago';
+}
+
+async function fetchReleases(){
+  const el=$('rel-list');el.innerHTML='<div class="rel-msg">Loading releases&hellip;</div>';
+  $('rel-more-slot').innerHTML='';
+  try{
+    const r=await fetch(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases`);
+    if(!r.ok)throw new Error(`GitHub ${r.status}`);
+    const releases=await r.json();
+    const valid=releases.filter(x=>x.assets.some(a=>a.name===BIN_NAME));
+    if(!valid.length){el.innerHTML='<div class="rel-msg">No firmware releases yet.</div>';log('No releases','w');return;}
+
+    // Sort by published_at DESC (newest first). Falls back to created_at,
+    // then tag_name. GitHub's default order is not reliable for "latest".
+    valid.sort((a,b)=>{
+      const ta=new Date(a.published_at||a.created_at||0).getTime();
+      const tb=new Date(b.published_at||b.created_at||0).getTime();
+      if(tb!==ta)return tb-ta;
+      return (b.tag_name||'').localeCompare(a.tag_name||'',undefined,{numeric:true});
+    });
+
+    allReleases=valid.map(rel=>({rel, asset:rel.assets.find(a=>a.name===BIN_NAME)}));
+    shownCount=0;
+    el.innerHTML='';
+    renderMoreReleases(INITIAL_SHOW);
+    log(`Loaded ${valid.length} release(s)`,'s');
+  }catch(e){el.innerHTML=`<div class="rel-msg warn">&#x26A0; ${esc(e.message)}</div>`;log(`Releases: ${e.message}`,'e');}
+}
+
+function renderMoreReleases(n){
+  const el=$('rel-list');
+  const end=Math.min(shownCount+n, allReleases.length);
+  for(let i=shownCount;i<end;i++){
+    const {rel, asset}=allReleases[i];
+    const kb=(asset.size/1024).toFixed(1);
+    const dt=new Date(rel.published_at).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',timeZone:'America/Los_Angeles'});
+    const rt=relTime(rel.published_at);
+    const latest=i===0;
+    const d=document.createElement('div');d.className='ri';
+    d.innerHTML=`<div class="ri-radio"></div><div class="ri-info"><div class="ri-name">${esc(rel.name||rel.tag_name)} <span class="ri-tag${latest?' latest':''}">${latest?'latest':esc(rel.tag_name)}</span></div><div class="ri-meta">${dt} &middot; <span class="ri-ago">${rt}</span></div></div><div class="ri-sz">${kb} KB</div>`;
+    d.onclick=()=>selRelease(d,rel,asset);
+    el.appendChild(d);
+  }
+  shownCount=end;
+
+  // Render or clear the Load More button
+  const moreSlot=$('rel-more-slot');
+  const remaining=allReleases.length-shownCount;
+  if(remaining>0){
+    moreSlot.innerHTML=`<button class="btn-s rel-more" onclick="renderMoreReleases(${INITIAL_SHOW})">&#x25BC; load more (${remaining} older)</button>`;
+  }else{
+    moreSlot.innerHTML='';
+  }
+}
+
+function selRelease(el,rel,asset){
+  document.querySelectorAll('.ri').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
+  const link=$('dl-link');link.href=asset.browser_download_url;link.download=asset.name;link.click();
+  log(`Downloading ${rel.tag_name} / ${asset.name}…`,'i');
+  $('drop-prompt').innerHTML=`<div class="drop-prompt">&#x2B07; <b>${esc(asset.name)}</b> is downloading. Drop it below when ready.<span>${(asset.size/1024).toFixed(0)} KB &middot; ${esc(rel.tag_name)}</span></div>`;
+  const dz=$('dz');dz.classList.add('pulse');setTimeout(()=>dz.classList.remove('pulse'),3500);
+}
+
+function showFI(name,size,src){
+  if(!name){$('fi-slot').innerHTML='';return;}
+  $('fi-slot').innerHTML=`<div class="fi"><div style="font-size:16px">&#x26A1;</div><div class="fi-body"><div class="fi-name">${esc(name)}<span class="fi-src">${src}</span></div><div class="fi-size">${(size/1024).toFixed(1)} KB</div></div><button class="fi-x" onclick="clearFW()">&times;</button></div>`;
+}
+
+const dz=$('dz');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('over')});
+dz.addEventListener('dragleave',()=>dz.classList.remove('over'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('over');if(e.dataTransfer.files.length)pickFile(e.dataTransfer.files[0])});
+function pickFile(f){
+  if(!f)return;if(!f.name.endsWith('.bin')){log('Not a .bin','w');return;}
+  if(f.size>1536*1024){log('Too large','e');showBanner('Exceeds 1.5 MB slot','err');return;}
+  const rd=new FileReader();
+  rd.onload=()=>{fw=new Uint8Array(rd.result);fwN=f.name;fwSrc='local';showFI(f.name,f.size,'Local');dz.style.display='none';$('drop-prompt').innerHTML='';$('s1').className='sn ok';log(`Loaded ${f.name} — ${fw.length.toLocaleString()} bytes`,'s');syncBtn();};
+  rd.readAsArrayBuffer(f);
+}
+function clearFW(){fw=null;fwN='';fwSrc='';$('fi-slot').innerHTML='';$('drop-prompt').innerHTML='';dz.style.display='';$('fi').value='';$('s1').className='sn';document.querySelectorAll('.ri').forEach(x=>x.classList.remove('sel'));syncBtn();}
+
+// ═══════════════════════════════════════════════════════════════════
+// BLE CONNECTION
+// ───────────────────────────────────────────────────────────────────
+// v13.1 (2026-04-16) — OTA begin hang fix + diagnostics
+//   • 0xA8 write changed from writeValue (WriteWithResponse) to
+//     writeValueWithoutResponse. Previously the WriteWithResponse ACK
+//     was hanging 5+ seconds while the firmware's OTA task executed
+//     esp_ota_begin(OTA_SIZE_UNKNOWN), which erases the entire 1.5MB
+//     OTA partition (~19s worst case on ESP32). ACK round-trip tripped
+//     the phone's supervision timeout before completing. The controller
+//     app uses writeValueWithoutResponse throughout and is reliable
+//     against the same firmware — this change aligns with that pattern.
+//   • OTA_STATUS_READY wait timeout: 15s -> 30s to cover full-partition
+//     erase worst case (384 sectors × ~50ms = ~19s).
+//   • Diagnostic logs added around 0xA8 so next failure gives per-step
+//     timings in the console.
+//   • gattserverdisconnected listener registered immediately after
+//     requestDevice (was after discovery), closing a small window where
+//     mid-handshake disconnects fired into the void.
+//   • startNotifications() moved inside robustConnectAndDiscover() retry
+//     loop, so a failed CCCD subscribe (e.g. stale state after ESP32
+//     reboot) triggers a full retry instead of leaving caller in a bad
+//     state. Only 0xAD page confirm, 0xA9 finish, and 0xAA cancel still
+//     use writeValue (WriteWithResponse) — they're fast-path or
+//     terminal, low risk of hang.
+// v13 — BLE connection reliability pass (retry loop, settle delay,
+//   cleanup between attempts, exponential backoff)
+// v12 — previous
+// ═══════════════════════════════════════════════════════════════════
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// v13: robust connect with retry + cleanup + post-connect settle.
+async function robustConnectAndDiscover(maxAttempts=4){
+  // User gesture — device picker only fires once.
+  const device=await navigator.bluetooth.requestDevice({
+    filters:[{name:'Smart_Glasses'},{name:'Narbis_Edge'}],
+    optionalServices:[SVC]
+  });
+  // v13.1: register disconnect handler IMMEDIATELY so any mid-handshake
+  // teardown is observed (previously registered after discovery, leaving
+  // a small window where disconnects would fire into the void).
+  device.addEventListener('gattserverdisconnected',onDC);
+  let lastErr;
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+    try{
+      // Clean slate between attempts — flush any half-open state.
+      if(device.gatt.connected){try{device.gatt.disconnect();}catch(_){}await sleep(200);}
+      const server=await device.gatt.connect();
+      // Settle delay — critical on Android Chrome to avoid GATT errors
+      // where service discovery fires before the link is fully ready.
+      await sleep(150);
+      const service=await server.getPrimaryService(SVC);
+      const ctrl=await service.getCharacteristic(C_CTRL);
+      const data=await service.getCharacteristic(C_DATA);
+      const stat=await service.getCharacteristic(C_STAT);
+      // v13.1: subscribe to notifications INSIDE the retry loop so a
+      // failed subscribe (e.g. stale CCCD state after ESP32 reboot)
+      // triggers a full retry instead of leaving the caller in a bad state.
+      await stat.startNotifications();
+      return {device,server,service,ctrl,data,stat};
+    }catch(e){
+      lastErr=e;
+      log(`Attempt ${attempt}/${maxAttempts} failed: ${e.message}`,'w');
+      try{if(device.gatt.connected)device.gatt.disconnect();}catch(_){}
+      if(attempt<maxAttempts)await sleep(600*attempt);
+    }
+  }
+  throw new Error(`Connect failed after ${maxAttempts} attempts: ${lastErr?.message||'unknown'}`);
+}
+
+async function doConnect(){
+  clearBanner();
+  try{
+    log('Scanning…','i');
+    // v13: routed through robustConnectAndDiscover() instead of a
+    // single-shot handshake chain. See changelog above.
+    const r=await robustConnectAndDiscover(4);
+    dev=r.device; srv=r.server; svc_=r.service;
+    cC=r.ctrl; cD=r.data; cS=r.stat;
+    log(`Found: ${dev.name}`,'i');
+    // Notifications subscribed inside robustConnectAndDiscover() as of v13.1
+    cS.addEventListener('characteristicvaluechanged',onNotify);
+    log('Connected — 0xFF01/02/03 ready','s');
+    setConn(true,dev.name);
+  }
+  catch(e){if(e.name==='NotFoundError')log('Cancelled','w');else{log(`Failed: ${e.message}`,'e');showBanner(`Connect: ${e.message}`,'err');}}
+}
+function onDC(){log('Disconnected','w');setConn(false);cC=cD=cS=svc_=srv=null;if(flashing&&!cancelled){showBanner('Disconnected during OTA','err');flashing=false;}}
+function doDisconnect(){if(dev?.gatt.connected){dev.gatt.disconnect();log('Disconnected','i');}}
+function setConn(on,name){$('cdot').className='cdot'+(on?' on':'');$('clbl').textContent=on?`Connected: ${name}`:'Not connected';$('b-conn').disabled=on;$('b-disc').disabled=!on;$('c-conn').className='card'+(on?' gl-g':'');$('s2').className=on?'sn ok':'sn';if(!on)$('s3').className='sn';syncBtn();}
+function syncBtn(){$('b-flash').disabled=!(dev?.gatt.connected&&fw&&!flashing)}
+
+// ═══════════════════════════════════════════════════════════════════
+// BLE NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════
+function onNotify(ev){
+  const v=new Uint8Array(ev.target.value.buffer);
+  const code=v[0];
+
+  switch(code){
+    case S_RDY:
+      log('OTA ready','s');
+      oRes?.('ready');
+      break;
+
+    case S_OK:
+      log('SUCCESS — rebooting','s');
+      showBanner('Firmware updated! Rebooting.','ok');
+      flashing=false;$('b-cancel').disabled=true;
+      $('c-flash').className='card gl-g';$('s3').className='sn ok';rPT();
+      oRes?.('ok');
+      break;
+
+    case S_ERR:{
+      const c=v[1]||0,m=ERRS[c]||`0x${c.toString(16)}`;
+      log(`ERROR: ${m}`,'e');showBanner(`OTA Error: ${m}`,'err');
+      flashing=false;$('b-cancel').disabled=true;$('c-flash').className='card gl-r';rPT();
+      oRej?.(new Error(m));
+      pageRej?.(new Error(m));
+      break;}
+
+    case S_CXL:
+      log('Cancelled','w');flashing=false;$('b-cancel').disabled=true;$('c-flash').className='card';rPT();
+      break;
+
+    case S_PAGE_CRC:{
+      // [0x06, page_hi, page_lo, crc3, crc2, crc1, crc0]
+      if(v.length>=7){
+        const pageNum=(v[1]<<8)|v[2];
+        const deviceCrc=((v[3]<<24)|(v[4]<<16)|(v[5]<<8)|v[6])>>>0;
+        pageRes?.({type:'crc', pageNum, crc:deviceCrc});
+      }
+      break;}
+
+    case S_PAGE_OK:{
+      // [0x07, page_hi, page_lo]
+      const pageNum=v.length>=3?(v[1]<<8)|v[2]:0;
+      log(`Page ${pageNum} committed`,'s');
+      pageRes?.({type:'ok', pageNum});
+      break;}
+
+    case S_PAGE_RESEND:{
+      // [0x08, page_hi, page_lo]
+      const pageNum=v.length>=3?(v[1]<<8)|v[2]:0;
+      log(`Page ${pageNum} resend requested`,'w');
+      pageRes?.({type:'resend', pageNum});
+      break;}
+  }
+}
+
+function rPT(){$('pt0').className='pt-s pt-0';$('pt1').className='pt-s pt-1';}
+
+// Wait for a specific page notification with timeout
+function waitForPage(timeoutMs=10000){
+  return new Promise((res,rej)=>{
+    pageRes=res;pageRej=rej;
+    setTimeout(()=>rej(new Error('Page response timeout')),timeoutMs);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OTA FLASH — Page-Based CRC Transfer
+//
+// For each 4KB page:
+//   1. Send 16 chunks via WriteWithoutResponse (fast)
+//   2. Send last chunk via WriteWithResponse (sync point)
+//   3. Wait for 0x06 notification with CRC from firmware
+//   4. Compare CRC — if match send [0xAD, 0x01], wait for 0x07
+//   5. If mismatch — send [0xAD, 0x00], wait for 0x08, retry
+//
+// Last partial page: send data then [0xA9, 0x00] finish command
+// ═══════════════════════════════════════════════════════════════════
+async function doFlash(){
+  if(!cC||!cD||!fw)return;
+  clearBanner();cancelled=false;flashing=true;totalRetries=0;
+  $('b-flash').disabled=true;$('b-cancel').disabled=false;
+  $('c-flash').className='card gl-b';$('pt1').className='pt-s pt-1 writing';
+
+  try{
+    // ── Step 1: Enter OTA mode ──
+    // v13.1: Switched 0xA8 write from writeValue (WriteWithResponse) to
+    // writeValueWithoutResponse. The WriteWithResponse ACK round-trip was
+    // hanging while the firmware's OTA task ran esp_ota_begin() with
+    // OTA_SIZE_UNKNOWN (erases entire 1.5MB partition, ~5-20s), tripping
+    // the phone's supervision timeout before ACK arrived. The controller
+    // app uses writeValueWithoutResponse throughout and is reliable.
+    // v13.1: Ready timeout bumped 15s -> 30s to accommodate worst-case
+    // full-partition erase time on the ESP32 (~384 sectors × ~50ms = 19s).
+    log('OTA begin [0xA8, 0x00]…','i');
+    const readyPromise=new Promise((r,j)=>{oRes=r;oRej=j;setTimeout(()=>j(new Error('Timeout waiting for OTA ready (>30s — partition erase stuck?)')),30000);});
+    const tBegin=Date.now();
+    await cC.writeValueWithoutResponse(new Uint8Array([CMD_START, 0x00]));
+    log(`[diag] 0xA8 sent in ${Date.now()-tBegin}ms, awaiting OTA_STATUS_READY on 0xFF03…`,'i');
+    await readyPromise;
+    log(`[diag] OTA_STATUS_READY received after ${Date.now()-tBegin}ms`,'i');
+    if(cancelled)return;
+
+    // ── Step 2: Send firmware in pages ──
+    const totalPages=Math.ceil(fw.length/PAGE_SIZE);
+    const lastPageSize=fw.length%PAGE_SIZE||PAGE_SIZE;
+    const isLastPageFull=fw.length%PAGE_SIZE===0;
+    t0=Date.now();
+
+    log(`Sending ${fw.length.toLocaleString()} bytes (${totalPages} pages, CRC verified)…`,'i');
+
+    for(let pageIdx=0;pageIdx<totalPages&&!cancelled;pageIdx++){
+      const pageStart=pageIdx*PAGE_SIZE;
+      const isLast=pageIdx===totalPages-1;
+      const thisPageSize=isLast?lastPageSize:PAGE_SIZE;
+      const pageData=fw.slice(pageStart,pageStart+thisPageSize);
+      const expectedCrc=crc32(pageData);
+
+      // Last page that isn't full (partial): just send and go to finish
+      // The firmware writes the partial buffer in ota_do_finish()
+      if(isLast && thisPageSize<PAGE_SIZE){
+        await sendPageChunks(pageData, false);
+        rProg(pageStart+thisPageSize, fw.length, pageIdx+1, totalPages);
+        log(`Last partial page ${pageIdx} sent (${thisPageSize} bytes), finishing…`,'i');
+        break;
+      }
+
+      // Full page: send, verify CRC, confirm/retry
+      let confirmed=false;
+      let retries=0;
+
+      while(!confirmed && retries<MAX_RETRIES && !cancelled){
+        // Set up listener BEFORE sending (notification can arrive during send)
+        const crcPromise=waitForPage(10000);
+
+        // Send page chunks
+        await sendPageChunks(pageData, true);
+
+        // Wait for CRC notification from firmware
+        const resp=await crcPromise;
+
+        if(resp.type==='crc'){
+          const deviceCrc=resp.crc;
+
+          if(deviceCrc===expectedCrc){
+            // CRC match — confirm page
+            const okPromise=waitForPage(10000);
+            await cC.writeValue(new Uint8Array([CMD_PAGE_CONFIRM, 0x01]));
+            const confirmResp=await okPromise;
+            if(confirmResp.type==='ok'){
+              confirmed=true;
+            } else {
+              throw new Error(`Unexpected response after confirm: ${confirmResp.type}`);
+            }
+          } else {
+            // CRC mismatch — request resend
+            retries++;
+            totalRetries++;
+            log(`Page ${pageIdx} CRC mismatch (0x${deviceCrc.toString(16)} vs 0x${expectedCrc.toString(16)}), retry ${retries}/${MAX_RETRIES}`,'w');
+            const resendPromise=waitForPage(10000);
+            await cC.writeValue(new Uint8Array([CMD_PAGE_CONFIRM, 0x00]));
+            const resendResp=await resendPromise;
+            if(resendResp.type!=='resend'){
+              throw new Error(`Unexpected response after resend request: ${resendResp.type}`);
+            }
+          }
+        } else {
+          throw new Error(`Expected page CRC, got: ${resp.type}`);
+        }
+      }
+
+      if(!confirmed && !cancelled){
+        throw new Error(`Page ${pageIdx} failed after ${MAX_RETRIES} retries`);
+      }
+
+      rProg(pageStart+thisPageSize, fw.length, pageIdx+1, totalPages);
+    }
+
+    if(cancelled)return;
+
+    const elapsed=((Date.now()-t0)/1000).toFixed(1);
+    const speed=((fw.length/1024)/((Date.now()-t0)/1000)).toFixed(1);
+    log(`Transfer done: ${elapsed}s, ${speed} KB/s${totalRetries>0?`, ${totalRetries} retries`:''}`,'s');
+
+    // ── Step 3: Finish OTA ──
+    log('OTA finish [0xA9, 0x00]…','i');
+    oRes=oRej=null;
+    const fp=new Promise((r,j)=>{oRes=r;oRej=j;setTimeout(()=>r('timeout'),15000);});
+    await cC.writeValue(new Uint8Array([CMD_FINISH, 0x00]));
+    await fp;
+
+  }catch(e){
+    if(!cancelled){log(`Failed: ${e.message}`,'e');showBanner(`OTA: ${e.message}`,'err');$('c-flash').className='card gl-r';}
+    flashing=false;$('b-cancel').disabled=true;rPT();syncBtn();
+  }
+}
+
+// Send a page's worth of chunks
+// syncLast=true: last chunk uses WriteWithResponse as sync point
+async function sendPageChunks(pageData, syncLast){
+  const totalChunks=Math.ceil(pageData.length/CHUNK_SIZE);
+  for(let i=0;i<totalChunks;i++){
+    const start=i*CHUNK_SIZE;
+    const chunk=pageData.slice(start,Math.min(start+CHUNK_SIZE,pageData.length));
+    const isLastChunk=i===totalChunks-1;
+
+    if(isLastChunk && syncLast){
+      // Sync write — confirms BLE delivery of this chunk
+      await cD.writeValue(chunk);
+    } else {
+      // Fast write — no per-chunk ACK
+      await cD.writeValueWithoutResponse(chunk);
+    }
+  }
+}
+
+async function doCancel(){
+  if(!flashing||!cC)return;cancelled=true;
+  log('Cancel [0xAA, 0x00]…','w');
+  try{await cC.writeValue(new Uint8Array([CMD_CANCEL, 0x00]))}catch{}
+  flashing=false;$('b-cancel').disabled=true;syncBtn();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PROGRESS DISPLAY
+// ═══════════════════════════════════════════════════════════════════
+function rProg(bytesSent, totalBytes, pagesComplete, totalPages){
+  const p=Math.min(100,bytesSent/totalBytes*100);
+  const elapsed=(Date.now()-t0)/1000;
+  const sp=elapsed>0?bytesSent/1024/elapsed:0;
+  const remBytes=totalBytes-bytesSent;
+  const remSec=sp>0?remBytes/1024/sp:0;
+  const dn=bytesSent>=totalBytes;
+
+  const etaMin=Math.floor(remSec/60);
+  const etaSec=Math.floor(remSec%60);
+  const etaStr=dn?'Complete':`${etaMin}:${String(etaSec).padStart(2,'0')} remaining`;
+
+  $('prog-slot').innerHTML=`<div class="prog">
+    <div class="prog-top">
+      <span class="prog-lbl">${dn?'Transfer complete':'Sending firmware…'}</span>
+      <span class="prog-pct">${p.toFixed(1)}%</span>
+    </div>
+    <div class="prog-bar"><div class="prog-fill${dn?' done':''}" style="width:${p}%"></div></div>
+    <div class="prog-eta${dn?' done':''}">${etaStr}</div>
+    <div class="prog-stats">
+      <div><span>${(bytesSent/1024).toFixed(1)}</span> / ${(totalBytes/1024).toFixed(1)} KB</div>
+      <div><span>${sp.toFixed(1)}</span> KB/s</div>
+    </div>
+    <div class="prog-detail">Page ${pagesComplete} / ${totalPages}${totalRetries>0?' &middot; '+totalRetries+' retries':''}</div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════════════════════════
+function showBanner(m,t){$('banner-slot').innerHTML=`<div class="banner ${t}">${t==='ok'?'&#x2713;':'&#x2717;'} ${esc(m)}</div>`;if(t==='ok')setTimeout(()=>$('banner-slot').innerHTML='',8000)}
+function clearBanner(){$('banner-slot').innerHTML=''}
+function log(m,l=''){const n=new Date(),ts=n.toLocaleTimeString('en-US',{hour12:false})+'.'+String(n.getMilliseconds()).padStart(3,'0');const c=$('log-body'),d=document.createElement('div');d.className='le';d.innerHTML=`<span class="le-t">${ts}</span><span class="le-m ${l}">${esc(m)}</span>`;c.appendChild(d);c.scrollTop=c.scrollHeight;$('log-n').textContent=c.children.length}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function toggleLog(){logV=!logV;$('log-body').style.display=logV?'block':'none';$('log-chev').className='log-chev'+(logV?' open':'')}
+
+// Live-update all ".ri-ago" spans every 30s so "X ago" stays fresh
+setInterval(()=>{
+  if(!allReleases.length)return;
+  const els=document.querySelectorAll('#rel-list .ri');
+  els.forEach((el,i)=>{
+    if(i>=allReleases.length)return;
+    const ago=el.querySelector('.ri-ago');
+    if(ago)ago.textContent=relTime(allReleases[i].rel.published_at);
+  });
+},30000);
+
+log('EDGE OTA Updater v13.2','i');
+log('Page-based CRC transfer (4KB pages, 0xAD confirm)');
+fetchReleases();
+</script>
+</body>
+</html>

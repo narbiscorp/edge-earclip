@@ -12,8 +12,9 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 
-#include "narbis_protocol.h"
+#include "app_state.h"
 #include "config_manager.h"
+#include "narbis_protocol.h"
 
 static const char *TAG = "transport_espnow";
 
@@ -243,6 +244,13 @@ esp_err_t transport_espnow_get_partner_info(uint8_t mac[6], const char **source)
 static esp_err_t send_packet(narbis_packet_t *pkt, uint16_t *seq_ctr)
 {
     if (!transport_up || !partner_known) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Quiesce ESP-NOW during OTA. The radio still belongs to BLE during
+     * a DFU session, but Wi-Fi/BLE coexistence is unfriendly to bursts
+     * here — and there's no point sending stale beats while we're
+     * mid-flash. app_state_current() is a single volatile read. */
+    if (app_state_current() == APP_STATE_OTA_UPDATING) {
         return ESP_ERR_INVALID_STATE;
     }
     pkt->header.device_id        = 0;
