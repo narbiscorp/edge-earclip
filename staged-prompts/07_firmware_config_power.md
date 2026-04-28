@@ -8,6 +8,16 @@ Runtime config system, mode state machine, light sleep integration, battery moni
 
 Stage 06 complete. ESP-NOW and BLE both work.
 
+## Replace stub from earlier stages
+
+**`power_mgmt_get_battery(uint16_t *mv, uint8_t *soc_pct)`** currently returns fake placeholder values (4000 mV / 80%) with an `ESP_LOGW("power_mgmt", "STUB: ...")` warning that fires every time it's called. This stage replaces the stub with a real implementation:
+- ADC read of the XIAO C6's battery voltage divider pin
+- Voltage-to-percentage conversion via a LiPo discharge curve lookup table
+- Removal of the `ESP_LOGW("STUB: ...")` line
+- Removal of the corresponding TODO.md entry
+
+Verify before completing this stage: the "STUB" warning no longer appears in UART logs after a power cycle.
+
 ## What to build
 
 1. **`firmware/main/config_manager.c/h`**:
@@ -34,12 +44,28 @@ Stage 06 complete. ESP-NOW and BLE both work.
    - Configure light sleep allowed during idle
    - `esp_pm_configure()` with appropriate config
    - PM locks to prevent sleep during BLE notification bursts
-   - Battery monitoring task (10-second interval):
-     - Read battery voltage via ADC
-     - Compute SOC% from LiPo discharge curve (lookup table)
-     - Update battery service
-     - Low-battery warning at 15%
+   - **Battery monitoring (replaces Stage 05 stub):**
+     - Read battery voltage via ADC (use the XIAO C6's battery sense pin — verify current pin from Seeed wiki)
+     - Use ADC oneshot mode with appropriate calibration (curve fitting if available)
+     - Average several samples to reduce noise
+     - Compute SOC% from LiPo discharge curve via lookup table:
+       - 4.20V → 100%
+       - 4.10V → 90%
+       - 4.00V → 75%
+       - 3.90V → 60%
+       - 3.80V → 45%
+       - 3.70V → 30%
+       - 3.60V → 15%
+       - 3.50V → 5%
+       - 3.40V → 0%
+       - Linear interpolation between points
+     - Read every 10 seconds (battery doesn't change fast)
+     - Cache last value so `power_mgmt_get_battery()` returns immediately without waiting for ADC
+     - Update battery service via `battery_service_update()`
+     - Low-battery warning (`ESP_LOGW`) at 15%
      - Hook for OTA refusal below 30%
+   - **Remove the STUB warning** added in Stage 05
+   - **Remove the TODO.md entry** for `power_mgmt_get_battery()`
 
 4. **`firmware/main/diagnostics.c/h`**:
    - Single ring buffer for all diagnostic streams
@@ -55,27 +81,35 @@ Stage 06 complete. ESP-NOW and BLE both work.
 - Light sleep with BLE active: ensure `CONFIG_PM_ENABLE`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE`, NimBLE doesn't prevent sleep
 - Wake from light sleep: ~hundreds of µs
 - Don't sleep during active BLE notifications — use `esp_pm_lock`
-- Battery curve: 4.2V=100%, 3.7V=50%, 3.4V=5% — lookup table with linear interpolation
+- Battery curve numbers above are starting points; refine with actual measurement against a fully charged and discharged cell
+- ADC has noise — average at least 8 samples per reading
 - Apply functions must be thread-safe (config write from BLE task, applied by other tasks)
+
+## TODO.md handling
+
+Before starting this stage, **read `TODO.md` at the repo root** and identify all items addressed by this stage. After implementation, remove those items from TODO.md. If new stubs are introduced, add them to TODO.md with the stage where they should be addressed.
 
 ## Success criteria
 
 - Config writes from BLE take effect within 1 second
 - Power cycle → last-active mode and config restored
-- Battery percentage tracks accurately
+- Battery percentage tracks accurately (verify with USB power meter or reference voltmeter)
+- No "STUB" warnings appear in UART logs
 - Light sleep happens — average current drops vs Stage 06
 - Power targets:
   - EDGE_ONLY: ≤9 mA average
   - HYBRID + BATCHED: ≤11 mA
   - HYBRID + LOW_LATENCY + RAW_PPG: ≤13 mA
 - Mode transitions don't lose beats
+- TODO.md no longer contains items addressed by this stage
 
 ## Do not
 
 - Add OTA logic yet (Stage 08)
 - Use deep sleep
 - Block in config apply path
+- Leave the STUB warning in place
 
 ## When done
 
-Report measured current per mode, runtime on 100 mAh battery, apply latency per parameter type.
+Report measured current per mode, runtime on 100 mAh battery, apply latency per parameter type, and confirm TODO.md was cleaned up.
