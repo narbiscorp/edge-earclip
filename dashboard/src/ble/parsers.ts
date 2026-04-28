@@ -118,3 +118,15 @@ export function parseNarbisBattery(dv: DataView): NarbisBatteryPayload {
 export function parseConfig(dv: DataView): NarbisRuntimeConfig {
   return deserializeConfig(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
 }
+
+// Diagnostic stream record format. Firmware does not yet emit structured
+// diagnostic records; this parser returns [] for any payload until the format
+// is finalized and the firmware ships emission. When that lands, decode the
+// record-type byte + per-type payload here.
+export type DiagnosticSample =
+  | { kind: 'filtered'; value: number; timestamp: number }
+  | { kind: 'peak'; amplitude: number; rejected: boolean; timestamp: number };
+
+export function parseDiagnostic(_dv: DataView, _baseTimestamp: number): DiagnosticSample[] {
+  return [];
+}

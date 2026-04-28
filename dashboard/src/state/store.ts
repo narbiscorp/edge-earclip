@@ -6,6 +6,7 @@ import {
   type NarbisRawSampleEvent,
   type NarbisSqiEvent,
   type NarbisBatteryEvent,
+  type NarbisDiagnosticEvent,
   type NarbisDisconnectedDetail,
   type NarbisErrorDetail,
 } from '../ble/narbisDevice';
@@ -20,6 +21,7 @@ import type {
   NarbisRuntimeConfig,
   NarbisRawSample,
   NarbisSqiPayload,
+  DiagnosticSample,
 } from '../ble/parsers';
 import { StreamBuffer } from './streamBuffer';
 
@@ -53,6 +55,7 @@ export interface DashboardState {
     narbisBeats: StreamBuffer<NarbisBeatEvent>;
     polarBeats: StreamBuffer<PolarBeatRecord>;
     sqi: StreamBuffer<NarbisSqiPayload>;
+    filtered: StreamBuffer<DiagnosticSample>;
   };
   lastError: string | null;
 
@@ -70,6 +73,7 @@ const buffers: DashboardState['buffers'] = {
   narbisBeats: new StreamBuffer<NarbisBeatEvent>(1200),
   polarBeats: new StreamBuffer<PolarBeatRecord>(1200),
   sqi: new StreamBuffer<NarbisSqiPayload>(600),
+  filtered: new StreamBuffer<DiagnosticSample>(6000),
 };
 
 export const useDashboardStore = create<DashboardState>((set) => ({
@@ -201,6 +205,13 @@ narbisDevice.addEventListener('batteryReceived', (e) => {
 narbisDevice.addEventListener('configChanged', (e) => {
   const cfg = (e as CustomEvent<NarbisRuntimeConfig>).detail;
   setState({ config: cfg });
+});
+
+narbisDevice.addEventListener('diagnosticReceived', (e) => {
+  const diag = (e as CustomEvent<NarbisDiagnosticEvent>).detail;
+  for (const s of diag.samples) {
+    buffers.filtered.push(s.timestamp, s);
+  }
 });
 
 polarH10.addEventListener('connected', (e) => {

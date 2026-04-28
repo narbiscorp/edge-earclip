@@ -7,6 +7,7 @@ import {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
+  NARBIS_CHR_DIAGNOSTICS_UUID,
   HEART_RATE_SERVICE,
   BATTERY_SERVICE,
   DEVICE_INFO_SERVICE,
@@ -18,12 +19,14 @@ import {
   parseNarbisBattery,
   parseBattery,
   parseConfig,
+  parseDiagnostic,
   serializeConfig,
   type NarbisIbiPayload,
   type NarbisRawPpgPayload,
   type NarbisSqiPayload,
   type NarbisBatteryPayload,
   type NarbisRuntimeConfig,
+  type DiagnosticSample,
 } from './parsers';
 
 export type NarbisStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -42,6 +45,11 @@ export interface NarbisRawSampleEvent extends NarbisRawPpgPayload {
 }
 
 export interface NarbisSqiEvent extends NarbisSqiPayload {
+  timestamp: number;
+}
+
+export interface NarbisDiagnosticEvent {
+  samples: DiagnosticSample[];
   timestamp: number;
 }
 
@@ -169,6 +177,14 @@ export class NarbisDevice extends EventTarget {
       chBatt.startNotifications(),
       chCfg.startNotifications(),
     ]);
+
+    try {
+      const chDiag = await narbisSvc.getCharacteristic(NARBIS_CHR_DIAGNOSTICS_UUID);
+      this.attach(chDiag, this.onDiagnosticNotify);
+      await chDiag.startNotifications();
+    } catch (err) {
+      this.emitError(err, 'diagnostic-svc-optional');
+    }
 
     try {
       const cfgValue = await chCfg.readValue();
@@ -322,6 +338,19 @@ export class NarbisDevice extends EventTarget {
       this.dispatch('configChanged', cfg);
     } catch (err) {
       this.emitError(err, 'config-parse');
+    }
+  };
+
+  private onDiagnosticNotify = (ev: Event): void => {
+    try {
+      const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
+      if (!dv) return;
+      const ts = Date.now();
+      const samples = parseDiagnostic(dv, ts);
+      if (samples.length === 0) return;
+      this.dispatch('diagnosticReceived', { samples, timestamp: ts } as NarbisDiagnosticEvent);
+    } catch (err) {
+      this.emitError(err, 'diagnostic-parse');
     }
   };
 

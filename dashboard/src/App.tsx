@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import ConnectionPanel from './components/ConnectionPanel';
 import SignalChart from './components/SignalChart';
+import FilteredChart from './components/FilteredChart';
 import BeatChart from './components/BeatChart';
 import MetricsChart from './components/MetricsChart';
 import ConfigPanel from './components/ConfigPanel';
@@ -7,8 +9,14 @@ import PresetBar from './components/PresetBar';
 import RecordingControls from './components/RecordingControls';
 import ReplayControls from './components/ReplayControls';
 import DebugPanel from './components/DebugPanel';
+import { metricsRunner } from './state/metricsRunner';
 
 export default function App() {
+  useEffect(() => {
+    metricsRunner.start();
+    return () => metricsRunner.stop();
+  }, []);
+
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100">
       <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
@@ -21,6 +29,7 @@ export default function App() {
       <main className="grid grid-cols-[1fr_360px] flex-1 overflow-hidden">
         <section className="flex flex-col gap-2 p-3 overflow-auto">
           <SignalChart />
+          <FilteredChart />
           <BeatChart />
           <MetricsChart />
         </section>
