@@ -20,6 +20,8 @@ import {
   NarbisDataFormat,
   NarbisConfigAckStatus,
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
+  NARBIS_DIAG_STREAM_PRE_FILTER,
+  NARBIS_DIAG_STREAM_POST_FILTER,
   NARBIS_RAW_PPG_MAX_SAMPLES,
   type NarbisPacket,
   type NarbisRuntimeConfig,
@@ -206,7 +208,7 @@ function checkConfigAck(g: GoldenLine): void {
 
 function checkConfig(g: GoldenLine): void {
   const cfg = deserializeConfig(g.bytes);
-  eq("CONFIG config_version", cfg.config_version, 1);
+  eq("CONFIG config_version", cfg.config_version, 2);
   eq("CONFIG sample_rate_hz", cfg.sample_rate_hz, 200);
   eq("CONFIG led_red_ma_x10", cfg.led_red_ma_x10, 70);
   eq("CONFIG led_ir_ma_x10", cfg.led_ir_ma_x10, 70);
@@ -234,8 +236,13 @@ function checkConfig(g: GoldenLine): void {
     "CONFIG partner_mac",
   );
   eq("CONFIG espnow_channel", cfg.espnow_channel, 1);
-  eq("CONFIG diagnostics_enabled", cfg.diagnostics_enabled, 0);
+  eq("CONFIG diagnostics_enabled", cfg.diagnostics_enabled, 1);
   eq("CONFIG light_sleep_enabled", cfg.light_sleep_enabled, 1);
+  eq(
+    "CONFIG diagnostics_mask",
+    cfg.diagnostics_mask,
+    NARBIS_DIAG_STREAM_PRE_FILTER | NARBIS_DIAG_STREAM_POST_FILTER,
+  );
   eq("CONFIG battery_low_mv", cfg.battery_low_mv, 3300);
   assertReencodeConfig("CONFIG", g.hex, cfg);
 }

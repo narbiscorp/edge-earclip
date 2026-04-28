@@ -37,4 +37,43 @@ menu "Narbis earclip"
             output is a beat event every ~1000 ms with confidence near 100
             and no ARTIFACT flag once the running median has filled.
 
+    config NARBIS_BATT_DIVIDER_PRESENT
+        bool "Battery voltage divider populated on the XIAO C6"
+        default n
+        help
+            Set to y after soldering a 1 MΩ : 1 MΩ resistor divider from
+            BAT+ → A1 (GPIO1) → GND on the XIAO ESP32-C6. While n
+            (default), power_mgmt_get_battery() returns placeholder
+            values (4000 mV / 80%) with a rate-limited STUB warning so
+            the ESP-NOW + BLE battery frames stay meaningful for
+            transport testing. See TODO.md and CLAUDE.md hardware section.
+
+    config NARBIS_BATT_ADC_GPIO
+        int "Battery sense ADC GPIO"
+        depends on NARBIS_BATT_DIVIDER_PRESENT
+        range 0 6
+        default 1
+        help
+            GPIO number wired to the battery voltage divider midpoint.
+            Must be ADC-capable on the ESP32-C6 (GPIO0..GPIO6 = ADC1).
+            Default: GPIO1 (D1 / A1).
+
+    config NARBIS_BATT_ADC_DIV_NUM
+        int "Battery divider numerator"
+        depends on NARBIS_BATT_DIVIDER_PRESENT
+        range 1 16
+        default 2
+        help
+            Divider ratio numerator. With a 1:1 divider (BAT+ → 1 MΩ →
+            A1 → 1 MΩ → GND), the pin sees half of BAT+, so the firmware
+            multiplies the ADC voltage by 2/1 = NUM/DEN.
+
+    config NARBIS_BATT_ADC_DIV_DEN
+        int "Battery divider denominator"
+        depends on NARBIS_BATT_DIVIDER_PRESENT
+        range 1 16
+        default 1
+        help
+            Divider ratio denominator. See NARBIS_BATT_ADC_DIV_NUM.
+
 endmenu

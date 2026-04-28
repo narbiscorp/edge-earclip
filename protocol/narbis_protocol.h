@@ -316,11 +316,22 @@ typedef struct __attribute__((packed)) {
     uint8_t  espnow_channel;        /* 1–13 */
 
     /* ---- power / diag ---- */
-    uint8_t  diagnostics_enabled;   /* 0/1 */
+    uint8_t  diagnostics_enabled;   /* 0/1 — master enable for diagnostics emission */
     uint8_t  light_sleep_enabled;   /* 0/1 */
-    uint8_t  reserved_pwr;          /* pad */
+    uint8_t  diagnostics_mask;      /* NARBIS_DIAG_STREAM_* bitmask; 0 = none. Repurposed
+                                     * from reserved_pwr in config_version 2. */
     uint16_t battery_low_mv;        /* below this, signal low-battery (default 3300) */
 } narbis_runtime_config_t;
+
+/* Diagnostics stream IDs — bit positions in narbis_runtime_config_t.diagnostics_mask.
+ * Each stream is independently subscribable; emission also requires the
+ * master diagnostics_enabled flag to be 1 and a NARBIS_CHR_DIAGNOSTICS
+ * subscriber. */
+#define NARBIS_DIAG_STREAM_PRE_FILTER   (1u << 0)  /* raw DC-removed PPG samples */
+#define NARBIS_DIAG_STREAM_POST_FILTER  (1u << 1)  /* bandpass-filtered samples */
+#define NARBIS_DIAG_STREAM_PEAK_CAND    (1u << 2)  /* Elgendi peak candidates pre-validator */
+#define NARBIS_DIAG_STREAM_AGC_EVENT    (1u << 3)  /* per-AGC-step LED current changes */
+#define NARBIS_DIAG_STREAM_FIFO_OCCUP   (1u << 4)  /* MAX3010x FIFO occupancy at each drain */
 
 /* =============================================================
  * Helper API (impl in narbis_protocol.c)

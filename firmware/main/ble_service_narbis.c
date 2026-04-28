@@ -76,9 +76,11 @@ static const ble_uuid128_t CHR_FACTORY_RESET_UUID = {
 
 /* ============================================================================
  * State
+ *
+ * The runtime config now lives in config_manager — this module just routes
+ * BLE characteristic writes to the right config_apply* function and reads
+ * the live snapshot via config_get().
  * ========================================================================= */
-
-static narbis_runtime_config_t g_config;
 
 static uint16_t g_h_ibi, g_h_sqi, g_h_raw, g_h_battery, g_h_config, g_h_diag;
 
@@ -88,128 +90,12 @@ static narbis_raw_ppg_payload_t g_raw_buf;
 static const uint32_t FACTORY_RESET_MAGIC = 0x454B554Eu;  /* 'NUKE' */
 
 /* ============================================================================
- * Default config (Stage 07 will load from NVS)
+ * Config accessor — delegates to config_manager.
  * ========================================================================= */
 
-static void load_default_config(narbis_runtime_config_t *c)
+const narbis_runtime_config_t *ble_service_narbis_config(void)
 {
-    memset(c, 0, sizeof(*c));
-    c->config_version = 1;
-    c->sample_rate_hz = 200;
-    c->led_red_ma_x10 = 70;
-    c->led_ir_ma_x10  = 70;
-    c->agc_enabled = 1;
-    c->agc_update_period_ms = 200;
-    c->agc_target_dc_min = 30000;
-    c->agc_target_dc_max = 100000;
-    c->agc_step_ma_x10 = 5;
-    c->bandpass_low_hz_x100 = 50;
-    c->bandpass_high_hz_x100 = 800;
-    c->elgendi_w1_ms = 111;
-    c->elgendi_w2_ms = 667;
-    c->elgendi_beta_x1000 = 20;
-    c->sqi_threshold_x100 = 50;
-    c->ibi_min_ms = 300;
-    c->ibi_max_ms = 2000;
-    c->ibi_max_delta_pct = 30;
-    c->transport_mode = NARBIS_TRANSPORT_HYBRID;
-    c->ble_profile = NARBIS_BLE_BATCHED;
-    c->data_format = NARBIS_DATA_IBI_ONLY;
-    c->ble_batch_period_ms = 500;
-    c->espnow_channel = 1;
-    c->diagnostics_enabled = 1;
-    c->light_sleep_enabled = 1;
-    c->battery_low_mv = 3300;
-}
-
-narbis_runtime_config_t *ble_service_narbis_config(void)
-{
-    return &g_config;
-}
-
-/* ============================================================================
- * Live-apply paths for config writes
- * ========================================================================= */
-
-static void apply_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t data_format)
-{
-    if (transport_mode > NARBIS_TRANSPORT_HYBRID) return;
-    if (ble_profile > NARBIS_BLE_LOW_LATENCY)     return;
-    if (data_format > NARBIS_DATA_IBI_PLUS_RAW)   return;
-
-    bool profile_changed = (g_config.ble_profile != ble_profile);
-    g_config.transport_mode = transport_mode;
-    g_config.ble_profile    = ble_profile;
-    g_config.data_format    = data_format;
-
-    if (profile_changed) {
-        ble_service_hrs_set_profile(ble_profile);
-        (void)transport_ble_set_profile(ble_profile);
-    }
-    ESP_LOGI(TAG, "mode applied transport=%u profile=%u format=%u",
-             transport_mode, ble_profile, data_format);
-}
-
-static void apply_partner_mac(const uint8_t mac[6])
-{
-    bool all_zero = true, all_ff = true;
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] != 0x00) all_zero = false;
-        if (mac[i] != 0xFF) all_ff = false;
-    }
-    if (all_zero || all_ff) {
-        ESP_LOGW(TAG, "partner MAC reject (all-zero or all-ff)");
-        return;
-    }
-    memcpy(g_config.partner_mac, mac, 6);
-    esp_err_t err = transport_espnow_set_partner(mac);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "set_partner: %s", esp_err_to_name(err));
-    }
-}
-
-/* Apply only the fields we know how to apply live. The rest land in
- * g_config and Stage 07 will wire NVS persistence + the missing apply
- * paths (DSP, AGC, sample rate). */
-static void apply_config(const narbis_runtime_config_t *new_cfg)
-{
-    apply_mode(new_cfg->transport_mode, new_cfg->ble_profile, new_cfg->data_format);
-    g_config.ble_batch_period_ms = new_cfg->ble_batch_period_ms;
-
-    if (memcmp(new_cfg->partner_mac, g_config.partner_mac, 6) != 0) {
-        bool nonzero = false;
-        for (int i = 0; i < 6; i++) {
-            if (new_cfg->partner_mac[i] != 0) { nonzero = true; break; }
-        }
-        if (nonzero) {
-            apply_partner_mac(new_cfg->partner_mac);
-        }
-    }
-
-    /* Stash the rest. apply paths land in Stage 07. */
-    g_config.led_red_ma_x10        = new_cfg->led_red_ma_x10;
-    g_config.led_ir_ma_x10         = new_cfg->led_ir_ma_x10;
-    g_config.agc_enabled           = new_cfg->agc_enabled;
-    g_config.agc_update_period_ms  = new_cfg->agc_update_period_ms;
-    g_config.agc_target_dc_min     = new_cfg->agc_target_dc_min;
-    g_config.agc_target_dc_max     = new_cfg->agc_target_dc_max;
-    g_config.agc_step_ma_x10       = new_cfg->agc_step_ma_x10;
-    g_config.bandpass_low_hz_x100  = new_cfg->bandpass_low_hz_x100;
-    g_config.bandpass_high_hz_x100 = new_cfg->bandpass_high_hz_x100;
-    g_config.elgendi_w1_ms         = new_cfg->elgendi_w1_ms;
-    g_config.elgendi_w2_ms         = new_cfg->elgendi_w2_ms;
-    g_config.elgendi_beta_x1000    = new_cfg->elgendi_beta_x1000;
-    g_config.sqi_threshold_x100    = new_cfg->sqi_threshold_x100;
-    g_config.ibi_min_ms            = new_cfg->ibi_min_ms;
-    g_config.ibi_max_ms            = new_cfg->ibi_max_ms;
-    g_config.ibi_max_delta_pct     = new_cfg->ibi_max_delta_pct;
-    g_config.espnow_channel        = new_cfg->espnow_channel;
-    g_config.diagnostics_enabled   = new_cfg->diagnostics_enabled;
-    g_config.light_sleep_enabled   = new_cfg->light_sleep_enabled;
-    g_config.battery_low_mv        = new_cfg->battery_low_mv;
-    g_config.sample_rate_hz        = new_cfg->sample_rate_hz;  /* takes effect on reboot */
-
-    (void)ble_service_narbis_notify_config();
+    return config_get();
 }
 
 /* ============================================================================
@@ -246,7 +132,7 @@ static int access_config(uint16_t conn_handle, uint16_t attr_handle,
     }
     uint8_t buf[NARBIS_CONFIG_WIRE_SIZE];
     size_t out_len = 0;
-    if (narbis_config_serialize(buf, sizeof(buf), &g_config, &out_len) != 0) {
+    if (narbis_config_serialize(buf, sizeof(buf), config_get(), &out_len) != 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }
     int rc = os_mbuf_append(ctxt->om, buf, out_len);
@@ -272,7 +158,10 @@ static int access_config_write(uint16_t conn_handle, uint16_t attr_handle,
     if (narbis_config_deserialize(buf, len, &new_cfg) != 0) {
         return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     }
-    apply_config(&new_cfg);
+    esp_err_t err = config_apply(&new_cfg);
+    if (err == ESP_ERR_INVALID_ARG)   return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    if (err == ESP_ERR_INVALID_STATE) return BLE_ATT_ERR_UNLIKELY;
+    if (err != ESP_OK)                return BLE_ATT_ERR_UNLIKELY;
     return 0;
 }
 
@@ -288,12 +177,10 @@ static int access_mode(uint16_t conn_handle, uint16_t attr_handle,
     if (read_om_to_bytes(ctxt->om, buf, sizeof(buf), &len) != 0 || len != 3) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
-    if (buf[0] > NARBIS_TRANSPORT_HYBRID ||
-        buf[1] > NARBIS_BLE_LOW_LATENCY  ||
-        buf[2] > NARBIS_DATA_IBI_PLUS_RAW) {
-        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
-    }
-    apply_mode(buf[0], buf[1], buf[2]);
+    esp_err_t err = config_apply_mode(buf[0], buf[1], buf[2]);
+    if (err == ESP_ERR_INVALID_ARG)   return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    if (err == ESP_ERR_INVALID_STATE) return BLE_ATT_ERR_UNLIKELY;
+    if (err != ESP_OK)                return BLE_ATT_ERR_UNLIKELY;
     return 0;
 }
 
@@ -309,7 +196,9 @@ static int access_pair(uint16_t conn_handle, uint16_t attr_handle,
     if (read_om_to_bytes(ctxt->om, mac, sizeof(mac), &len) != 0 || len != 6) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
-    apply_partner_mac(mac);
+    esp_err_t err = config_apply_partner_mac(mac);
+    if (err == ESP_ERR_INVALID_ARG) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    if (err != ESP_OK)              return BLE_ATT_ERR_UNLIKELY;
     return 0;
 }
 
@@ -530,7 +419,7 @@ esp_err_t ble_service_narbis_notify_config(void)
 {
     uint8_t buf[NARBIS_CONFIG_WIRE_SIZE];
     size_t out_len = 0;
-    if (narbis_config_serialize(buf, sizeof(buf), &g_config, &out_len) != 0) {
+    if (narbis_config_serialize(buf, sizeof(buf), config_get(), &out_len) != 0) {
         return ESP_FAIL;
     }
     return transport_ble_notify(BLE_SUB_NARBIS_CONFIG, buf, (uint16_t)out_len);
@@ -542,7 +431,8 @@ esp_err_t ble_service_narbis_notify_config(void)
 
 esp_err_t ble_service_narbis_init(void)
 {
-    load_default_config(&g_config);
+    /* config_manager owns the runtime config; we just initialise the
+     * raw-PPG batch state here. */
     g_raw_buf.n_samples = 0;
     return ESP_OK;
 }

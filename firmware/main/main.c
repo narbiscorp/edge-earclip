@@ -59,22 +59,6 @@ static void on_beat(const beat_event_t *e, void *ctx)
     }
 }
 
-static void battery_tick(void *arg)
-{
-    (void)arg;
-    uint16_t mv = 0;
-    uint8_t  soc = 0, charging = 0;
-    if (power_mgmt_get_battery(&mv, &soc, &charging) != ESP_OK) {
-        return;
-    }
-    esp_err_t err = transport_espnow_send_battery(soc, mv, charging);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "espnow send_battery: %s", esp_err_to_name(err));
-    }
-    (void)transport_ble_send_battery(soc, mv, charging);
-    (void)ble_service_narbis_push_battery(soc, mv, charging);
-}
-
 static void boot_log_macs(void)
 {
     uint8_t wifi_mac[6] = {0};
@@ -101,12 +85,28 @@ static void on_peak(const elgendi_peak_t *p, void *ctx)
 {
     (void)ctx;
     beat_validator_feed(p);
+
+    /* Diagnostics: peak candidate. Mask-gated inside diagnostics_push so
+     * this is a single load + branch when the stream is off. */
+    struct __attribute__((packed)) {
+        uint32_t timestamp_ms;
+        int32_t  amplitude;
+    } rec = { .timestamp_ms = p->timestamp_ms, .amplitude = p->amplitude };
+    diagnostics_push(NARBIS_DIAG_STREAM_PEAK_CAND, &rec, sizeof(rec));
 }
 
 static void on_processed(const ppg_processed_sample_t *s, void *ctx)
 {
     (void)ctx;
     elgendi_feed(s);
+
+    /* Diagnostics: pre-bandpass (post DC-removal/AGC). */
+    struct __attribute__((packed)) {
+        uint32_t timestamp_ms;
+        int32_t  ac;
+        uint32_t dc;
+    } rec = { .timestamp_ms = s->timestamp_ms, .ac = s->ac, .dc = s->dc_baseline };
+    diagnostics_push(NARBIS_DIAG_STREAM_PRE_FILTER, &rec, sizeof(rec));
 }
 
 #ifndef CONFIG_NARBIS_TEST_INJECT
@@ -137,7 +137,9 @@ void app_main(void)
     ESP_LOGI(TAG, "Narbis earclip booting v0.1.0, protocol version %d",
              NARBIS_PROTOCOL_VERSION);
 
-    ESP_ERROR_CHECK(app_state_init());
+    /* Load runtime config first so every later module that reads it sees
+     * the persisted values rather than zero. config_apply_initial() runs
+     * once everything is up. */
     ESP_ERROR_CHECK(config_manager_init());
     ESP_ERROR_CHECK(power_mgmt_init());
     ESP_ERROR_CHECK(transport_espnow_init());
@@ -166,14 +168,13 @@ void app_main(void)
     ESP_ERROR_CHECK(ppg_driver_register_sample_callback(on_ppg_sample, NULL));
 #endif
 
-    const esp_timer_create_args_t bat_args = {
-        .callback        = &battery_tick,
-        .name            = "battery_30s",
-        .dispatch_method = ESP_TIMER_TASK,
-    };
-    esp_timer_handle_t bat_timer = NULL;
-    ESP_ERROR_CHECK(esp_timer_create(&bat_args, &bat_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(bat_timer, 30ULL * 1000ULL * 1000ULL));
+    /* Push the loaded/default config into every module now that they're up. */
+    ESP_ERROR_CHECK(config_apply_initial());
+
+    /* State machine starts in IDLE, then resumes the persisted last mode
+     * (or derives one from the loaded config on first boot). */
+    ESP_ERROR_CHECK(app_state_init());
+    (void)app_state_resume_last_mode();
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

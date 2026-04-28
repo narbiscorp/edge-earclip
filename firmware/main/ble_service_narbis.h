@@ -20,9 +20,10 @@ esp_err_t ble_service_narbis_deinit(void);
 const struct ble_gatt_svc_def *ble_service_narbis_svc_defs(void);
 void ble_service_narbis_on_register(struct ble_gatt_register_ctxt *ctxt);
 
-/* Pointer to the in-memory runtime config snapshot. main.c initialises this
- * to defaults; the CONFIG_WRITE access path mutates it via apply_config(). */
-narbis_runtime_config_t *ble_service_narbis_config(void);
+/* Read-only snapshot of the runtime config. Storage and mutation live in
+ * config_manager; this is a thin pass-through retained so existing callers
+ * don't need to switch to config_get() in lockstep. */
+const narbis_runtime_config_t *ble_service_narbis_config(void);
 
 /* Notify the IBI characteristic for the given beat (subscription/profile-gated). */
 esp_err_t ble_service_narbis_push_ibi(const beat_event_t *beat);

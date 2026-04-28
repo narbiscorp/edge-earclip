@@ -43,6 +43,14 @@ narbis-earclip/
   - INT: GPIO0 (D0)
   - VIN: 3.3V (NOT 5V)
 - **Battery**: single-cell LiPo via XIAO's onboard charger
+- **Battery sense**: GPIO1 (D1 / A1) via an external 1 MΩ : 1 MΩ resistor
+  divider from BAT+ → A1 → GND. **The XIAO ESP32-C6 ships without this
+  divider — it is a manual hardware mod.** Until the divider is soldered,
+  set Kconfig `NARBIS_BATT_DIVIDER_PRESENT=n` (default), and
+  `power_mgmt_get_battery()` returns placeholder values (4000 mV / 80%)
+  with a rate-limited `STUB:` warning. After soldering, flip
+  `NARBIS_BATT_DIVIDER_PRESENT=y` and rebuild — no code change needed.
+  See `TODO.md` at the repo root.
 
 ## ESP-IDF version
 

@@ -202,7 +202,7 @@ static void test_config(FILE *gold)
 {
     narbis_runtime_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.config_version       = 1;
+    cfg.config_version       = 2;
     cfg.sample_rate_hz       = 200;
     cfg.led_red_ma_x10       = 70;
     cfg.led_ir_ma_x10        = 70;
@@ -227,8 +227,9 @@ static void test_config(FILE *gold)
     uint8_t mac[6] = {0x24, 0x6F, 0x28, 0x00, 0x11, 0x22};
     memcpy(cfg.partner_mac, mac, 6);
     cfg.espnow_channel       = 1;
-    cfg.diagnostics_enabled  = 0;
+    cfg.diagnostics_enabled  = 1;
     cfg.light_sleep_enabled  = 1;
+    cfg.diagnostics_mask     = NARBIS_DIAG_STREAM_PRE_FILTER | NARBIS_DIAG_STREAM_POST_FILTER;
     cfg.battery_low_mv       = 3300;
 
     uint8_t buf[256];

@@ -213,9 +213,16 @@ export interface NarbisRuntimeConfig {
   espnow_channel: number;
   diagnostics_enabled: number;
   light_sleep_enabled: number;
-  reserved_pwr: number;
+  diagnostics_mask: number;
   battery_low_mv: number;
 }
+
+// Diagnostics stream IDs — bit positions in NarbisRuntimeConfig.diagnostics_mask.
+export const NARBIS_DIAG_STREAM_PRE_FILTER  = 1 << 0;
+export const NARBIS_DIAG_STREAM_POST_FILTER = 1 << 1;
+export const NARBIS_DIAG_STREAM_PEAK_CAND   = 1 << 2;
+export const NARBIS_DIAG_STREAM_AGC_EVENT   = 1 << 3;
+export const NARBIS_DIAG_STREAM_FIFO_OCCUP  = 1 << 4;
 
 // =============================================================
 // CRC-16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflect, no xor-out)
@@ -558,7 +565,7 @@ export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
   view.setUint8(o, cfg.espnow_channel); o += 1;
   view.setUint8(o, cfg.diagnostics_enabled); o += 1;
   view.setUint8(o, cfg.light_sleep_enabled); o += 1;
-  view.setUint8(o, cfg.reserved_pwr); o += 1;
+  view.setUint8(o, cfg.diagnostics_mask); o += 1;
   view.setUint16(o, cfg.battery_low_mv, true); o += 2;
 
   if (o !== NARBIS_CONFIG_STRUCT_SIZE) {
@@ -607,7 +614,7 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
   const espnow_channel = view.getUint8(o); o += 1;
   const diagnostics_enabled = view.getUint8(o); o += 1;
   const light_sleep_enabled = view.getUint8(o); o += 1;
-  const reserved_pwr = view.getUint8(o); o += 1;
+  const diagnostics_mask = view.getUint8(o); o += 1;
   const battery_low_mv = view.getUint16(o, true); o += 2;
 
   return {
@@ -619,6 +626,6 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
     sqi_threshold_x100, ibi_min_ms, ibi_max_ms, ibi_max_delta_pct,
     transport_mode, ble_profile, data_format, ble_batch_period_ms,
     partner_mac, espnow_channel,
-    diagnostics_enabled, light_sleep_enabled, reserved_pwr, battery_low_mv,
+    diagnostics_enabled, light_sleep_enabled, diagnostics_mask, battery_low_mv,
   };
 }

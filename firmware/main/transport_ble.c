@@ -32,6 +32,7 @@
 #include "ble_service_dis.h"
 #include "ble_service_hrs.h"
 #include "ble_service_narbis.h"
+#include "power_mgmt.h"
 
 static const char *TAG = "transport_ble";
 
@@ -139,7 +140,13 @@ esp_err_t transport_ble_notify(ble_subscription_t which,
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (om == NULL) return ESP_ERR_NO_MEM;
 
+    /* Hold light-sleep off for the duration of the notification submit so
+     * the radio stays warm. NimBLE itself buffers and sends async — this
+     * scope only covers ble_gatts_notify_custom. Long-running batches are
+     * already chunked at the per-characteristic push helpers. */
+    power_mgmt_acquire_ble_active();
     int rc = ble_gatts_notify_custom(g_conn_handle, val_handle, om);
+    power_mgmt_release_ble_active();
     if (rc != 0) {
         ESP_LOGD(TAG, "notify rc=%d which=%d len=%u", rc, (int)which, len);
         return ESP_FAIL;

@@ -20,6 +20,8 @@ idf_component_register(
         esp_event
         esp_netif
         esp_timer
+        esp_pm
+        esp_adc
         bt
         esp_app_format
         narbis_protocol
