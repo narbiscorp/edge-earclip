@@ -8,17 +8,23 @@ import ConfigPanel from './components/ConfigPanel';
 import PresetBar from './components/PresetBar';
 import RecordingControls from './components/RecordingControls';
 import ReplayControls from './components/ReplayControls';
+import RecoveryBanner from './components/RecoveryBanner';
 import DebugPanel from './components/DebugPanel';
 import { metricsRunner } from './state/metricsRunner';
+import { useRecordingStore } from './state/recording';
 
 export default function App() {
+  const checkForOrphans = useRecordingStore((s) => s.checkForOrphanedSessions);
+
   useEffect(() => {
     metricsRunner.start();
+    void checkForOrphans();
     return () => metricsRunner.stop();
-  }, []);
+  }, [checkForOrphans]);
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100">
+      <RecoveryBanner />
       <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
         <h1 className="text-lg font-semibold tracking-tight">
           Narbis Earclip Dashboard

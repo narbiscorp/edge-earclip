@@ -1,7 +1,8 @@
 import type { Data } from 'plotly.js';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
-import { metricsBuffer, type MetricsSnapshot } from '../state/metricsBuffer';
+import { metricsBuffers, type MetricsSnapshot } from '../state/metricsBuffer';
+import { useDashboardStore } from '../state/store';
 
 const WINDOW_SEC = 600;
 
@@ -42,7 +43,8 @@ export default function MetricsChart() {
       showlegend: true,
     }),
     pull: () => {
-      const samples = metricsBuffer.getWindow(WINDOW_SEC);
+      const source = useDashboardStore.getState().dataSource;
+      const samples = (source === 'replay' ? metricsBuffers.replay : metricsBuffers.live).getWindow(WINDOW_SEC);
       const rmssd = emptySeries();
       const sdnn = emptySeries();
       const hr = emptySeries();

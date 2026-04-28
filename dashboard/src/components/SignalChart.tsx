@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { Data } from 'plotly.js';
-import { useDashboardStore } from '../state/store';
+import { getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 
@@ -38,7 +38,7 @@ export default function SignalChart() {
       showlegend: true,
     }),
     pull: () => {
-      const buf = useDashboardStore.getState().buffers.rawPpg;
+      const buf = getActiveBuffers().rawPpg;
       const samples = buf.getWindow(WINDOW_SEC);
       const x = new Array<number>(samples.length);
       const red = new Array<number>(samples.length);

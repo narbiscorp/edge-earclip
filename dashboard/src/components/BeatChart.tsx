@@ -1,5 +1,5 @@
 import type { Data } from 'plotly.js';
-import { useDashboardStore } from '../state/store';
+import { getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { isArtifactBeat } from '../metrics/windowing';
@@ -27,9 +27,9 @@ export default function BeatChart() {
       showlegend: true,
     }),
     pull: () => {
-      const state = useDashboardStore.getState();
-      const earclipSamples = state.buffers.narbisBeats.getWindow(WINDOW_SEC);
-      const polarSamples = state.buffers.polarBeats.getWindow(WINDOW_SEC);
+      const bufs = getActiveBuffers();
+      const earclipSamples = bufs.narbisBeats.getWindow(WINDOW_SEC);
+      const polarSamples = bufs.polarBeats.getWindow(WINDOW_SEC);
 
       const ecX: number[] = [];
       const ecY: number[] = [];

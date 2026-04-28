@@ -26,10 +26,19 @@ import type {
 import { StreamBuffer } from './streamBuffer';
 
 export type ConnectionState = NarbisStatus | PolarStatus;
+export type DataSource = 'live' | 'replay';
 
 export interface PolarBeatRecord {
   bpm: number;
   rr: number[];
+}
+
+export interface BufferSet {
+  rawPpg: StreamBuffer<NarbisRawSample>;
+  narbisBeats: StreamBuffer<NarbisBeatEvent>;
+  polarBeats: StreamBuffer<PolarBeatRecord>;
+  sqi: StreamBuffer<NarbisSqiPayload>;
+  filtered: StreamBuffer<DiagnosticSample>;
 }
 
 export interface DashboardState {
@@ -50,31 +59,31 @@ export interface DashboardState {
     sqi: number;
     polarBeats: number;
   };
-  buffers: {
-    rawPpg: StreamBuffer<NarbisRawSample>;
-    narbisBeats: StreamBuffer<NarbisBeatEvent>;
-    polarBeats: StreamBuffer<PolarBeatRecord>;
-    sqi: StreamBuffer<NarbisSqiPayload>;
-    filtered: StreamBuffer<DiagnosticSample>;
-  };
+  buffers: BufferSet;
+  replayBuffers: BufferSet;
+  dataSource: DataSource;
   lastError: string | null;
 
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
   connectPolar: () => Promise<void>;
   disconnectPolar: () => Promise<void>;
-  startRecording: () => void;
-  stopRecording: () => void;
   setConfig: (config: NarbisRuntimeConfig) => void;
+  setDataSource: (source: DataSource) => void;
 }
 
-const buffers: DashboardState['buffers'] = {
-  rawPpg: new StreamBuffer<NarbisRawSample>(12000),
-  narbisBeats: new StreamBuffer<NarbisBeatEvent>(1200),
-  polarBeats: new StreamBuffer<PolarBeatRecord>(1200),
-  sqi: new StreamBuffer<NarbisSqiPayload>(600),
-  filtered: new StreamBuffer<DiagnosticSample>(6000),
-};
+function makeBuffers(): BufferSet {
+  return {
+    rawPpg: new StreamBuffer<NarbisRawSample>(12000),
+    narbisBeats: new StreamBuffer<NarbisBeatEvent>(1200),
+    polarBeats: new StreamBuffer<PolarBeatRecord>(1200),
+    sqi: new StreamBuffer<NarbisSqiPayload>(600),
+    filtered: new StreamBuffer<DiagnosticSample>(6000),
+  };
+}
+
+const liveBuffers = makeBuffers();
+const replayBuffers = makeBuffers();
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
@@ -89,7 +98,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   lastBeat: null,
   lastSqi: null,
   counters: { beats: 0, rawSamples: 0, sqi: 0, polarBeats: 0 },
-  buffers,
+  buffers: liveBuffers,
+  replayBuffers,
+  dataSource: 'live',
   lastError: null,
 
   connectNarbis: async () => {
@@ -116,14 +127,14 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   disconnectPolar: async () => {
     await polarH10.disconnect();
   },
-  startRecording: () => {
-    set((s) => ({ recording: { active: true, startedAt: Date.now() }, counters: s.counters }));
-  },
-  stopRecording: () => {
-    set({ recording: { active: false, startedAt: null } });
-  },
   setConfig: (config) => set({ config }),
+  setDataSource: (source) => set({ dataSource: source }),
 }));
+
+export function getActiveBuffers(): BufferSet {
+  const s = useDashboardStore.getState();
+  return s.dataSource === 'replay' ? s.replayBuffers : s.buffers;
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -164,7 +175,7 @@ narbisDevice.addEventListener('error', (e) => {
 
 narbisDevice.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<NarbisBeatEvent>).detail;
-  buffers.narbisBeats.push(beat.timestamp, beat);
+  liveBuffers.narbisBeats.push(beat.timestamp, beat);
   setState((s) => ({
     lastBeat: beat,
     counters: { ...s.counters, beats: s.counters.beats + 1 },
@@ -173,7 +184,7 @@ narbisDevice.addEventListener('beatReceived', (e) => {
 
 narbisDevice.addEventListener('sqiReceived', (e) => {
   const sqi = (e as CustomEvent<NarbisSqiEvent>).detail;
-  buffers.sqi.push(sqi.timestamp, sqi);
+  liveBuffers.sqi.push(sqi.timestamp, sqi);
   setState((s) => ({
     lastSqi: sqi,
     counters: { ...s.counters, sqi: s.counters.sqi + 1 },
@@ -185,7 +196,7 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
   const baseTs = raw.timestamp;
   const periodMs = raw.sample_rate_hz > 0 ? 1000 / raw.sample_rate_hz : 0;
   for (let i = 0; i < raw.samples.length; i++) {
-    buffers.rawPpg.push(baseTs - (raw.samples.length - 1 - i) * periodMs, raw.samples[i]);
+    liveBuffers.rawPpg.push(baseTs - (raw.samples.length - 1 - i) * periodMs, raw.samples[i]);
   }
   setState((s) => ({
     counters: { ...s.counters, rawSamples: s.counters.rawSamples + raw.samples.length },
@@ -210,7 +221,7 @@ narbisDevice.addEventListener('configChanged', (e) => {
 narbisDevice.addEventListener('diagnosticReceived', (e) => {
   const diag = (e as CustomEvent<NarbisDiagnosticEvent>).detail;
   for (const s of diag.samples) {
-    buffers.filtered.push(s.timestamp, s);
+    liveBuffers.filtered.push(s.timestamp, s);
   }
 });
 
@@ -245,8 +256,12 @@ polarH10.addEventListener('error', (e) => {
 
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
-  buffers.polarBeats.push(beat.timestamp, { bpm: beat.bpm, rr: beat.rrIntervals_ms });
+  liveBuffers.polarBeats.push(beat.timestamp, { bpm: beat.bpm, rr: beat.rrIntervals_ms });
   setState((s) => ({
     counters: { ...s.counters, polarBeats: s.counters.polarBeats + 1 },
   }));
 });
+
+export function setRecordingState(active: boolean, startedAt: number | null): void {
+  setState({ recording: { active, startedAt } });
+}

@@ -2,10 +2,15 @@ import MetricsWorker from '../workers/metricsWorker?worker';
 import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { useDashboardStore } from './store';
 import { extractIbiWindow } from '../metrics/windowing';
-import { metricsBuffer, snapshotFromResult, type MetricsSnapshot } from './metricsBuffer';
+import { metricsBuffers, snapshotFromResult, type MetricsSnapshot } from './metricsBuffer';
 
 const COMPUTE_INTERVAL_MS = 1000;
-const WINDOW_SEC = 60;
+export const METRICS_WINDOW_SEC = 60;
+
+export interface MetricsUpdatedDetail {
+  snapshot: MetricsSnapshot;
+  timestamp: number;
+}
 
 class MetricsRunner extends EventTarget {
   private worker: Worker | null = null;
@@ -31,15 +36,20 @@ class MetricsRunner extends EventTarget {
       this.worker = null;
     }
     this.inFlight = false;
-    metricsBuffer.clear();
+    metricsBuffers.live.clear();
+  }
+
+  isRunning(): boolean {
+    return this.worker !== null;
   }
 
   private tick = (): void => {
     if (!this.worker || this.inFlight) return;
+    if (useDashboardStore.getState().dataSource !== 'live') return;
     const beats = useDashboardStore.getState().buffers.narbisBeats.getAll();
     if (beats.length < 4) return;
     const beatEvents = beats.map((s) => s.value);
-    const { times_s, ibis_ms } = extractIbiWindow(beatEvents, WINDOW_SEC, Date.now());
+    const { times_s, ibis_ms } = extractIbiWindow(beatEvents, METRICS_WINDOW_SEC, Date.now());
     if (times_s.length < 4) return;
 
     const requestId = this.nextRequestId++;
@@ -58,8 +68,13 @@ class MetricsRunner extends EventTarget {
     const result = ev.data;
     if (!result || result.type !== 'result') return;
     const snapshot = snapshotFromResult(result);
-    metricsBuffer.push(Date.now(), snapshot);
-    this.dispatchEvent(new CustomEvent<MetricsSnapshot>('metricsUpdated', { detail: snapshot }));
+    const timestamp = Date.now();
+    metricsBuffers.live.push(timestamp, snapshot);
+    this.dispatchEvent(
+      new CustomEvent<MetricsUpdatedDetail>('metricsUpdated', {
+        detail: { snapshot, timestamp },
+      }),
+    );
   };
 }
 

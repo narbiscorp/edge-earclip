@@ -5,6 +5,7 @@ import {
   lombScargle,
   logSpacedFreqs,
   computeFrequencyDomain,
+  integrateBand,
   type FrequencyDomainMetrics,
   type PSD,
 } from '../metrics/frequencyDomain';
@@ -27,9 +28,14 @@ export interface MetricsResult {
   beatCount: number;
   time: TimeDomainMetrics;
   freq: FrequencyDomainMetrics;
+  vlfPower: number;
+  resonancePower: number;
   hmCoherence: CoherenceResult;
   resonanceCoherence: CoherenceResult;
 }
+
+const VLF_BAND: [number, number] = [0.0033, 0.04];
+const RESONANCE_HALF_WIDTH_HZ = 0.015;
 
 const FREQ_GRID = logSpacedFreqs(0.01, 0.5, 256);
 
@@ -55,6 +61,13 @@ ctx.addEventListener('message', (ev: MessageEvent<MetricsRequest>) => {
   const freq = computeFrequencyDomain(psd);
   const hmCoherence = computeHeartMathCoherence(psd);
   const resonanceCoherence = computeResonanceCoherence(psd);
+  const vlfPower = integrateBand(psd, VLF_BAND);
+  let resonancePower = 0;
+  if (resonanceCoherence.peakFreq_hz > 0) {
+    const lo = Math.max(resonanceCoherence.peakFreq_hz - RESONANCE_HALF_WIDTH_HZ, FREQ_GRID[0]);
+    const hi = Math.min(resonanceCoherence.peakFreq_hz + RESONANCE_HALF_WIDTH_HZ, FREQ_GRID[FREQ_GRID.length - 1]);
+    resonancePower = integrateBand(psd, [lo, hi]);
+  }
 
   const result: MetricsResult = {
     type: 'result',
@@ -62,6 +75,8 @@ ctx.addEventListener('message', (ev: MessageEvent<MetricsRequest>) => {
     beatCount: n,
     time,
     freq,
+    vlfPower,
+    resonancePower,
     hmCoherence,
     resonanceCoherence,
   };

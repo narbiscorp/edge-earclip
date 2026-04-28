@@ -1,5 +1,5 @@
 import type { Data } from 'plotly.js';
-import { useDashboardStore } from '../state/store';
+import { useDashboardStore, getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 
@@ -24,7 +24,7 @@ export default function FilteredChart() {
       showlegend: true,
     }),
     pull: () => {
-      const buf = useDashboardStore.getState().buffers.filtered;
+      const buf = getActiveBuffers().filtered;
       const samples = buf.getWindow(WINDOW_SEC);
 
       const fX: number[] = [];
@@ -80,7 +80,10 @@ export default function FilteredChart() {
     },
   });
 
-  const filteredCount = useDashboardStore((s) => s.buffers.filtered.size());
+  const filteredCount = useDashboardStore((s) => {
+    const bufs = s.dataSource === 'replay' ? s.replayBuffers : s.buffers;
+    return bufs.filtered.size();
+  });
 
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px] relative">

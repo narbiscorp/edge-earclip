@@ -1,13 +1,11 @@
-import { openDB, type IDBPDatabase } from 'idb';
 import type { NarbisRuntimeConfig } from '../../ble/parsers';
 import builtInsRaw from '../../presets/defaults.json';
+import { getDb, STORE_PRESETS } from '../../state/idb';
 import { macToString, parseMac } from './fields/MacField';
 import { ALL_FIELD_KEYS, FIELD_SCHEMA } from './fieldSchema';
 import { isValid, validateConfig } from './validateConfig';
 
-const DB_NAME = 'narbis-dashboard';
-const DB_VERSION = 1;
-const STORE = 'presets';
+const STORE = STORE_PRESETS;
 
 export interface SavedPreset {
   id: string;
@@ -28,21 +26,6 @@ interface JsonPreset {
 }
 
 type JsonConfig = Omit<NarbisRuntimeConfig, 'partner_mac'> & { partner_mac: string };
-
-let dbPromise: Promise<IDBPDatabase> | null = null;
-
-function getDb(): Promise<IDBPDatabase> {
-  if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains(STORE)) {
-          db.createObjectStore(STORE, { keyPath: 'id' });
-        }
-      },
-    });
-  }
-  return dbPromise;
-}
 
 function jsonToConfig(j: JsonConfig): NarbisRuntimeConfig {
   const mac = parseMac(j.partner_mac);
