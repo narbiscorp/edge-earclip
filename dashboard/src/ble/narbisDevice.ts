@@ -106,9 +106,25 @@ export class NarbisDevice extends EventTarget {
     this.intentionalDisconnect = false;
     this.setStatus('connecting');
     try {
+      // Two filters in OR: prefer service-UUID match (works on
+      // Linux/Android/macOS and many Windows configs); fall back to
+      // name prefix on Windows builds where the WinRT BT stack strips
+      // 128-bit service UUIDs from the advertisement before Chrome
+      // sees them. The earclip name is "Narbis Earclip <MAC suffix>".
+      // NARBIS_SVC_UUID is moved into optionalServices so the
+      // post-connect getPrimaryService() call is permitted regardless
+      // of which filter actually matched.
       const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [NARBIS_SVC_UUID] }],
-        optionalServices: [HEART_RATE_SERVICE, BATTERY_SERVICE, DEVICE_INFO_SERVICE],
+        filters: [
+          { services: [NARBIS_SVC_UUID] },
+          { namePrefix: 'Narbis Earclip' },
+        ],
+        optionalServices: [
+          NARBIS_SVC_UUID,
+          HEART_RATE_SERVICE,
+          BATTERY_SERVICE,
+          DEVICE_INFO_SERVICE,
+        ],
       });
       this.device = device;
       this._deviceName = device.name ?? 'Narbis Earclip';

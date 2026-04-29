@@ -249,7 +249,12 @@ static void start_advertising(void)
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.uuids128 = (ble_uuid128_t *)&narbis_svc_uuid;
     fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 0;  /* primary svc only; not the full list */
+    /* Mark complete (AD type 0x07 not 0x06). Chrome's Web Bluetooth on
+     * Windows (WinRT stack) only reliably matches service-UUID filters
+     * against the Complete list; Incomplete is silently skipped on some
+     * Windows builds. We only have one service to advertise, so this is
+     * accurate as well as compatible. */
+    fields.uuids128_is_complete = 1;
 
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
