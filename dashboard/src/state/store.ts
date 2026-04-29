@@ -23,6 +23,7 @@ import type {
   NarbisSqiPayload,
   DiagnosticSample,
 } from '../ble/parsers';
+import { resetDiagnosticClock } from '../ble/parsers';
 import { StreamBuffer } from './streamBuffer';
 
 export type ConnectionState = NarbisStatus | PolarStatus;
@@ -150,6 +151,14 @@ function errorMessage(err: unknown): string {
 
 const setState = useDashboardStore.setState;
 
+// Monotonic raw-PPG timestamping. The firmware doesn't send per-sample
+// timestamps in the raw payload, only sample_rate_hz + N samples; we
+// previously back-computed each batch's timestamps from BLE arrival
+// time, but BLE jitter makes adjacent batches overlap or step backwards.
+// Instead place samples consecutively after the previous batch's last
+// sample; resync to wall-clock if we ever fall > 2 batches behind.
+let lastRawTs = 0;
+
 narbisDevice.addEventListener('connected', (e) => {
   const { name } = (e as CustomEvent<{ name: string }>).detail;
   setState((s) => ({
@@ -162,6 +171,15 @@ narbisDevice.addEventListener('connected', (e) => {
 
 narbisDevice.addEventListener('disconnected', (e) => {
   const { reason, error } = (e as CustomEvent<NarbisDisconnectedDetail>).detail;
+  // Reset our timestamp anchors so the next session re-anchors from
+  // its own first sample. Without this, a reconnect carries the old
+  // anchor forward and either back-fills the chart (if firmware time
+  // jumped backwards on reboot) or shows nothing for several minutes
+  // (if firmware time jumped forwards).
+  if (narbisDevice.status !== 'reconnecting') {
+    resetDiagnosticClock();
+    lastRawTs = 0;
+  }
   setState((s) => ({
     connection: {
       ...s.connection,
@@ -201,13 +219,29 @@ narbisDevice.addEventListener('sqiReceived', (e) => {
 
 narbisDevice.addEventListener('rawSampleReceived', (e) => {
   const raw = (e as CustomEvent<NarbisRawSampleEvent>).detail;
-  const baseTs = raw.timestamp;
+  const arrivalMs = raw.timestamp;
   const periodMs = raw.sample_rate_hz > 0 ? 1000 / raw.sample_rate_hz : 0;
-  for (let i = 0; i < raw.samples.length; i++) {
-    liveBuffers.rawPpg.push(baseTs - (raw.samples.length - 1 - i) * periodMs, raw.samples[i]);
+  const n = raw.samples.length;
+  if (periodMs === 0 || n === 0) return;
+
+  // Where this batch's first sample WOULD land if anchored to arrival time.
+  const arrivalFirst = arrivalMs - (n - 1) * periodMs;
+  // Where it lands continuing the previous batch.
+  const continueFirst = lastRawTs > 0 ? lastRawTs + periodMs : arrivalFirst;
+  // Pick the later of the two (monotonic). If we've fallen far behind
+  // wall-clock (> N samples worth), resync to arrival to avoid drift.
+  let firstTs = Math.max(continueFirst, arrivalFirst);
+  if (continueFirst < arrivalFirst - 2 * n * periodMs) {
+    firstTs = arrivalFirst;
   }
+
+  for (let i = 0; i < n; i++) {
+    liveBuffers.rawPpg.push(firstTs + i * periodMs, raw.samples[i]);
+  }
+  lastRawTs = firstTs + (n - 1) * periodMs;
+
   setState((s) => ({
-    counters: { ...s.counters, rawSamples: s.counters.rawSamples + raw.samples.length },
+    counters: { ...s.counters, rawSamples: s.counters.rawSamples + n },
   }));
 });
 

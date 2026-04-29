@@ -130,12 +130,6 @@ export function parseConfig(dv: DataView): NarbisRuntimeConfig {
 //   PEAK_CAND   (0x04): u32 timestamp_ms, i32 amplitude            ( 8 B)
 //   AGC_EVENT   (0x08): not yet decoded (firmware doesn't emit)
 //   FIFO_OCCUP  (0x10): not yet decoded
-//
-// Records inside one frame share a small time window (≤ DIAG_DRAIN_PERIOD_MS
-// = 100 ms). Firmware timestamps are MCU-monotonic; we anchor the latest
-// record in the frame to the BLE-arrival time and back-shift earlier ones
-// by their firmware-timestamp delta. This preserves intra-frame ordering
-// without needing a clock-sync handshake.
 export const DIAG_STREAM_PRE_FILTER  = 0x01;
 export const DIAG_STREAM_POST_FILTER = 0x02;
 export const DIAG_STREAM_PEAK_CAND   = 0x04;
@@ -147,6 +141,20 @@ export type DiagnosticSample =
 interface RawRecord {
   fwTs: number;
   sample: DiagnosticSample;
+}
+
+// Firmware-time → dashboard-time anchor. Anchored on the first record we
+// see, then held stable for the rest of the session — that way every
+// fwTs maps to the SAME dashTs no matter when its frame arrives. Anchor
+// per-frame (the previous approach) caused timestamps to march backwards
+// every time a BLE notify arrived a few ms early relative to the
+// previous one. Reset via resetDiagnosticClock() on disconnect.
+let diagAnchorFwTs: number | null = null;
+let diagAnchorDashTs = 0;
+
+export function resetDiagnosticClock(): void {
+  diagAnchorFwTs = null;
+  diagAnchorDashTs = 0;
 }
 
 export function parseDiagnostic(dv: DataView, baseTimestamp: number): DiagnosticSample[] {
@@ -179,13 +187,27 @@ export function parseDiagnostic(dv: DataView, baseTimestamp: number): Diagnostic
     off += len;
   }
 
-  // Back-shift each record from `baseTimestamp` (latest = notification arrival)
-  // by the firmware-timestamp delta, so older records sit slightly to the
-  // left of the right edge of the chart.
+  if (raw.length === 0) return [];
+
+  // Anchor on first sight: assume the latest record in this first frame
+  // arrived at baseTimestamp (BLE notify time). All future fwTs map to
+  // diagAnchorDashTs + (fwTs - diagAnchorFwTs) — strictly monotonic.
+  if (diagAnchorFwTs === null) {
+    diagAnchorFwTs = latestFwTs;
+    diagAnchorDashTs = baseTimestamp;
+  }
+  // Detect a backwards jump (firmware reset / reconnect / wraparound)
+  // and re-anchor. Threshold: if the latest fwTs we see is meaningfully
+  // earlier than our anchor, the firmware clock has reset.
+  if (latestFwTs < diagAnchorFwTs - 1000) {
+    diagAnchorFwTs = latestFwTs;
+    diagAnchorDashTs = baseTimestamp;
+  }
+
   const out: DiagnosticSample[] = new Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
     const r = raw[i];
-    const ts = baseTimestamp - (latestFwTs - r.fwTs);
+    const ts = diagAnchorDashTs + (r.fwTs - diagAnchorFwTs);
     out[i] = { ...r.sample, timestamp: ts };
   }
   return out;
