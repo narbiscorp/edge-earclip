@@ -277,6 +277,83 @@ static void ppg_task(void *arg)
 }
 
 /* ============================================================
+ * Boot-time stall diagnostic
+ *
+ * One-shot task. Spawned at the end of ppg_driver_init(), AFTER the IRQ
+ * is armed and the chip is fully configured. Runs 10 iterations at 1 Hz,
+ * snapshotting key registers + the live INT line so a developer can tell
+ * — from monitor output alone — whether the chip is sampling and the INT
+ * wire is broken, or whether the chip never started.
+ *
+ * NOTE: Reading INT_STATUS_1 clears the A_FULL latch. If the chip is
+ * asserting A_FULL but the INT wire is broken, this read deasserts it
+ * briefly; the chip re-asserts as long as 17+ samples remain unread, so
+ * consecutive iterations will show INT1 bit 7 set repeatedly. That is
+ * the diagnostic, not a bug.
+ * ============================================================ */
+
+#define PPG_BOOT_DIAG_ITERS       10
+#define PPG_BOOT_DIAG_PERIOD_MS   1000
+#define PPG_BOOT_DIAG_MUTEX_MS    100
+#define PPG_BOOT_DIAG_STACK       3072
+#define PPG_BOOT_DIAG_PRIO        3
+
+static void ppg_boot_diag_task(void *arg)
+{
+    (void)arg;
+
+    /* One-shot config snapshot — describes how install_isr() armed the line. */
+    ESP_LOGI(TAG,
+             "boot-diag config: INT_GPIO=%d mode=INPUT pull=PULLUP edge=NEGEDGE level0=%d",
+             (int)s.cfg.int_gpio, gpio_get_level(s.cfg.int_gpio));
+
+    for (int i = 0; i < PPG_BOOT_DIAG_ITERS; i++) {
+        uint8_t int1 = 0xFF, int2 = 0xFF;
+        uint8_t wr = 0xFF, rd = 0xFF, ovf = 0xFF;
+        uint8_t mode = 0xFF, spo2 = 0xFF;
+        uint8_t led1 = 0xFF, led2 = 0xFF;
+        bool got_bus = false;
+
+        if (xSemaphoreTake(s.i2c_mutex, pdMS_TO_TICKS(PPG_BOOT_DIAG_MUTEX_MS)) == pdTRUE) {
+            got_bus = true;
+            (void)reg_read(MAX3010X_REG_INT_STATUS_1, &int1);
+            (void)reg_read(MAX3010X_REG_INT_STATUS_2, &int2);
+            (void)reg_read(MAX3010X_REG_FIFO_WR_PTR,  &wr);
+            (void)reg_read(MAX3010X_REG_FIFO_RD_PTR,  &rd);
+            (void)reg_read(MAX3010X_REG_OVF_COUNTER,  &ovf);
+            (void)reg_read(MAX3010X_REG_MODE_CONFIG,  &mode);
+            (void)reg_read(MAX3010X_REG_SPO2_CONFIG,  &spo2);
+            (void)reg_read(MAX3010X_REG_LED1_PA,      &led1);
+            (void)reg_read(MAX3010X_REG_LED2_PA,      &led2);
+            xSemaphoreGive(s.i2c_mutex);
+        }
+
+        int gpio_lvl = gpio_get_level(s.cfg.int_gpio);
+
+        if (got_bus) {
+            ESP_LOGI(TAG,
+                     "boot-diag[i=%d/%d] INT1=0x%02X INT2=0x%02X "
+                     "WR=0x%02X RD=0x%02X OVF=0x%02X "
+                     "MODE=0x%02X SPO2=0x%02X LED1=0x%02X LED2=0x%02X "
+                     "GPIO%d=%d",
+                     i, PPG_BOOT_DIAG_ITERS,
+                     int1, int2, wr, rd, ovf, mode, spo2, led1, led2,
+                     (int)s.cfg.int_gpio, gpio_lvl);
+        } else {
+            ESP_LOGW(TAG,
+                     "boot-diag[i=%d/%d] i2c mutex busy — skipped reg snapshot; GPIO%d=%d",
+                     i, PPG_BOOT_DIAG_ITERS,
+                     (int)s.cfg.int_gpio, gpio_lvl);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(PPG_BOOT_DIAG_PERIOD_MS));
+    }
+
+    ESP_LOGI(TAG, "boot-diag complete");
+    vTaskDelete(NULL);
+}
+
+/* ============================================================
  * Public API: default config
  * ============================================================ */
 
@@ -449,6 +526,16 @@ esp_err_t ppg_driver_init(const ppg_driver_config_t *cfg)
     }
 
     ESP_RETURN_ON_ERROR(install_isr(cfg->int_gpio), TAG, "isr");
+
+    /* Boot-time stall diagnostic: one-shot task, 10 s at 1 Hz, lower
+     * priority than ppg_task so it loses bus contention gracefully. */
+    BaseType_t diag_ok = xTaskCreate(ppg_boot_diag_task, "ppg_boot_diag",
+                                     PPG_BOOT_DIAG_STACK, NULL,
+                                     PPG_BOOT_DIAG_PRIO, NULL);
+    if (diag_ok != pdPASS) {
+        /* Non-fatal — driver still works without the diagnostic. */
+        ESP_LOGW(TAG, "boot-diag task create failed (non-fatal)");
+    }
 
     s.inited = true;
     ESP_LOGI(TAG, "configured %u Hz, channels=0x%02X, LED red=%u.%u mA, IR=%u.%u mA",
