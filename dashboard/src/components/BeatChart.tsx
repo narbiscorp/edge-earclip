@@ -1,16 +1,18 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
-import { getActiveBuffers } from '../state/store';
+import { getActiveBuffers, useDashboardStore } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { isArtifactBeat } from '../metrics/windowing';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
-import ChartControls, { WINDOW_OPTIONS_BEATS } from '../charts/ChartControls';
+import ChartControls, { type LineShape } from '../charts/ChartControls';
 
 export default function BeatChart() {
-  const [windowSec, setWindowSec] = useState(300);
+  const windowSec = useDashboardStore((s) => s.windowSec);
+  const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
+  const [shape, setShape] = useState<LineShape>('spline');
 
   const windowSecRef = useRef(windowSec);
   windowSecRef.current = windowSec;
@@ -18,13 +20,16 @@ export default function BeatChart() {
   smoothNRef.current = smoothN;
   const rescaleSecRef = useRef(rescaleSec);
   rescaleSecRef.current = rescaleSec;
+  const shapeRef = useRef(shape);
+  shapeRef.current = shape;
 
   const yLatch = useMemo(() => new RescaleLatch(), []);
 
-  const onWindowChange = (sec: number) => {
-    setWindowSec(sec);
+  useEffect(() => {
     yLatch.invalidate();
-  };
+  }, [windowSec, yLatch]);
+
+  const onWindowChange = (sec: number) => setWindowSec(sec);
   const onSmoothChange = (n: number) => {
     setSmoothN(n);
     yLatch.invalidate();
@@ -116,11 +121,10 @@ export default function BeatChart() {
         }
       }
 
-      // When smoothing the Earclip/Polar series we also use spline so
-      // adjacent IBIs flow into each other rather than a sharp ribbon.
-      const useSpline = n > 1;
-      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
-      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+      // IBI series are sparse (one point per beat), so spline is always
+      // cheap here — no point-count fallback needed.
+      const lineShape: LineShape = shapeRef.current;
+      const traceType: 'scattergl' | 'scatter' = lineShape === 'linear' ? 'scattergl' : 'scatter';
 
       const traces: Data[] = [
         {
@@ -162,10 +166,11 @@ export default function BeatChart() {
         </span>
         <ChartControls
           windowSec={windowSec}
-          windowOptions={WINDOW_OPTIONS_BEATS}
           onWindowChange={onWindowChange}
           smoothN={smoothN}
           onSmoothChange={onSmoothChange}
+          shape={shape}
+          onShapeChange={setShape}
           rescaleSec={rescaleSec}
           onRescaleChange={onRescaleChange}
         >

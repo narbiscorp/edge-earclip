@@ -1,16 +1,23 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
-import { getActiveBuffers } from '../state/store';
+import { getActiveBuffers, useDashboardStore } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
-import ChartControls from '../charts/ChartControls';
+import ChartControls, { type LineShape } from '../charts/ChartControls';
 
 export default function SignalChart() {
   const [paused, setPaused] = useState(false);
-  const [windowSec, setWindowSec] = useState(30);
+  // Window is global — see store.ts. Smooth/shape/rescale stay local.
+  const windowSec = useDashboardStore((s) => s.windowSec);
+  const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
+  // Spline is the default — without it Plotly draws straight segments
+  // between samples and the chart looks jagged with batch arrival
+  // patterns. User can switch to linear for max performance or step
+  // for ECG-paper-style rendering.
+  const [shape, setShape] = useState<LineShape>('spline');
 
   const pausedRef = useRef(false);
   pausedRef.current = paused;
@@ -21,6 +28,8 @@ export default function SignalChart() {
   smoothNRef.current = smoothN;
   const rescaleSecRef = useRef(rescaleSec);
   rescaleSecRef.current = rescaleSec;
+  const shapeRef = useRef(shape);
+  shapeRef.current = shape;
 
   // Two latches, one per overlaid Y-axis. Memoized so they survive across
   // renders; we manually invalidate them when the user changes window or
@@ -29,11 +38,15 @@ export default function SignalChart() {
   const redLatch = useMemo(() => new RescaleLatch(), []);
   const irLatch = useMemo(() => new RescaleLatch(), []);
 
-  const onWindowChange = (sec: number) => {
-    setWindowSec(sec);
+  // Window is global — even when changed from another chart, the
+  // visible range here changes. Invalidate latches so the y-axis
+  // re-fits to the new window's data immediately.
+  useEffect(() => {
     redLatch.invalidate();
     irLatch.invalidate();
-  };
+  }, [windowSec, redLatch, irLatch]);
+
+  const onWindowChange = (sec: number) => setWindowSec(sec);
   const onSmoothChange = (n: number) => {
     setSmoothN(n);
     redLatch.invalidate();
@@ -121,13 +134,14 @@ export default function SignalChart() {
         }
       }
 
-      // When smoothing is on, also use spline interpolation so the rendered
-      // line is visually continuous between samples (helps when data
-      // arrives in batches with brief inter-batch gaps). scattergl does
-      // not support spline, so smoothed traces fall back to scatter (SVG).
-      const useSpline = n > 1;
-      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
-      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+      // scattergl renders 'linear' shape only — spline and step need SVG
+      // 'scatter'. We pick the type based on the user's shape choice and
+      // sample count: above ~3000 points SVG starts to lag, so we cap
+      // spline/step at that point and fall back to scattergl+linear.
+      const desired = shapeRef.current;
+      const tooMany = redOut.length > 3000;
+      const effectiveShape: LineShape = tooMany ? 'linear' : desired;
+      const traceType: 'scattergl' | 'scatter' = effectiveShape === 'linear' ? 'scattergl' : 'scatter';
 
       const traces: Data[] = [
         {
@@ -136,7 +150,7 @@ export default function SignalChart() {
           type: traceType,
           mode: 'lines',
           name: 'Red',
-          line: { color: CHART_COLORS.red, width: 1, shape: lineShape },
+          line: { color: CHART_COLORS.red, width: 1, shape: effectiveShape },
           yaxis: 'y',
         },
         {
@@ -145,7 +159,7 @@ export default function SignalChart() {
           type: traceType,
           mode: 'lines',
           name: 'IR',
-          line: { color: CHART_COLORS.ir, width: 1, shape: lineShape },
+          line: { color: CHART_COLORS.ir, width: 1, shape: effectiveShape },
           yaxis: 'y2',
         },
       ];
@@ -156,12 +170,14 @@ export default function SignalChart() {
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
-        <span className="text-xs font-medium text-slate-300">Raw PPG ({windowSec} s)</span>
+        <span className="text-xs font-medium text-slate-300">Raw PPG ({formatWindow(windowSec)})</span>
         <ChartControls
           windowSec={windowSec}
           onWindowChange={onWindowChange}
           smoothN={smoothN}
           onSmoothChange={onSmoothChange}
+          shape={shape}
+          onShapeChange={setShape}
           rescaleSec={rescaleSec}
           onRescaleChange={onRescaleChange}
         >
@@ -177,4 +193,10 @@ export default function SignalChart() {
       <div ref={divRef} className="flex-1 min-h-0" />
     </div>
   );
+}
+
+function formatWindow(sec: number): string {
+  if (sec < 60) return `${sec} s`;
+  const min = sec / 60;
+  return min >= 60 ? `${min / 60} h` : `${min} min`;
 }

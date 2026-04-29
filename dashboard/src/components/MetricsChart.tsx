@@ -1,11 +1,11 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { metricsBuffers, type MetricsSnapshot } from '../state/metricsBuffer';
 import { useDashboardStore } from '../state/store';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
-import ChartControls, { WINDOW_OPTIONS_HRV } from '../charts/ChartControls';
+import ChartControls, { type LineShape } from '../charts/ChartControls';
 
 interface Series {
   x: number[];
@@ -17,9 +17,11 @@ function emptySeries(): Series {
 }
 
 export default function MetricsChart() {
-  const [windowSec, setWindowSec] = useState(600);
+  const windowSec = useDashboardStore((s) => s.windowSec);
+  const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
+  const [shape, setShape] = useState<LineShape>('spline');
 
   const windowSecRef = useRef(windowSec);
   windowSecRef.current = windowSec;
@@ -27,15 +29,18 @@ export default function MetricsChart() {
   smoothNRef.current = smoothN;
   const rescaleSecRef = useRef(rescaleSec);
   rescaleSecRef.current = rescaleSec;
+  const shapeRef = useRef(shape);
+  shapeRef.current = shape;
 
   const yLatch = useMemo(() => new RescaleLatch(), []);
   const y2Latch = useMemo(() => new RescaleLatch(), []);
 
-  const onWindowChange = (sec: number) => {
-    setWindowSec(sec);
+  useEffect(() => {
     yLatch.invalidate();
     y2Latch.invalidate();
-  };
+  }, [windowSec, yLatch, y2Latch]);
+
+  const onWindowChange = (sec: number) => setWindowSec(sec);
   const onSmoothChange = (n: number) => {
     setSmoothN(n);
     yLatch.invalidate();
@@ -132,9 +137,10 @@ export default function MetricsChart() {
         }
       }
 
-      const useSpline = n > 1;
-      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
-      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+      // HRV trace data is low-rate (one snapshot per second or so), so
+      // spline is essentially free even at long windows.
+      const lineShape: LineShape = shapeRef.current;
+      const traceType: 'scattergl' | 'scatter' = lineShape === 'linear' ? 'scattergl' : 'scatter';
 
       const traces: Data[] = [
         {
@@ -203,10 +209,11 @@ export default function MetricsChart() {
         </span>
         <ChartControls
           windowSec={windowSec}
-          windowOptions={WINDOW_OPTIONS_HRV}
           onWindowChange={onWindowChange}
           smoothN={smoothN}
           onSmoothChange={onSmoothChange}
+          shape={shape}
+          onShapeChange={setShape}
           rescaleSec={rescaleSec}
           onRescaleChange={onRescaleChange}
         >

@@ -50,24 +50,24 @@ function ButtonGroup<T extends number | string>({ label, value, options, onChang
 
 export type WindowOption = { value: number; label: string };
 
-export const WINDOW_OPTIONS_FAST: readonly WindowOption[] = [
+/**
+ * Unified window options used by every streaming chart. Window state is
+ * lifted into the global store so all charts move together — selecting
+ * 30s on Raw PPG sets IBI tachogram and HRV to the same range, so events
+ * line up vertically in the stack.
+ *
+ * Each chart's data buffer has its own capacity ceiling — Raw PPG holds
+ * the last ~4 minutes of 50 Hz samples, IBI holds the last ~20 minutes
+ * of beats — so picking 30 m on Raw PPG simply shows whatever is in the
+ * buffer (sparse on the left edge), which is the right behavior.
+ */
+export const WINDOW_OPTIONS: readonly WindowOption[] = [
   { value: 10, label: '10s' },
   { value: 30, label: '30s' },
-  { value: 60, label: '60s' },
-];
-
-export const WINDOW_OPTIONS_BEATS: readonly WindowOption[] = [
   { value: 60, label: '1m' },
   { value: 300, label: '5m' },
   { value: 600, label: '10m' },
   { value: 1800, label: '30m' },
-];
-
-export const WINDOW_OPTIONS_HRV: readonly WindowOption[] = [
-  { value: 300, label: '5m' },
-  { value: 600, label: '10m' },
-  { value: 1800, label: '30m' },
-  { value: 3600, label: '60m' },
 ];
 
 export const SMOOTH_OPTIONS = [
@@ -86,6 +86,13 @@ export const RESCALE_OPTIONS = [
   { value: 60, label: '60s' },
 ] as const;
 
+export type LineShape = 'linear' | 'spline' | 'hv';
+export const SHAPE_OPTIONS: readonly { value: LineShape; label: string }[] = [
+  { value: 'linear', label: 'linear' },
+  { value: 'spline', label: 'spline' },
+  { value: 'hv', label: 'step' },
+];
+
 export interface ChartControlsProps {
   windowSec?: number;
   windowOptions?: readonly WindowOption[];
@@ -94,17 +101,21 @@ export interface ChartControlsProps {
   onSmoothChange?: (n: number) => void;
   rescaleSec?: number;
   onRescaleChange?: (sec: number) => void;
+  shape?: LineShape;
+  onShapeChange?: (shape: LineShape) => void;
   children?: ReactNode;
 }
 
 export default function ChartControls({
   windowSec,
-  windowOptions = WINDOW_OPTIONS_FAST,
+  windowOptions = WINDOW_OPTIONS,
   onWindowChange,
   smoothN,
   onSmoothChange,
   rescaleSec,
   onRescaleChange,
+  shape,
+  onShapeChange,
   children,
 }: ChartControlsProps) {
   return (
@@ -123,6 +134,14 @@ export default function ChartControls({
           value={smoothN}
           options={SMOOTH_OPTIONS}
           onChange={onSmoothChange}
+        />
+      ) : null}
+      {shape !== undefined && onShapeChange ? (
+        <ButtonGroup<LineShape>
+          label="shape"
+          value={shape}
+          options={SHAPE_OPTIONS}
+          onChange={onShapeChange}
         />
       ) : null}
       {rescaleSec !== undefined && onRescaleChange ? (

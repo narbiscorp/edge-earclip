@@ -63,6 +63,11 @@ export interface DashboardState {
   replayBuffers: BufferSet;
   dataSource: DataSource;
   lastError: string | null;
+  /** Shared visible-time-window across all four streaming charts. Lifting
+   * it to the store means changing the window on any chart updates them
+   * all in lockstep. Smoothing and rescale stay per-chart since they're
+   * styling preferences specific to each signal type. */
+  windowSec: number;
 
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
@@ -70,6 +75,7 @@ export interface DashboardState {
   disconnectPolar: () => Promise<void>;
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
+  setWindowSec: (seconds: number) => void;
 }
 
 function makeBuffers(): BufferSet {
@@ -102,6 +108,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   replayBuffers,
   dataSource: 'live',
   lastError: null,
+  windowSec: 30,
 
   connectNarbis: async () => {
     set({ lastError: null });
@@ -129,6 +136,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
+  setWindowSec: (seconds) => set({ windowSec: seconds }),
 }));
 
 export function getActiveBuffers(): BufferSet {

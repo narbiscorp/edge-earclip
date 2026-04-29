@@ -1,15 +1,17 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
 import { useDashboardStore, getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
-import ChartControls from '../charts/ChartControls';
+import ChartControls, { type LineShape } from '../charts/ChartControls';
 
 export default function FilteredChart() {
-  const [windowSec, setWindowSec] = useState(30);
+  const windowSec = useDashboardStore((s) => s.windowSec);
+  const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
+  const [shape, setShape] = useState<LineShape>('spline');
 
   const windowSecRef = useRef(windowSec);
   windowSecRef.current = windowSec;
@@ -17,13 +19,16 @@ export default function FilteredChart() {
   smoothNRef.current = smoothN;
   const rescaleSecRef = useRef(rescaleSec);
   rescaleSecRef.current = rescaleSec;
+  const shapeRef = useRef(shape);
+  shapeRef.current = shape;
 
   const yLatch = useMemo(() => new RescaleLatch(), []);
 
-  const onWindowChange = (sec: number) => {
-    setWindowSec(sec);
+  useEffect(() => {
     yLatch.invalidate();
-  };
+  }, [windowSec, yLatch]);
+
+  const onWindowChange = (sec: number) => setWindowSec(sec);
   const onSmoothChange = (n: number) => {
     setSmoothN(n);
     yLatch.invalidate();
@@ -108,9 +113,10 @@ export default function FilteredChart() {
         }
       }
 
-      const useSpline = n > 1;
-      const filteredType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
-      const filteredShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+      const desired = shapeRef.current;
+      const tooMany = fYOut.length > 3000;
+      const filteredShape: LineShape = tooMany ? 'linear' : desired;
+      const filteredType: 'scattergl' | 'scatter' = filteredShape === 'linear' ? 'scattergl' : 'scatter';
 
       const traces: Data[] = [
         {
@@ -151,13 +157,15 @@ export default function FilteredChart() {
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px] relative">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
         <span className="text-xs font-medium text-slate-300">
-          Filtered signal + peaks ({windowSec} s)
+          Filtered signal + peaks ({formatWindow(windowSec)})
         </span>
         <ChartControls
           windowSec={windowSec}
           onWindowChange={onWindowChange}
           smoothN={smoothN}
           onSmoothChange={onSmoothChange}
+          shape={shape}
+          onShapeChange={setShape}
           rescaleSec={rescaleSec}
           onRescaleChange={onRescaleChange}
         >
@@ -167,9 +175,15 @@ export default function FilteredChart() {
       <div ref={divRef} className="flex-1 min-h-0" />
       {filteredCount === 0 ? (
         <div className="absolute inset-0 top-8 flex items-center justify-center pointer-events-none text-xs text-slate-500">
-          awaiting diagnostic stream
+          awaiting diagnostic stream — enable POST_FILTER bit in diagnostics_mask
         </div>
       ) : null}
     </div>
   );
+}
+
+function formatWindow(sec: number): string {
+  if (sec < 60) return `${sec} s`;
+  const min = sec / 60;
+  return min >= 60 ? `${min / 60} h` : `${min} min`;
 }
