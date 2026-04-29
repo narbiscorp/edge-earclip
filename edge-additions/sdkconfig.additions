@@ -1,0 +1,11 @@
+# sdkconfig.additions — append these lines to Edge's sdkconfig.defaults.
+#
+# Required by components/narbis_esp_now_rx. Edge already runs BLE; without
+# software coexistence the Wi-Fi (ESP-NOW) and BLE radios fight and you
+# will see dropped frames on both sides.
+
+# Wi-Fi must be enabled — needed for ESP-NOW even though we never associate.
+CONFIG_ESP_WIFI_ENABLED=y
+
+# Software Wi-Fi/BLE coexistence — mandatory for Edge.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
