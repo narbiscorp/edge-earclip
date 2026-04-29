@@ -14,6 +14,21 @@ export interface UseLivePlotOptions {
   pull: () => LivePlotSnapshot;
   pausedRef?: React.MutableRefObject<boolean>;
   refreshHz?: number;
+  /**
+   * If set, the chart's X axis is locked to `[now - followWindowSec*1000, now]`
+   * on every animation frame, regardless of what data is in the buffer.
+   * Without this, Plotly's autorange snaps the right edge to the latest
+   * sample's timestamp — which only advances when a new batch arrives,
+   * so the chart visibly jumps every batch period (e.g. 500–2000 ms).
+   * With this, the right edge slides at refreshHz (30 Hz default) and
+   * batches just fill in data; the chart looks like a continuous scroll.
+   *
+   * User pan/zoom (delivered via chartSync external range) takes
+   * precedence — follow mode resumes when the external range clears.
+   * Pass a function (not a number) so the value is read fresh each frame
+   * — useful when the window length is bound to global state.
+   */
+  followWindowSec?: () => number;
 }
 
 const DEFAULT_HZ = 30;
@@ -53,6 +68,19 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       const layoutPatch: Partial<Layout> = { ...(snap.layoutPatch ?? {}) };
       if (externalRange) {
         layoutPatch.xaxis = { ...(layoutPatch.xaxis ?? {}), range: externalRange, autorange: false };
+      } else if (optsRef.current.followWindowSec) {
+        // Sliding-window mode: lock right edge to wall-clock now, left
+        // edge to now - windowSec. Each frame advances the range by ~33 ms
+        // (at 30 Hz refresh), so the chart appears to scroll continuously
+        // even when data arrives in 1–2 s batches.
+        const windowMs = optsRef.current.followWindowSec() * 1000;
+        const rightMs = Date.now();
+        const leftMs = rightMs - windowMs;
+        layoutPatch.xaxis = {
+          ...(layoutPatch.xaxis ?? {}),
+          range: [leftMs, rightMs],
+          autorange: false,
+        };
       }
       if (crosshair_ms !== null) {
         const shape: Partial<Shape> = {

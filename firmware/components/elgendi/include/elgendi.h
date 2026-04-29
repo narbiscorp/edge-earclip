@@ -30,12 +30,24 @@ typedef struct {
     int32_t  amplitude;      /* filtered-signal value at peak */
 } elgendi_peak_t;
 
+/* Per-sample bandpass output. Emitted at the same rate as samples enter
+ * elgendi_feed. Used to drive the dashboard's "filtered signal" stream
+ * via the diagnostics pipe. */
+typedef struct {
+    uint32_t timestamp_ms;
+    int32_t  filtered;       /* post-bandpass value (same units as ac) */
+} elgendi_filtered_sample_t;
+
 typedef void (*elgendi_peak_cb_t)(const elgendi_peak_t *p, void *ctx);
+typedef void (*elgendi_filtered_cb_t)(const elgendi_filtered_sample_t *s, void *ctx);
 
 esp_err_t elgendi_init(void);
 esp_err_t elgendi_deinit(void);
 
 esp_err_t elgendi_register_peak_cb(elgendi_peak_cb_t cb, void *ctx);
+/* Optional. When set, called for every sample after the bandpass step.
+ * Skipped while the filter is still settling (first ~W2 samples). */
+esp_err_t elgendi_register_filtered_cb(elgendi_filtered_cb_t cb, void *ctx);
 
 /* Synchronously process one processed sample. Called from channel stage. */
 void elgendi_feed(const ppg_processed_sample_t *s);

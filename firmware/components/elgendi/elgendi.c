@@ -92,9 +92,11 @@ typedef struct {
     uint32_t last_peak_ts_ms;
 
     /* Output. */
-    portMUX_TYPE      cb_lock;
-    elgendi_peak_cb_t out_cb;
-    void             *out_ctx;
+    portMUX_TYPE          cb_lock;
+    elgendi_peak_cb_t     out_cb;
+    void                 *out_ctx;
+    elgendi_filtered_cb_t filtered_cb;
+    void                 *filtered_ctx;
 } elgendi_state_t;
 
 static elgendi_state_t s = {
@@ -236,6 +238,16 @@ esp_err_t elgendi_register_peak_cb(elgendi_peak_cb_t cb, void *ctx)
     return ESP_OK;
 }
 
+esp_err_t elgendi_register_filtered_cb(elgendi_filtered_cb_t cb, void *ctx)
+{
+    if (!s.inited) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s.cb_lock);
+    s.filtered_cb = cb;
+    s.filtered_ctx = ctx;
+    portEXIT_CRITICAL(&s.cb_lock);
+    return ESP_OK;
+}
+
 esp_err_t elgendi_apply_config(const narbis_runtime_config_t *cfg)
 {
     if (!s.inited) return ESP_ERR_INVALID_STATE;
@@ -349,6 +361,17 @@ void elgendi_feed(const ppg_processed_sample_t *ps)
     /* 4) Wait for both windows to fill before any peak detection. This
      * also covers the bandpass settling time (~W2 samples is plenty). */
     if (s.w2_filled < s.w2_samples) return;
+
+    /* Emit per-sample bandpass output for the diagnostic stream. Done
+     * after settling so the dashboard's filtered chart isn't flooded
+     * with the biquad ramp transient on first connection. */
+    if (s.filtered_cb != NULL) {
+        const elgendi_filtered_sample_t f = {
+            .timestamp_ms = ps->timestamp_ms,
+            .filtered     = y,
+        };
+        s.filtered_cb(&f, s.filtered_ctx);
+    }
 
     /* 5) Trigger condition (avoid division):
      *      MA1 > MA2 * (1 + beta)

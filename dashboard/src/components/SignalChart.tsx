@@ -92,6 +92,7 @@ export default function SignalChart() {
   const divRef = useLivePlot({
     id: 'signal',
     pausedRef,
+    followWindowSec: () => windowSecRef.current,
     baseLayout: darkLayout({
       xaxis: {
         gridcolor: '#334155',

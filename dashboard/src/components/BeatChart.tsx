@@ -51,7 +51,10 @@ export default function BeatChart() {
 
   const divRef = useLivePlot({
     id: 'beat',
-    refreshHz: 5,
+    // 15 Hz refresh — beat data itself arrives ~1 Hz, but the higher
+    // refresh keeps the X-axis sliding smoothly under follow-window mode.
+    refreshHz: 15,
+    followWindowSec: () => windowSecRef.current,
     baseLayout: darkLayout({
       xaxis: {
         gridcolor: '#334155',

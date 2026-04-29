@@ -53,6 +53,7 @@ export default function FilteredChart() {
 
   const divRef = useLivePlot({
     id: 'filtered',
+    followWindowSec: () => windowSecRef.current,
     baseLayout: darkLayout({
       xaxis: {
         gridcolor: '#334155',

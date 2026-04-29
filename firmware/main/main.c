@@ -109,6 +109,18 @@ static void on_processed(const ppg_processed_sample_t *s, void *ctx)
     diagnostics_push(NARBIS_DIAG_STREAM_PRE_FILTER, &rec, sizeof(rec));
 }
 
+static void on_filtered(const elgendi_filtered_sample_t *f, void *ctx)
+{
+    (void)ctx;
+    /* Diagnostics: post-bandpass (Elgendi filter output). Drives the
+     * dashboard's "Filtered signal + peaks" chart. */
+    struct __attribute__((packed)) {
+        uint32_t timestamp_ms;
+        int32_t  filtered;
+    } rec = { .timestamp_ms = f->timestamp_ms, .filtered = f->filtered };
+    diagnostics_push(NARBIS_DIAG_STREAM_POST_FILTER, &rec, sizeof(rec));
+}
+
 #ifndef CONFIG_NARBIS_TEST_INJECT
 static void on_ppg_sample(const ppg_sample_t *sample, void *user_ctx)
 {
@@ -163,6 +175,7 @@ void app_main(void)
     ESP_ERROR_CHECK(beat_validator_init());
     ESP_ERROR_CHECK(ppg_channel_register_output_cb(on_processed, NULL));
     ESP_ERROR_CHECK(elgendi_register_peak_cb(on_peak, NULL));
+    ESP_ERROR_CHECK(elgendi_register_filtered_cb(on_filtered, NULL));
     ESP_ERROR_CHECK(beat_validator_register_event_cb(on_beat, NULL));
 
 #ifdef CONFIG_NARBIS_TEST_INJECT

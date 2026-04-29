@@ -75,7 +75,8 @@ export default function MetricsChart() {
 
   const divRef = useLivePlot({
     id: 'metrics',
-    refreshHz: 2,
+    refreshHz: 10,
+    followWindowSec: () => windowSecRef.current,
     baseLayout: darkLayout({
       xaxis: {
         gridcolor: '#334155',
