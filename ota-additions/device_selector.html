@@ -1,0 +1,41 @@
+<!--
+  device_selector.html — drop-in UI snippet for the existing OTA webapp.
+
+  Insert above the existing "Connect"/"Scan" button. The integrator
+  should read the selected radio's value before invoking the existing
+  scan/connect path (see integration_guide.md, step 2).
+
+  No inline styles — class names use the `narbis-` prefix to avoid
+  collisions with the existing webapp's CSS. Match them in your
+  stylesheet if you want non-default appearance.
+-->
+<fieldset class="narbis-device-selector" data-narbis-device-selector>
+  <legend>Device to update</legend>
+
+  <label class="narbis-device-option">
+    <input
+      type="radio"
+      name="narbis-device"
+      value="edge"
+      data-device-target="edge"
+      checked
+    />
+    <span class="narbis-device-label">Edge glasses</span>
+  </label>
+
+  <label class="narbis-device-option">
+    <input
+      type="radio"
+      name="narbis-device"
+      value="earclip"
+      data-device-target="earclip"
+    />
+    <span class="narbis-device-label">Narbis earclip</span>
+  </label>
+
+  <p class="narbis-device-hint">
+    The selected device determines which BLE service is scanned for and
+    which firmware images are accepted. The wrong .bin will be refused
+    before the upload starts.
+  </p>
+</fieldset>
