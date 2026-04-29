@@ -1,11 +1,50 @@
-import type { Data } from 'plotly.js';
+import { useMemo, useRef, useState } from 'react';
+import type { Data, Layout } from 'plotly.js';
 import { useDashboardStore, getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
-
-const WINDOW_SEC = 30;
+import { movingAverage, RescaleLatch } from '../charts/smoothing';
+import ChartControls from '../charts/ChartControls';
 
 export default function FilteredChart() {
+  const [windowSec, setWindowSec] = useState(30);
+  const [smoothN, setSmoothN] = useState(0);
+  const [rescaleSec, setRescaleSec] = useState(0);
+
+  const windowSecRef = useRef(windowSec);
+  windowSecRef.current = windowSec;
+  const smoothNRef = useRef(smoothN);
+  smoothNRef.current = smoothN;
+  const rescaleSecRef = useRef(rescaleSec);
+  rescaleSecRef.current = rescaleSec;
+
+  const yLatch = useMemo(() => new RescaleLatch(), []);
+
+  const onWindowChange = (sec: number) => {
+    setWindowSec(sec);
+    yLatch.invalidate();
+  };
+  const onSmoothChange = (n: number) => {
+    setSmoothN(n);
+    yLatch.invalidate();
+  };
+  const onRescaleChange = (sec: number) => {
+    setRescaleSec(sec);
+    yLatch.invalidate();
+  };
+
+  // Shared axis style — see SignalChart for why this matters with
+  // useLivePlot's shallow layout merge.
+  const yaxisStyle: Partial<Layout['yaxis']> = useMemo(
+    () => ({
+      gridcolor: '#334155',
+      zerolinecolor: '#475569',
+      linecolor: '#475569',
+      title: { text: 'Filtered' },
+    }),
+    [],
+  );
+
   const divRef = useLivePlot({
     id: 'filtered',
     baseLayout: darkLayout({
@@ -15,17 +54,12 @@ export default function FilteredChart() {
         linecolor: '#475569',
         type: 'date',
       },
-      yaxis: {
-        gridcolor: '#334155',
-        zerolinecolor: '#475569',
-        linecolor: '#475569',
-        title: { text: 'Filtered' },
-      },
+      yaxis: yaxisStyle,
       showlegend: true,
     }),
     pull: () => {
       const buf = getActiveBuffers().filtered;
-      const samples = buf.getWindow(WINDOW_SEC);
+      const samples = buf.getWindow(windowSecRef.current);
 
       const fX: number[] = [];
       const fY: number[] = [];
@@ -50,10 +84,33 @@ export default function FilteredChart() {
         }
       }
 
+      // Smooth the continuous filtered trace; peak markers stay at their
+      // true amplitudes (smoothing them would move the dots off the line).
+      const n = smoothNRef.current;
+      const fYOut = n > 1 ? movingAverage(fY, n) : fY;
+
+      // Rescale Y from the filtered series + peak amplitudes combined,
+      // so the markers stay on-screen even after the filtered trace moves.
+      const layoutPatch: Partial<Layout> = {};
+      if (rescaleSecRef.current > 0) {
+        const all = fYOut.length + acceptY.length + rejectY.length;
+        if (all > 0) {
+          const combined = new Array<number>(all);
+          let idx = 0;
+          for (const v of fYOut) combined[idx++] = v;
+          for (const v of acceptY) combined[idx++] = v;
+          for (const v of rejectY) combined[idx++] = v;
+          const range = yLatch.compute(combined, rescaleSecRef.current * 1000);
+          if (range) {
+            layoutPatch.yaxis = { ...yaxisStyle, range, autorange: false };
+          }
+        }
+      }
+
       const traces: Data[] = [
         {
           x: fX,
-          y: fY,
+          y: fYOut,
           type: 'scattergl',
           mode: 'lines',
           name: 'Filtered',
@@ -76,7 +133,7 @@ export default function FilteredChart() {
           marker: { color: CHART_COLORS.peakReject, size: 8, symbol: 'x' },
         },
       ];
-      return { traces };
+      return { traces, layoutPatch };
     },
   });
 
@@ -88,8 +145,19 @@ export default function FilteredChart() {
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px] relative">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
-        <span className="text-xs font-medium text-slate-300">Filtered signal + peaks (30 s)</span>
-        <span className="text-[10px] text-slate-500">diagnostic stream</span>
+        <span className="text-xs font-medium text-slate-300">
+          Filtered signal + peaks ({windowSec} s)
+        </span>
+        <ChartControls
+          windowSec={windowSec}
+          onWindowChange={onWindowChange}
+          smoothN={smoothN}
+          onSmoothChange={onSmoothChange}
+          rescaleSec={rescaleSec}
+          onRescaleChange={onRescaleChange}
+        >
+          <span className="text-[10px] text-slate-500 ml-2">diagnostic stream</span>
+        </ChartControls>
       </div>
       <div ref={divRef} className="flex-1 min-h-0" />
       {filteredCount === 0 ? (
