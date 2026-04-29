@@ -66,8 +66,20 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       lastDraw = now;
       const snap = optsRef.current.pull();
       const layoutPatch: Partial<Layout> = { ...(snap.layoutPatch ?? {}) };
+      // CRITICAL: when we patch xaxis we MUST spread baseLayout.xaxis into
+      // the patch first. The final merge into Plotly is a shallow
+      // {...baseLayout, ...layoutPatch}, so layoutPatch.xaxis replaces
+      // baseLayout.xaxis wholesale — and we'd lose `type: 'date'`,
+      // gridcolor, etc. Same applies to the y-axes (each chart handles
+      // its own y-axis style preservation in pull()).
+      const baseXaxis = optsRef.current.baseLayout.xaxis ?? {};
       if (externalRange) {
-        layoutPatch.xaxis = { ...(layoutPatch.xaxis ?? {}), range: externalRange, autorange: false };
+        layoutPatch.xaxis = {
+          ...baseXaxis,
+          ...(layoutPatch.xaxis ?? {}),
+          range: externalRange,
+          autorange: false,
+        };
       } else if (optsRef.current.followWindowSec) {
         // Sliding-window mode: lock right edge to wall-clock now, left
         // edge to now - windowSec. Each frame advances the range by ~33 ms
@@ -77,6 +89,7 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
         const rightMs = Date.now();
         const leftMs = rightMs - windowMs;
         layoutPatch.xaxis = {
+          ...baseXaxis,
           ...(layoutPatch.xaxis ?? {}),
           range: [leftMs, rightMs],
           autorange: false,
