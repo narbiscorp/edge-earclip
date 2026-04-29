@@ -76,6 +76,20 @@ menu "Narbis earclip"
         help
             Divider ratio denominator. See NARBIS_BATT_ADC_DIV_NUM.
 
+    config NARBIS_PPG_POLL_FALLBACK_MS
+        int "PPG FIFO poll-fallback interval (ms, 0 = IRQ only)"
+        range 0 200
+        default 25
+        help
+            If nonzero, ppg_task wakes every N ms and drains the MAX3010x
+            FIFO directly via I2C, in addition to whatever the chip's INT
+            line does. Useful as a workaround when the INT pin is
+            unreliable (broken solder, dead chip output stage, hardware
+            mod in progress). Polling at 25 ms keeps up comfortably with
+            200 Hz sampling (FIFO crosses A_FULL threshold every ~85 ms).
+            Set to 0 to disable polling and rely purely on the GPIO
+            interrupt — recommended once hardware is verified good.
+
     menu "OTA"
 
         config NARBIS_OTA_VALIDITY_TIMEOUT_S

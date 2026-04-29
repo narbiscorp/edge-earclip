@@ -265,11 +265,60 @@ static void ppg_task(void *arg)
     (void)arg;
     s.task_running = true;
     ESP_LOGI(TAG, "task started");
+    /* Two operating modes, selectable at compile time via Kconfig:
+     *
+     *   poll_ms > 0  (default 25 ms): polling fallback. Task wakes every
+     *     poll_ms via the semaphore timeout and drains the FIFO via I2C
+     *     regardless of GPIO state. The IRQ path still works in parallel
+     *     when the chip's INT pin is healthy; drain_fifo is idempotent so
+     *     the two paths don't conflict. This is the recommended setting
+     *     while sensor INT-line hardware is being validated.
+     *
+     *   poll_ms == 0: pure IRQ mode, original behavior. 1 s timeout
+     *     used only for stall detection. Recommended once hardware is
+     *     verified good — keeps task off the CPU between IRQs. */
+    const uint32_t poll_ms = (uint32_t)CONFIG_NARBIS_PPG_POLL_FALLBACK_MS;
+    const TickType_t timeout_ticks = (poll_ms > 0)
+                                         ? pdMS_TO_TICKS(poll_ms)
+                                         : pdMS_TO_TICKS(1000);
+    int64_t last_drain_us = esp_timer_get_time();
+    int64_t last_warn_us = last_drain_us;
+
+    if (poll_ms > 0) {
+        ESP_LOGI(TAG, "poll-fallback enabled: %u ms", (unsigned)poll_ms);
+    }
+
     while (s.task_running) {
-        if (xSemaphoreTake(s.irq_sem, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (xSemaphoreTake(s.irq_sem, timeout_ticks) == pdTRUE) {
+            /* IRQ path. */
             drain_fifo(s.last_irq_us);
+            last_drain_us = esp_timer_get_time();
+        } else if (poll_ms > 0) {
+            /* Poll path. Drain unconditionally; if the FIFO is empty,
+             * drain_fifo bails on (wr - rd) == 0. */
+            int64_t now_us = esp_timer_get_time();
+            drain_fifo(now_us);
+            last_drain_us = now_us;
         } else {
-            ESP_LOGW(TAG, "no IRQ in 1s — sensor stalled?");
+            /* IRQ-only mode, no IRQ in 1 s. Self-heal if the line is
+             * stuck low (indicates a missed edge or a chip in latched
+             * state with no drains feeding it). */
+            int level = gpio_get_level(s.cfg.int_gpio);
+            if (level == 0) {
+                ESP_LOGW(TAG, "INT stuck low — draining FIFO to recover");
+                drain_fifo(esp_timer_get_time());
+            } else {
+                ESP_LOGW(TAG, "no IRQ in 1s — sensor stalled?");
+            }
+        }
+
+        /* Sparse health check: warn at most once per 5 s if we've gone
+         * that long with no samples drained, regardless of mode. */
+        int64_t now_us = esp_timer_get_time();
+        if ((now_us - last_drain_us) > 5000000 &&
+            (now_us - last_warn_us) > 5000000) {
+            ESP_LOGW(TAG, "no samples drained in 5s — bus or chip wedged?");
+            last_warn_us = now_us;
         }
     }
     ESP_LOGI(TAG, "task exiting");
@@ -309,8 +358,9 @@ static void ppg_boot_diag_task(void *arg)
 
     for (int i = 0; i < PPG_BOOT_DIAG_ITERS; i++) {
         uint8_t int1 = 0xFF, int2 = 0xFF;
+        uint8_t en1 = 0xFF, en2 = 0xFF;
         uint8_t wr = 0xFF, rd = 0xFF, ovf = 0xFF;
-        uint8_t mode = 0xFF, spo2 = 0xFF;
+        uint8_t mode = 0xFF, spo2 = 0xFF, fifo_cfg = 0xFF;
         uint8_t led1 = 0xFF, led2 = 0xFF;
         bool got_bus = false;
 
@@ -318,9 +368,12 @@ static void ppg_boot_diag_task(void *arg)
             got_bus = true;
             (void)reg_read(MAX3010X_REG_INT_STATUS_1, &int1);
             (void)reg_read(MAX3010X_REG_INT_STATUS_2, &int2);
+            (void)reg_read(MAX3010X_REG_INT_ENABLE_1, &en1);
+            (void)reg_read(MAX3010X_REG_INT_ENABLE_2, &en2);
             (void)reg_read(MAX3010X_REG_FIFO_WR_PTR,  &wr);
             (void)reg_read(MAX3010X_REG_FIFO_RD_PTR,  &rd);
             (void)reg_read(MAX3010X_REG_OVF_COUNTER,  &ovf);
+            (void)reg_read(MAX3010X_REG_FIFO_CONFIG,  &fifo_cfg);
             (void)reg_read(MAX3010X_REG_MODE_CONFIG,  &mode);
             (void)reg_read(MAX3010X_REG_SPO2_CONFIG,  &spo2);
             (void)reg_read(MAX3010X_REG_LED1_PA,      &led1);
@@ -332,12 +385,14 @@ static void ppg_boot_diag_task(void *arg)
 
         if (got_bus) {
             ESP_LOGI(TAG,
-                     "boot-diag[i=%d/%d] INT1=0x%02X INT2=0x%02X "
-                     "WR=0x%02X RD=0x%02X OVF=0x%02X "
+                     "boot-diag[i=%d/%d] INT1=0x%02X INT2=0x%02X EN1=0x%02X EN2=0x%02X "
+                     "WR=0x%02X RD=0x%02X OVF=0x%02X FIFOCFG=0x%02X "
                      "MODE=0x%02X SPO2=0x%02X LED1=0x%02X LED2=0x%02X "
                      "GPIO%d=%d",
                      i, PPG_BOOT_DIAG_ITERS,
-                     int1, int2, wr, rd, ovf, mode, spo2, led1, led2,
+                     int1, int2, en1, en2,
+                     wr, rd, ovf, fifo_cfg,
+                     mode, spo2, led1, led2,
                      (int)s.cfg.int_gpio, gpio_lvl);
         } else {
             ESP_LOGW(TAG,
@@ -515,7 +570,6 @@ esp_err_t ppg_driver_init(const ppg_driver_config_t *cfg)
     }
 
     ESP_RETURN_ON_ERROR(apply_led_currents(), TAG, "led_pa");
-    ESP_RETURN_ON_ERROR(configure_fifo_and_mode(), TAG, "fifo_mode");
 
     /* Spawn dispatch task BEFORE arming IRQ so the first IRQ has a consumer. */
     BaseType_t ok = xTaskCreate(ppg_task, "ppg_task", PPG_TASK_STACK,
@@ -525,7 +579,18 @@ esp_err_t ppg_driver_init(const ppg_driver_config_t *cfg)
         return ESP_ERR_NO_MEM;
     }
 
+    /* CRITICAL ORDER: install the GPIO ISR (NEGEDGE) BEFORE configuring
+     * the chip's INT_ENABLE_1 = A_FULL. configure_fifo_and_mode() switches
+     * the chip into active sampling and arms the chip-side A_FULL
+     * interrupt; at 200 Hz with two channels, the FIFO crosses the
+     * A_FULL threshold within ~80 ms, the chip drives its open-drain
+     * INT pin LOW, and the FIFO then overflows continuously — meaning
+     * the line stays low forever. If the GPIO ISR isn't armed before
+     * that single high→low transition, we miss the only edge we'll
+     * ever see and the task blocks on irq_sem indefinitely (symptom:
+     * "no IRQ in 1s — sensor stalled?" on every loop). */
     ESP_RETURN_ON_ERROR(install_isr(cfg->int_gpio), TAG, "isr");
+    ESP_RETURN_ON_ERROR(configure_fifo_and_mode(), TAG, "fifo_mode");
 
     /* Boot-time stall diagnostic: one-shot task, 10 s at 1 Hz, lower
      * priority than ppg_task so it loses bus contention gracefully. */
