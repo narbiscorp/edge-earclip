@@ -26,8 +26,15 @@ CHARACTERISTICS = [
 
 
 def uuid_to_c_bytes(u: uuid.UUID) -> str:
-    """Return BLE-order (little-endian) byte-array literal for esp_bt_uuid_t."""
-    return "{ " + ", ".join(f"0x{b:02X}" for b in u.bytes_le) + " }"
+    """Return BLE-order (pure little-endian) byte-array literal for
+    esp_bt_uuid_t / ble_uuid128_t.value.
+
+    Do NOT use uuid.UUID.bytes_le here — that returns Microsoft GUID
+    layout (time_low/mid/hi_version little-endian, the rest big-endian),
+    which is NOT what BLE expects on the wire. NimBLE/ESP-IDF write
+    .value byte-for-byte to the air interface, LSB first, so we want
+    the UUID's full 16 bytes reversed end-to-end."""
+    return "{ " + ", ".join(f"0x{b:02X}" for b in u.bytes[::-1]) + " }"
 
 
 def main() -> int:
