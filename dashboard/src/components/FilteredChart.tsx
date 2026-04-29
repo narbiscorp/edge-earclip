@@ -41,6 +41,7 @@ export default function FilteredChart() {
       zerolinecolor: '#475569',
       linecolor: '#475569',
       title: { text: 'Filtered' },
+      tickformat: '.4s',
     }),
     [],
   );
@@ -107,14 +108,18 @@ export default function FilteredChart() {
         }
       }
 
+      const useSpline = n > 1;
+      const filteredType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
+      const filteredShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+
       const traces: Data[] = [
         {
           x: fX,
           y: fYOut,
-          type: 'scattergl',
+          type: filteredType,
           mode: 'lines',
           name: 'Filtered',
-          line: { color: CHART_COLORS.filtered, width: 1 },
+          line: { color: CHART_COLORS.filtered, width: 1, shape: filteredShape },
         },
         {
           x: acceptX,

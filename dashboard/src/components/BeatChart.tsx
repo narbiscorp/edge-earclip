@@ -1,12 +1,49 @@
-import type { Data } from 'plotly.js';
+import { useMemo, useRef, useState } from 'react';
+import type { Data, Layout } from 'plotly.js';
 import { getActiveBuffers } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { isArtifactBeat } from '../metrics/windowing';
-
-const WINDOW_SEC = 300;
+import { movingAverage, RescaleLatch } from '../charts/smoothing';
+import ChartControls, { WINDOW_OPTIONS_BEATS } from '../charts/ChartControls';
 
 export default function BeatChart() {
+  const [windowSec, setWindowSec] = useState(300);
+  const [smoothN, setSmoothN] = useState(0);
+  const [rescaleSec, setRescaleSec] = useState(0);
+
+  const windowSecRef = useRef(windowSec);
+  windowSecRef.current = windowSec;
+  const smoothNRef = useRef(smoothN);
+  smoothNRef.current = smoothN;
+  const rescaleSecRef = useRef(rescaleSec);
+  rescaleSecRef.current = rescaleSec;
+
+  const yLatch = useMemo(() => new RescaleLatch(), []);
+
+  const onWindowChange = (sec: number) => {
+    setWindowSec(sec);
+    yLatch.invalidate();
+  };
+  const onSmoothChange = (n: number) => {
+    setSmoothN(n);
+    yLatch.invalidate();
+  };
+  const onRescaleChange = (sec: number) => {
+    setRescaleSec(sec);
+    yLatch.invalidate();
+  };
+
+  const yaxisStyle: Partial<Layout['yaxis']> = useMemo(
+    () => ({
+      gridcolor: '#334155',
+      zerolinecolor: '#475569',
+      linecolor: '#475569',
+      title: { text: 'IBI (ms)' },
+    }),
+    [],
+  );
+
   const divRef = useLivePlot({
     id: 'beat',
     refreshHz: 5,
@@ -17,19 +54,16 @@ export default function BeatChart() {
         linecolor: '#475569',
         type: 'date',
       },
-      yaxis: {
-        gridcolor: '#334155',
-        zerolinecolor: '#475569',
-        linecolor: '#475569',
-        title: { text: 'IBI (ms)' },
-        range: [400, 1400],
-      },
+      // Default Y range used only when rescale = 'live' — matches the
+      // physiological resting band and avoids a single artifact peak
+      // re-scaling the whole axis.
+      yaxis: { ...yaxisStyle, range: [400, 1400] },
       showlegend: true,
     }),
     pull: () => {
       const bufs = getActiveBuffers();
-      const earclipSamples = bufs.narbisBeats.getWindow(WINDOW_SEC);
-      const polarSamples = bufs.polarBeats.getWindow(WINDOW_SEC);
+      const earclipSamples = bufs.narbisBeats.getWindow(windowSecRef.current);
+      const polarSamples = bufs.polarBeats.getWindow(windowSecRef.current);
 
       const ecX: number[] = [];
       const ecY: number[] = [];
@@ -62,23 +96,49 @@ export default function BeatChart() {
         }
       }
 
+      // Smoothing applies to the accepted Earclip and Polar beat series
+      // (a running mean over the last N IBIs). Artifacts are NOT smoothed —
+      // they're displayed as discrete markers.
+      const n = smoothNRef.current;
+      const ecYOut = n > 1 ? movingAverage(ecY, n) : ecY;
+      const polarYOut = n > 1 ? movingAverage(polarY, n) : polarY;
+
+      // Rescale Y from valid IBIs (skip artifacts so a single bad beat
+      // can't blow up the axis).
+      const layoutPatch: Partial<Layout> = {};
+      if (rescaleSecRef.current > 0) {
+        const combined = ecYOut.concat(polarYOut);
+        if (combined.length > 0) {
+          const range = yLatch.compute(combined, rescaleSecRef.current * 1000);
+          if (range) {
+            layoutPatch.yaxis = { ...yaxisStyle, range, autorange: false };
+          }
+        }
+      }
+
+      // When smoothing the Earclip/Polar series we also use spline so
+      // adjacent IBIs flow into each other rather than a sharp ribbon.
+      const useSpline = n > 1;
+      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
+      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+
       const traces: Data[] = [
         {
           x: ecX,
-          y: ecY,
-          type: 'scattergl',
+          y: ecYOut,
+          type: traceType,
           mode: 'lines+markers',
           name: 'Earclip',
-          line: { color: CHART_COLORS.earclip, width: 1 },
+          line: { color: CHART_COLORS.earclip, width: 1, shape: lineShape },
           marker: { color: CHART_COLORS.earclip, size: 4 },
         },
         {
           x: polarX,
-          y: polarY,
-          type: 'scattergl',
+          y: polarYOut,
+          type: traceType,
           mode: 'lines+markers',
           name: 'Polar H10',
-          line: { color: CHART_COLORS.polar, width: 1 },
+          line: { color: CHART_COLORS.polar, width: 1, shape: lineShape },
           marker: { color: CHART_COLORS.polar, size: 4 },
         },
         {
@@ -90,17 +150,35 @@ export default function BeatChart() {
           marker: { color: CHART_COLORS.artifact, size: 6, symbol: 'x' },
         },
       ];
-      return { traces };
+      return { traces, layoutPatch };
     },
   });
 
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
-        <span className="text-xs font-medium text-slate-300">IBI tachogram (5 min)</span>
-        <span className="text-[10px] text-slate-500">earclip + Polar H10</span>
+        <span className="text-xs font-medium text-slate-300">
+          IBI tachogram ({formatWindow(windowSec)})
+        </span>
+        <ChartControls
+          windowSec={windowSec}
+          windowOptions={WINDOW_OPTIONS_BEATS}
+          onWindowChange={onWindowChange}
+          smoothN={smoothN}
+          onSmoothChange={onSmoothChange}
+          rescaleSec={rescaleSec}
+          onRescaleChange={onRescaleChange}
+        >
+          <span className="text-[10px] text-slate-500 ml-2">earclip + Polar H10</span>
+        </ChartControls>
       </div>
       <div ref={divRef} className="flex-1 min-h-0" />
     </div>
   );
+}
+
+function formatWindow(sec: number): string {
+  if (sec < 60) return `${sec} s`;
+  const min = sec / 60;
+  return min >= 60 ? `${min / 60} h` : `${min} min`;
 }

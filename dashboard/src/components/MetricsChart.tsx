@@ -1,10 +1,11 @@
-import type { Data } from 'plotly.js';
+import { useMemo, useRef, useState } from 'react';
+import type { Data, Layout } from 'plotly.js';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { metricsBuffers, type MetricsSnapshot } from '../state/metricsBuffer';
 import { useDashboardStore } from '../state/store';
-
-const WINDOW_SEC = 600;
+import { movingAverage, RescaleLatch } from '../charts/smoothing';
+import ChartControls, { WINDOW_OPTIONS_HRV } from '../charts/ChartControls';
 
 interface Series {
   x: number[];
@@ -16,6 +17,57 @@ function emptySeries(): Series {
 }
 
 export default function MetricsChart() {
+  const [windowSec, setWindowSec] = useState(600);
+  const [smoothN, setSmoothN] = useState(0);
+  const [rescaleSec, setRescaleSec] = useState(0);
+
+  const windowSecRef = useRef(windowSec);
+  windowSecRef.current = windowSec;
+  const smoothNRef = useRef(smoothN);
+  smoothNRef.current = smoothN;
+  const rescaleSecRef = useRef(rescaleSec);
+  rescaleSecRef.current = rescaleSec;
+
+  const yLatch = useMemo(() => new RescaleLatch(), []);
+  const y2Latch = useMemo(() => new RescaleLatch(), []);
+
+  const onWindowChange = (sec: number) => {
+    setWindowSec(sec);
+    yLatch.invalidate();
+    y2Latch.invalidate();
+  };
+  const onSmoothChange = (n: number) => {
+    setSmoothN(n);
+    yLatch.invalidate();
+    y2Latch.invalidate();
+  };
+  const onRescaleChange = (sec: number) => {
+    setRescaleSec(sec);
+    yLatch.invalidate();
+    y2Latch.invalidate();
+  };
+
+  const yaxisStyle: Partial<Layout['yaxis']> = useMemo(
+    () => ({
+      gridcolor: '#334155',
+      zerolinecolor: '#475569',
+      linecolor: '#475569',
+      title: { text: 'ms / bpm' },
+    }),
+    [],
+  );
+  const yaxis2Style: Partial<Layout['yaxis2']> = useMemo(
+    () => ({
+      overlaying: 'y',
+      side: 'right',
+      title: { text: 'ratio / coherence' },
+      gridcolor: 'transparent',
+      zerolinecolor: 'transparent',
+      linecolor: '#475569',
+    }),
+    [],
+  );
+
   const divRef = useLivePlot({
     id: 'metrics',
     refreshHz: 2,
@@ -26,25 +78,13 @@ export default function MetricsChart() {
         linecolor: '#475569',
         type: 'date',
       },
-      yaxis: {
-        gridcolor: '#334155',
-        zerolinecolor: '#475569',
-        linecolor: '#475569',
-        title: { text: 'ms / bpm' },
-      },
-      yaxis2: {
-        overlaying: 'y',
-        side: 'right',
-        title: { text: 'ratio / coherence' },
-        gridcolor: 'transparent',
-        zerolinecolor: 'transparent',
-        linecolor: '#475569',
-      },
+      yaxis: yaxisStyle,
+      yaxis2: yaxis2Style,
       showlegend: true,
     }),
     pull: () => {
       const source = useDashboardStore.getState().dataSource;
-      const samples = (source === 'replay' ? metricsBuffers.replay : metricsBuffers.live).getWindow(WINDOW_SEC);
+      const samples = (source === 'replay' ? metricsBuffers.replay : metricsBuffers.live).getWindow(windowSecRef.current);
       const rmssd = emptySeries();
       const sdnn = emptySeries();
       const hr = emptySeries();
@@ -65,72 +105,121 @@ export default function MetricsChart() {
         resonance.x.push(s.timestamp); resonance.y.push(v.resonanceCoherence);
       }
 
+      const n = smoothNRef.current;
+      const smooth = (vals: number[]): number[] => (n > 1 ? movingAverage(vals, n) : vals);
+      const hrY = smooth(hr.y);
+      const rmssdY = smooth(rmssd.y);
+      const sdnnY = smooth(sdnn.y);
+      const lfY = smooth(lf.y);
+      const hfY = smooth(hf.y);
+      const lfhfY = smooth(lfhf.y);
+      const resonanceY = smooth(resonance.y);
+      const hmY = smooth(hm.y);
+
+      // Two y-axes: y holds ms/bpm scale (HR, rMSSD, SDNN, LF, HF),
+      // y2 holds ratio/coherence (LF/HF, both coherence traces).
+      const layoutPatch: Partial<Layout> = {};
+      if (rescaleSecRef.current > 0) {
+        const yVals = hrY.concat(rmssdY, sdnnY, lfY, hfY);
+        const y2Vals = lfhfY.concat(resonanceY, hmY);
+        if (yVals.length > 0) {
+          const yRange = yLatch.compute(yVals, rescaleSecRef.current * 1000);
+          if (yRange) layoutPatch.yaxis = { ...yaxisStyle, range: yRange, autorange: false };
+        }
+        if (y2Vals.length > 0) {
+          const y2Range = y2Latch.compute(y2Vals, rescaleSecRef.current * 1000);
+          if (y2Range) layoutPatch.yaxis2 = { ...yaxis2Style, range: y2Range, autorange: false };
+        }
+      }
+
+      const useSpline = n > 1;
+      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
+      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+
       const traces: Data[] = [
         {
-          x: hr.x, y: hr.y, name: 'mean HR',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.hr, width: 1.5 },
+          x: hr.x, y: hrY, name: 'mean HR',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.hr, width: 1.5, shape: lineShape },
           yaxis: 'y',
         },
         {
-          x: rmssd.x, y: rmssd.y, name: 'rMSSD',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.rmssd, width: 1.5 },
+          x: rmssd.x, y: rmssdY, name: 'rMSSD',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.rmssd, width: 1.5, shape: lineShape },
           yaxis: 'y',
         },
         {
-          x: sdnn.x, y: sdnn.y, name: 'SDNN',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.sdnn, width: 1.5 },
-          yaxis: 'y',
-          visible: 'legendonly',
-        },
-        {
-          x: lf.x, y: lf.y, name: 'LF',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.lf, width: 1.5 },
+          x: sdnn.x, y: sdnnY, name: 'SDNN',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.sdnn, width: 1.5, shape: lineShape },
           yaxis: 'y',
           visible: 'legendonly',
         },
         {
-          x: hf.x, y: hf.y, name: 'HF',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.hf, width: 1.5 },
+          x: lf.x, y: lfY, name: 'LF',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.lf, width: 1.5, shape: lineShape },
           yaxis: 'y',
           visible: 'legendonly',
         },
         {
-          x: lfhf.x, y: lfhf.y, name: 'LF/HF',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.lfhf, width: 1.5 },
+          x: hf.x, y: hfY, name: 'HF',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.hf, width: 1.5, shape: lineShape },
+          yaxis: 'y',
+          visible: 'legendonly',
+        },
+        {
+          x: lfhf.x, y: lfhfY, name: 'LF/HF',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.lfhf, width: 1.5, shape: lineShape },
           yaxis: 'y2',
           visible: 'legendonly',
         },
         {
-          x: resonance.x, y: resonance.y, name: 'Coherence (resonance)',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.resonance, width: 2 },
+          x: resonance.x, y: resonanceY, name: 'Coherence (resonance)',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.resonance, width: 2, shape: lineShape },
           yaxis: 'y2',
         },
         {
-          x: hm.x, y: hm.y, name: 'Coherence (HeartMath)',
-          type: 'scattergl', mode: 'lines',
-          line: { color: CHART_COLORS.hm, width: 1.5, dash: 'dot' },
+          x: hm.x, y: hmY, name: 'Coherence (HeartMath)',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.hm, width: 1.5, shape: lineShape, dash: 'dot' },
           yaxis: 'y2',
           visible: 'legendonly',
         },
       ];
-      return { traces };
+      return { traces, layoutPatch };
     },
   });
 
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
-        <span className="text-xs font-medium text-slate-300">HRV metrics (10 min)</span>
-        <span className="text-[10px] text-slate-500">click legend to toggle traces</span>
+        <span className="text-xs font-medium text-slate-300">
+          HRV metrics ({formatWindow(windowSec)})
+        </span>
+        <ChartControls
+          windowSec={windowSec}
+          windowOptions={WINDOW_OPTIONS_HRV}
+          onWindowChange={onWindowChange}
+          smoothN={smoothN}
+          onSmoothChange={onSmoothChange}
+          rescaleSec={rescaleSec}
+          onRescaleChange={onRescaleChange}
+        >
+          <span className="text-[10px] text-slate-500 ml-2">click legend to toggle traces</span>
+        </ChartControls>
       </div>
       <div ref={divRef} className="flex-1 min-h-0" />
     </div>
   );
+}
+
+function formatWindow(sec: number): string {
+  if (sec < 60) return `${sec} s`;
+  const min = sec / 60;
+  return min >= 60 ? `${min / 60} h` : `${min} min`;
 }

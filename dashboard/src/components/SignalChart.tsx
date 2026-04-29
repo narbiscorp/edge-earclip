@@ -49,12 +49,17 @@ export default function SignalChart() {
   // that re-applying a y-axis range doesn't drop grid colors / titles.
   // (Plotly.react in useLivePlot does shallow merge — `layoutPatch.yaxis`
   // would otherwise replace baseLayout.yaxis entirely.)
+  // tickformat '.4s' = 4 sig figs with SI suffix (k, M). Fixes the IR
+  // axis showing truncated "18" instead of "178k" — Plotly's auto-format
+  // picks the shortest representation that fits, which loses precision
+  // when the data range is narrow on a high baseline.
   const yaxisStyle: Partial<Layout['yaxis']> = useMemo(
     () => ({
       gridcolor: '#334155',
       zerolinecolor: '#475569',
       linecolor: '#475569',
       title: { text: 'Red' },
+      tickformat: '.4s',
     }),
     [],
   );
@@ -66,6 +71,7 @@ export default function SignalChart() {
       gridcolor: 'transparent',
       zerolinecolor: 'transparent',
       linecolor: '#475569',
+      tickformat: '.4s',
     }),
     [],
   );
@@ -115,23 +121,31 @@ export default function SignalChart() {
         }
       }
 
+      // When smoothing is on, also use spline interpolation so the rendered
+      // line is visually continuous between samples (helps when data
+      // arrives in batches with brief inter-batch gaps). scattergl does
+      // not support spline, so smoothed traces fall back to scatter (SVG).
+      const useSpline = n > 1;
+      const traceType: 'scattergl' | 'scatter' = useSpline ? 'scatter' : 'scattergl';
+      const lineShape: 'linear' | 'spline' = useSpline ? 'spline' : 'linear';
+
       const traces: Data[] = [
         {
           x,
           y: redOut,
-          type: 'scattergl',
+          type: traceType,
           mode: 'lines',
           name: 'Red',
-          line: { color: CHART_COLORS.red, width: 1 },
+          line: { color: CHART_COLORS.red, width: 1, shape: lineShape },
           yaxis: 'y',
         },
         {
           x,
           y: irOut,
-          type: 'scattergl',
+          type: traceType,
           mode: 'lines',
           name: 'IR',
-          line: { color: CHART_COLORS.ir, width: 1 },
+          line: { color: CHART_COLORS.ir, width: 1, shape: lineShape },
           yaxis: 'y2',
         },
       ];

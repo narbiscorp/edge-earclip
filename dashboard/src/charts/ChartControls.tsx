@@ -8,9 +8,9 @@ import type { ReactNode } from 'react';
  *   - smooth: moving-average window size in samples (0 = off)
  *   - rescale: Y-axis re-fit interval in seconds (0 = always autorange)
  *
- * Kept as a single component so the chart headers stay tidy. If a chart
- * doesn't use one of the controls, omit the corresponding prop and the
- * group hides.
+ * Different chart types want different window scales (10–60 s for raw
+ * signals, 1–30 min for IBI/HRV), so each chart supplies its own
+ * `windowOptions`. Smooth and rescale options are uniform across charts.
  */
 
 type ButtonGroupProps<T extends number | string> = {
@@ -48,17 +48,34 @@ function ButtonGroup<T extends number | string>({ label, value, options, onChang
   );
 }
 
-export const WINDOW_OPTIONS = [
+export type WindowOption = { value: number; label: string };
+
+export const WINDOW_OPTIONS_FAST: readonly WindowOption[] = [
   { value: 10, label: '10s' },
   { value: 30, label: '30s' },
   { value: 60, label: '60s' },
-] as const;
+];
+
+export const WINDOW_OPTIONS_BEATS: readonly WindowOption[] = [
+  { value: 60, label: '1m' },
+  { value: 300, label: '5m' },
+  { value: 600, label: '10m' },
+  { value: 1800, label: '30m' },
+];
+
+export const WINDOW_OPTIONS_HRV: readonly WindowOption[] = [
+  { value: 300, label: '5m' },
+  { value: 600, label: '10m' },
+  { value: 1800, label: '30m' },
+  { value: 3600, label: '60m' },
+];
 
 export const SMOOTH_OPTIONS = [
   { value: 0, label: 'off' },
   { value: 3, label: '3' },
   { value: 7, label: '7' },
   { value: 15, label: '15' },
+  { value: 31, label: '31' },
 ] as const;
 
 export const RESCALE_OPTIONS = [
@@ -66,10 +83,12 @@ export const RESCALE_OPTIONS = [
   { value: 5, label: '5s' },
   { value: 15, label: '15s' },
   { value: 30, label: '30s' },
+  { value: 60, label: '60s' },
 ] as const;
 
 export interface ChartControlsProps {
   windowSec?: number;
+  windowOptions?: readonly WindowOption[];
   onWindowChange?: (sec: number) => void;
   smoothN?: number;
   onSmoothChange?: (n: number) => void;
@@ -80,6 +99,7 @@ export interface ChartControlsProps {
 
 export default function ChartControls({
   windowSec,
+  windowOptions = WINDOW_OPTIONS_FAST,
   onWindowChange,
   smoothN,
   onSmoothChange,
@@ -93,7 +113,7 @@ export default function ChartControls({
         <ButtonGroup<number>
           label="window"
           value={windowSec}
-          options={WINDOW_OPTIONS}
+          options={windowOptions}
           onChange={onWindowChange}
         />
       ) : null}
