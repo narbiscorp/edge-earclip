@@ -43,6 +43,10 @@ typedef struct {
     uint32_t rx_queue_full;     /* dropped: worker queue was full */
     uint32_t rx_ibi;            /* IBI messages delivered to user callback */
     uint32_t rx_other;          /* non-IBI messages logged then dropped */
+    uint32_t rx_pair_discover;  /* PAIR_DISCOVER frames accepted (auto-pair) */
+    uint32_t rx_pair_rejected;  /* PAIR_DISCOVER from non-partner while paired */
+    uint32_t tx_pair_offer;     /* PAIR_OFFER replies queued */
+    uint32_t tx_pair_offer_err; /* PAIR_OFFER queue/send returned error */
 } narbis_esp_now_rx_stats_t;
 
 /* Initialize Wi-Fi (STA, no association), ESP-NOW, partner peer, and the

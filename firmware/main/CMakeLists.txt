@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "app_state.c"
+        "auto_pair.c"
         "transport_espnow.c"
         "transport_ble.c"
         "ble_service_hrs.c"

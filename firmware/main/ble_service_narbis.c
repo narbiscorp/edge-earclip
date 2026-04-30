@@ -31,6 +31,7 @@
 #include "host/ble_uuid.h"
 #include "os/os_mbuf.h"
 
+#include "auto_pair.h"
 #include "ble_service_hrs.h"
 #include "config_manager.h"
 #include "narbis_protocol.h"
@@ -72,6 +73,14 @@ static const ble_uuid128_t CHR_PAIR_UUID = {
 static const ble_uuid128_t CHR_FACTORY_RESET_UUID = {
     .u = { .type = BLE_UUID_TYPE_128 },
     .value = { 0x11, 0xC4, 0xD9, 0xA8, 0x47, 0x7E, 0x4A, 0x36,
+               0x9D, 0x0F, 0x33, 0x16, 0xB1, 0x21, 0xE2, 0xC0 },
+};
+/* CHR_FORGET_PEER — write any 1-byte value to clear the persisted ESP-NOW
+ * partner MAC and re-run auto-pair discovery. Used by the dashboard's
+ * "Forget Edge" button. */
+static const ble_uuid128_t CHR_FORGET_PEER_UUID = {
+    .u = { .type = BLE_UUID_TYPE_128 },
+    .value = { 0x12, 0xC4, 0xD9, 0xA8, 0x47, 0x7E, 0x4A, 0x36,
                0x9D, 0x0F, 0x33, 0x16, 0xB1, 0x21, 0xE2, 0xC0 },
 };
 
@@ -203,6 +212,25 @@ static int access_pair(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+static int access_forget_peer(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
+    }
+    uint8_t buf[1];
+    uint16_t len = 0;
+    if (read_om_to_bytes(ctxt->om, buf, sizeof(buf), &len) != 0 || len != 1) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    esp_err_t err = auto_pair_request_repair();
+    if (err == ESP_ERR_INVALID_STATE) return BLE_ATT_ERR_UNLIKELY;
+    if (err != ESP_OK)                return BLE_ATT_ERR_UNLIKELY;
+    ESP_LOGW(TAG, "forget_peer: re-discovery requested");
+    return 0;
+}
+
 static int access_factory_reset(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -280,6 +308,11 @@ static const struct ble_gatt_chr_def NARBIS_CHRS[] = {
     {
         .uuid       = &CHR_FACTORY_RESET_UUID.u,
         .access_cb  = access_factory_reset,
+        .flags      = BLE_GATT_CHR_F_WRITE,
+    },
+    {
+        .uuid       = &CHR_FORGET_PEER_UUID.u,
+        .access_cb  = access_forget_peer,
         .flags      = BLE_GATT_CHR_F_WRITE,
     },
     {

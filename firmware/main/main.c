@@ -13,6 +13,7 @@
 #include "ppg_driver_max3010x.h"
 
 #include "app_state.h"
+#include "auto_pair.h"
 #include "beat_validator.h"
 #include "ble_ota.h"
 #include "ble_service_battery.h"
@@ -194,6 +195,12 @@ void app_main(void)
      * (or derives one from the loaded config on first boot). */
     ESP_ERROR_CHECK(app_state_init());
     (void)app_state_resume_last_mode();
+
+    /* Auto-pair: registers the ESP-NOW recv handler. If NVS already has a
+     * valid partner MAC this is a no-op. Otherwise spawns a one-shot
+     * discovery task that broadcasts PAIR_DISCOVER until an Edge replies
+     * with PAIR_OFFER (~30 s budget). Must run after transport_espnow_init. */
+    (void)auto_pair_init();
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

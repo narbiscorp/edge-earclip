@@ -24,6 +24,16 @@ edge-additions/
 - The ESP-NOW receive callback only copies the frame and enqueues it. A worker task pulls from the queue, deserializes through `narbis_packet_deserialize` (CRC + version + length checked there), logs every packet, and invokes the user beat callback for `NARBIS_MSG_IBI`.
 - Other message types (BATTERY, RAW_PPG, SQI, HEARTBEAT, CONFIG_ACK) are logged but not forwarded — Edge has no use for them in v1.
 
+### Auto-pair (no Kconfig MAC required)
+
+The receiver bypasses the partner-MAC filter for one specific message type, `NARBIS_MSG_PAIR_DISCOVER`. When an unpaired earclip broadcasts `PAIR_DISCOVER`, this component:
+
+1. Accepts the frame regardless of source MAC (sticky-pair: only when Edge is itself unpaired, or the source is the existing partner).
+2. Extracts the earclip's MAC from `recv_info->src_addr` and passes it to `narbis_esp_now_rx_set_partner()` — same code path as a manual pairing write, so NVS persistence and peer-table installation are reused.
+3. Replies unicast with `NARBIS_MSG_PAIR_OFFER` carrying the earclip's nonce so the earclip can correlate. Stats counters: `rx_pair_discover`, `rx_pair_rejected`, `tx_pair_offer`, `tx_pair_offer_err`.
+
+After the handshake, normal filtered RX takes over. To re-pair, call `narbis_esp_now_rx_clear_partner()` from a debug command or future BLE characteristic — the receiver will accept a new `PAIR_DISCOVER`. The earclip side of this protocol lives in `firmware/main/auto_pair.c`.
+
 ## Porting steps
 
 1. **Copy the component.** Copy `components/narbis_esp_now_rx/` into the Edge repo's `components/` directory.
@@ -77,7 +87,10 @@ After porting, verify in this order. All steps run with the Edge glasses serial 
 
    The two values must differ. If they are identical, the `esp_read_mac(...)` calls were swapped or the BLE controller never initialized.
 
-2. **Pair both sides.** Note Edge's `WIFI_STA_MAC` and put it in the earclip's `CONFIG_NARBIS_HARDCODED_PARTNER_MAC_VAL` (or write it via the dashboard pairing flow). Conversely, put the earclip's `WIFI_STA_MAC` in Edge's `CONFIG_NARBIS_HARDCODED_PARTNER_MAC_VAL`. Reflash both.
+2. **Pair both sides.** Two options:
+
+   - **Auto-pair (recommended).** Leave both Kconfig MACs at the default `FF:FF:FF:FF:FF:FF`. On boot, an unpaired earclip will broadcast `PAIR_DISCOVER` until this component replies with `PAIR_OFFER`. Both sides persist the result to NVS and survive reboot. No reflash, no dashboard step.
+   - **Manual.** Put Edge's `WIFI_STA_MAC` in the earclip's `CONFIG_NARBIS_HARDCODED_PARTNER_MAC_VAL` (or write via dashboard) and the earclip's MAC in Edge's. Reflash both. Useful when running multiple Edge units in radio range and you need a deterministic binding.
 
 3. **Receiver init log.** Edge should print:
 
@@ -107,8 +120,8 @@ After porting, verify in this order. All steps run with the Edge glasses serial 
 
 - BLE relay of earclip data to the dashboard via Edge.
 - Sensor fusion of Edge-side and earclip-side beats.
-- Pairing UI (the v1 path is Kconfig + `narbis_esp_now_rx_set_partner` from a future BLE characteristic).
-- ESP-NOW encryption or signing.
+- Edge-side pairing UI (auto-pair handles the steady-state case; a BLE characteristic to drive `narbis_esp_now_rx_clear_partner()` from the dashboard remains future work).
+- ESP-NOW encryption or signing — auto-pair currently runs unencrypted, so a malicious peer in radio range can race a legitimate `PAIR_DISCOVER` while Edge is unpaired. Acceptable for v1; revisit alongside encryption.
 
 ## Confirmation
 

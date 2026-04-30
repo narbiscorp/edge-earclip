@@ -22,6 +22,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -46,6 +47,7 @@
 static const char *TAG = "narbis_rx";
 
 typedef struct {
+    uint8_t src_addr[6];
     size_t  len;
     uint8_t buf[NARBIS_MAX_FRAME_SIZE];
 } rx_item_t;
@@ -61,6 +63,9 @@ static QueueHandle_t s_rx_queue;
 static TaskHandle_t  s_worker_task;
 
 static narbis_esp_now_rx_stats_t s_stats;
+
+/* Sequence counter for PAIR_OFFER replies. Single writer (worker task). */
+static uint16_t s_seq_pair_offer;
 
 /* ------------------------------------------------------------------- */
 /* Helpers                                                              */
@@ -216,12 +221,23 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
 
     s_stats.rx_total++;
 
-    if (!s_partner_known || memcmp(info->src_addr, s_partner_mac, 6) != 0) {
-        s_stats.rx_wrong_peer++;
-        return;
+    /* Auto-pair bypass: PAIR_DISCOVER frames may arrive from a sender we
+     * don't (yet) know, so skip the partner-MAC filter for that one
+     * msg_type. The worker task does the full validation (CRC + length)
+     * and the policy decision (accept new pairing vs. ignore stranger).
+     * Header byte 0 is msg_type — see narbis_header_t in narbis_protocol.h. */
+    bool is_pair_discover = ((size_t)len >= NARBIS_HEADER_SIZE)
+        && (data[0] == NARBIS_MSG_PAIR_DISCOVER);
+
+    if (!is_pair_discover) {
+        if (!s_partner_known || memcmp(info->src_addr, s_partner_mac, 6) != 0) {
+            s_stats.rx_wrong_peer++;
+            return;
+        }
     }
 
     rx_item_t item;
+    memcpy(item.src_addr, info->src_addr, 6);
     item.len = (size_t)len;
     memcpy(item.buf, data, item.len);
 
@@ -230,6 +246,72 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
      * preferable to blocking the Wi-Fi task. */
     if (xQueueSend(s_rx_queue, &item, 0) != pdPASS) {
         s_stats.rx_queue_full++;
+    }
+}
+
+/* ------------------------------------------------------------------- */
+/* Auto-pair: reply to PAIR_DISCOVER with PAIR_OFFER                    */
+/* ------------------------------------------------------------------- */
+
+static esp_err_t send_pair_offer(const uint8_t dst[6], uint16_t nonce, uint8_t status)
+{
+    narbis_packet_t pkt = {0};
+    pkt.header.msg_type     = NARBIS_MSG_PAIR_OFFER;
+    pkt.header.device_id    = 0;
+    pkt.header.seq_num      = ++s_seq_pair_offer;
+    pkt.header.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    pkt.payload.pair_offer.nonce    = nonce;
+    pkt.payload.pair_offer.status   = status;
+    pkt.payload.pair_offer.reserved = 0;
+
+    uint8_t buf[NARBIS_MAX_FRAME_SIZE];
+    size_t  out_len = 0;
+    if (narbis_packet_serialize(buf, sizeof(buf), &pkt, &out_len) != 0) {
+        return ESP_FAIL;
+    }
+    return esp_now_send(dst, buf, out_len);
+}
+
+/* Decide whether to accept this PAIR_DISCOVER. Sticky-pair policy in v1:
+ * accept iff unpaired or sender == current partner (idempotent re-pair).
+ * A foreign PAIR_DISCOVER while paired is silently dropped — we don't
+ * even reply BUSY, to avoid leaking pairing state. */
+static void handle_pair_discover(const uint8_t src_addr[6],
+                                 const narbis_pair_discover_payload_t *p)
+{
+    if (s_partner_known && memcmp(src_addr, s_partner_mac, 6) != 0) {
+        s_stats.rx_pair_rejected++;
+        ESP_LOGW(TAG,
+                 "PAIR_DISCOVER from %02x:%02x:%02x:%02x:%02x:%02x rejected "
+                 "(already paired with %02x:%02x:%02x:%02x:%02x:%02x)",
+                 src_addr[0], src_addr[1], src_addr[2],
+                 src_addr[3], src_addr[4], src_addr[5],
+                 s_partner_mac[0], s_partner_mac[1], s_partner_mac[2],
+                 s_partner_mac[3], s_partner_mac[4], s_partner_mac[5]);
+        return;
+    }
+
+    /* Persist + add as ESP-NOW peer (idempotent if same MAC). */
+    esp_err_t err = narbis_esp_now_rx_set_partner(src_addr);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_partner from PAIR_DISCOVER failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    s_stats.rx_pair_discover++;
+    ESP_LOGI(TAG,
+             "PAIR_DISCOVER nonce=0x%04x fw=%u.%u from %02x:%02x:%02x:%02x:%02x:%02x — paired",
+             p->nonce, p->fw_major, p->fw_minor,
+             src_addr[0], src_addr[1], src_addr[2],
+             src_addr[3], src_addr[4], src_addr[5]);
+
+    err = send_pair_offer(src_addr, p->nonce, NARBIS_PAIR_OFFER_OK);
+    if (err == ESP_OK) {
+        s_stats.tx_pair_offer++;
+    } else {
+        s_stats.tx_pair_offer_err++;
+        ESP_LOGW(TAG, "send PAIR_OFFER failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -254,6 +336,9 @@ static void worker_task(void *arg)
         }
 
         switch ((narbis_msg_type_t)pkt.header.msg_type) {
+        case NARBIS_MSG_PAIR_DISCOVER:
+            handle_pair_discover(item.src_addr, &pkt.payload.pair_discover);
+            break;
         case NARBIS_MSG_IBI: {
             s_stats.rx_ibi++;
             ESP_LOGI(TAG,

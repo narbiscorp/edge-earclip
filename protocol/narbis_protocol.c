@@ -65,6 +65,10 @@ size_t narbis_payload_size(const narbis_packet_t *pkt)
         return sizeof(narbis_heartbeat_payload_t);
     case NARBIS_MSG_CONFIG_ACK:
         return sizeof(narbis_config_ack_payload_t);
+    case NARBIS_MSG_PAIR_DISCOVER:
+        return sizeof(narbis_pair_discover_payload_t);
+    case NARBIS_MSG_PAIR_OFFER:
+        return sizeof(narbis_pair_offer_payload_t);
     default:
         return 0;
     }
@@ -181,6 +185,12 @@ int narbis_packet_deserialize(const uint8_t *buf, size_t buf_len,
         break;
     case NARBIS_MSG_CONFIG_ACK:
         expected_payload = sizeof(narbis_config_ack_payload_t);
+        break;
+    case NARBIS_MSG_PAIR_DISCOVER:
+        expected_payload = sizeof(narbis_pair_discover_payload_t);
+        break;
+    case NARBIS_MSG_PAIR_OFFER:
+        expected_payload = sizeof(narbis_pair_offer_payload_t);
         break;
     default:
         return -9;

@@ -111,12 +111,18 @@ extern "C" {
 
 /* ESP-NOW message types. Values are stable on the wire — never renumber. */
 typedef enum {
-    NARBIS_MSG_IBI         = 0x01,  /* one or more beat events */
-    NARBIS_MSG_RAW_PPG     = 0x02,  /* raw red+IR sample batch */
-    NARBIS_MSG_BATTERY     = 0x03,  /* battery state */
-    NARBIS_MSG_SQI         = 0x04,  /* signal quality indicator */
-    NARBIS_MSG_HEARTBEAT   = 0x05,  /* keepalive + diagnostics summary */
-    NARBIS_MSG_CONFIG_ACK  = 0x06   /* ack of a config write */
+    NARBIS_MSG_IBI            = 0x01,  /* one or more beat events */
+    NARBIS_MSG_RAW_PPG        = 0x02,  /* raw red+IR sample batch */
+    NARBIS_MSG_BATTERY        = 0x03,  /* battery state */
+    NARBIS_MSG_SQI            = 0x04,  /* signal quality indicator */
+    NARBIS_MSG_HEARTBEAT      = 0x05,  /* keepalive + diagnostics summary */
+    NARBIS_MSG_CONFIG_ACK     = 0x06,  /* ack of a config write */
+    /* Auto-pair handshake (channel 1, broadcast then unicast). Both sides
+     * accept these regardless of the stored partner filter so an unpaired
+     * device can find its peer. After PAIR_OFFER, normal filtered traffic
+     * resumes. See firmware/main/auto_pair.c and the Edge receiver. */
+    NARBIS_MSG_PAIR_DISCOVER  = 0x10,  /* broadcast: earclip → "any Edge" */
+    NARBIS_MSG_PAIR_OFFER     = 0x11   /* unicast:   Edge → earclip */
 } narbis_msg_type_t;
 
 /* Transport mode — earclip → Edge / dashboard routing. */
@@ -263,6 +269,31 @@ typedef struct __attribute__((packed)) {
     uint8_t  field_id;          /* offset (in bytes) of the field, or 0xFF for whole-struct */
 } narbis_config_ack_payload_t;
 
+/* PAIR_DISCOVER payload — sent by an unpaired earclip to broadcast
+ * (FF:FF:FF:FF:FF:FF) so any in-range Edge with the auto-pair RX bypass
+ * picks it up. earclip_mac duplicates the ESP-NOW src_addr but lets Edge
+ * log/verify independently. nonce is echoed in the matching PAIR_OFFER. */
+typedef struct __attribute__((packed)) {
+    uint8_t  earclip_mac[6];    /* sender's STA MAC */
+    uint16_t nonce;             /* random; echoed in PAIR_OFFER */
+    uint8_t  fw_major;
+    uint8_t  fw_minor;
+} narbis_pair_discover_payload_t;
+
+/* PAIR_OFFER payload — sent by Edge unicast to the discovered earclip
+ * once its MAC has been learned + persisted. status carries the result. */
+typedef enum {
+    NARBIS_PAIR_OFFER_OK       = 0,  /* paired; resume normal traffic */
+    NARBIS_PAIR_OFFER_BUSY     = 1,  /* Edge already paired with someone else */
+    NARBIS_PAIR_OFFER_REJECTED = 2   /* explicit rejection (reserved) */
+} narbis_pair_offer_status_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t nonce;             /* echo of PAIR_DISCOVER.nonce */
+    uint8_t  status;            /* narbis_pair_offer_status_t */
+    uint8_t  reserved;          /* must be 0 */
+} narbis_pair_offer_payload_t;
+
 /* =============================================================
  * Packet header + in-memory packet
  *
@@ -291,12 +322,14 @@ typedef struct __attribute__((packed)) {
 #define NARBIS_MAX_PAYLOAD_SIZE (NARBIS_MAX_FRAME_SIZE - NARBIS_FRAME_OVERHEAD)
 
 typedef union {
-    narbis_ibi_payload_t        ibi;
-    narbis_raw_ppg_payload_t    raw_ppg;
-    narbis_battery_payload_t    battery;
-    narbis_sqi_payload_t        sqi;
-    narbis_heartbeat_payload_t  heartbeat;
-    narbis_config_ack_payload_t config_ack;
+    narbis_ibi_payload_t           ibi;
+    narbis_raw_ppg_payload_t       raw_ppg;
+    narbis_battery_payload_t       battery;
+    narbis_sqi_payload_t           sqi;
+    narbis_heartbeat_payload_t     heartbeat;
+    narbis_config_ack_payload_t    config_ack;
+    narbis_pair_discover_payload_t pair_discover;
+    narbis_pair_offer_payload_t    pair_offer;
 } narbis_payload_t;
 
 typedef struct {

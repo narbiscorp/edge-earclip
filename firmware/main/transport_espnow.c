@@ -46,6 +46,12 @@ static uint16_t seq_battery;
 static atomic_uint tx_ok;
 static atomic_uint tx_fail;
 
+/* Single registered receive handler — set by auto_pair. */
+static transport_espnow_recv_fn s_recv_fn;
+static void                    *s_recv_ctx;
+static atomic_uint              rx_ok;
+static atomic_uint              rx_bad;
+
 static void on_send(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
     (void)tx_info;
@@ -54,6 +60,31 @@ static void on_send(const esp_now_send_info_t *tx_info, esp_now_send_status_t st
     } else {
         atomic_fetch_add(&tx_fail, 1);
         ESP_LOGD(TAG, "send fail (status=%d)", (int)status);
+    }
+}
+
+static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
+{
+    if (info == NULL || data == NULL || len <= 0
+        || (size_t)len > NARBIS_MAX_FRAME_SIZE) {
+        return;
+    }
+    /* Deserialize inline (no allocations, just CRC + memcpy). The handler
+     * is auto_pair; it is allowed to run in the Wi-Fi task as long as it
+     * returns quickly. There is currently no other consumer, so no queue
+     * is needed. */
+    narbis_packet_t pkt;
+    int rc = narbis_packet_deserialize(data, (size_t)len, &pkt);
+    if (rc != 0) {
+        atomic_fetch_add(&rx_bad, 1);
+        return;
+    }
+    atomic_fetch_add(&rx_ok, 1);
+
+    transport_espnow_recv_fn fn = s_recv_fn;
+    void *ctx                   = s_recv_ctx;
+    if (fn != NULL) {
+        fn(info->src_addr, &pkt, ctx);
     }
 }
 
@@ -154,6 +185,11 @@ esp_err_t transport_espnow_init(void)
     err = esp_now_register_send_cb(on_send);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "register_send_cb failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = esp_now_register_recv_cb(on_recv);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register_recv_cb failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -306,4 +342,43 @@ esp_err_t transport_espnow_send_battery(uint8_t soc_pct, uint16_t mv, uint8_t ch
     pkt.payload.battery.soc_pct  = soc_pct;
     pkt.payload.battery.charging = charging;
     return send_packet(&pkt, &seq_battery);
+}
+
+/* ============================================================================
+ * Peer + recv API (used by auto_pair)
+ * ========================================================================= */
+
+esp_err_t transport_espnow_add_peer(const uint8_t mac[6])
+{
+    if (mac == NULL)         return ESP_ERR_INVALID_ARG;
+    if (!transport_up)       return ESP_ERR_INVALID_STATE;
+    esp_err_t err = add_peer(mac);
+    if (err == ESP_ERR_ESPNOW_EXIST) err = ESP_OK;
+    return err;
+}
+
+esp_err_t transport_espnow_remove_peer(const uint8_t mac[6])
+{
+    if (mac == NULL)         return ESP_ERR_INVALID_ARG;
+    if (!transport_up)       return ESP_ERR_INVALID_STATE;
+    esp_err_t err = esp_now_del_peer(mac);
+    if (err == ESP_ERR_ESPNOW_NOT_FOUND) err = ESP_OK;
+    return err;
+}
+
+void transport_espnow_register_recv_handler(transport_espnow_recv_fn fn, void *ctx)
+{
+    /* Stores are observed atomically by on_recv on the same core; the
+     * Wi-Fi task may already be running by the time we re-register, so
+     * order matters slightly: clear ctx after fn is set, set ctx before
+     * fn on register. We don't bother with full atomics here because the
+     * worst case is one missed/extra dispatch during the swap, and
+     * register is a one-shot at boot. */
+    if (fn == NULL) {
+        s_recv_fn  = NULL;
+        s_recv_ctx = NULL;
+    } else {
+        s_recv_ctx = ctx;
+        s_recv_fn  = fn;
+    }
 }

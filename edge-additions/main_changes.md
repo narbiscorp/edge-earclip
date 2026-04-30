@@ -69,10 +69,13 @@ For bring-up, a periodic stats dump is helpful. Drop this into the existing slow
 narbis_esp_now_rx_stats_t st;
 narbis_esp_now_rx_get_stats(&st);
 ESP_LOGI("narbis_rx",
-         "stats: total=%lu ibi=%lu wrong_peer=%lu bad_frame=%lu queue_full=%lu other=%lu",
+         "stats: total=%lu ibi=%lu wrong_peer=%lu bad_frame=%lu queue_full=%lu other=%lu "
+         "pair_disc=%lu pair_rej=%lu pair_offer=%lu pair_offer_err=%lu",
          (unsigned long)st.rx_total, (unsigned long)st.rx_ibi,
          (unsigned long)st.rx_wrong_peer, (unsigned long)st.rx_bad_frame,
-         (unsigned long)st.rx_queue_full, (unsigned long)st.rx_other);
+         (unsigned long)st.rx_queue_full, (unsigned long)st.rx_other,
+         (unsigned long)st.rx_pair_discover, (unsigned long)st.rx_pair_rejected,
+         (unsigned long)st.tx_pair_offer, (unsigned long)st.tx_pair_offer_err);
 ```
 
 ## Notes
@@ -80,3 +83,4 @@ ESP_LOGI("narbis_rx",
 - The receive callback does **no** deserialization; the worker task does. So the user beat callback runs in task context and may briefly block on a queue send.
 - The receiver does not relay beats over BLE on the Edge side — that is deferred to v2.
 - Channel: the component hardcodes channel 1 (`NARBIS_RX_CHANNEL` in `narbis_esp_now_rx.c`) to match the earclip's `CONFIG_NARBIS_ESPNOW_CHANNEL` default. If Edge's existing Wi-Fi usage forces a different channel, change both sides to match.
+- Auto-pair: out of the box, an unpaired earclip will discover this Edge and self-pair via `NARBIS_MSG_PAIR_DISCOVER` / `PAIR_OFFER`. No additional `main.c` work is required for that — the receive path handles it internally and persists the result to NVS. To force a re-pair, call `narbis_esp_now_rx_clear_partner()`.

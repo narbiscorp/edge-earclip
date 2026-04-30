@@ -44,6 +44,35 @@ esp_err_t transport_espnow_send_battery(uint8_t soc_pct, uint16_t mv, uint8_t ch
  * transport_espnow_init has not run yet. */
 esp_err_t transport_espnow_get_partner_info(uint8_t mac[6], const char **source);
 
+/* ====== Auto-pair plumbing ======
+ *
+ * The auto_pair module owns the discovery handshake (broadcast
+ * PAIR_DISCOVER, await PAIR_OFFER). transport_espnow exposes the minimal
+ * primitives it needs: a peer add/remove pair and a single registered
+ * receive handler. Anything more elaborate (dispatch by msg_type, fan-out
+ * to multiple consumers) is deferred until we actually need it. */
+
+/* Add an ESP-NOW peer (channel = CONFIG_NARBIS_ESPNOW_CHANNEL, encrypt =
+ * false). Used by auto_pair to install the broadcast peer before sending
+ * PAIR_DISCOVER. ESP_ERR_ESPNOW_EXIST is treated as success.
+ * transport_espnow_init must have run first. */
+esp_err_t transport_espnow_add_peer(const uint8_t mac[6]);
+
+/* Remove a previously-added peer. ESP_ERR_ESPNOW_NOT_FOUND is treated as
+ * success (idempotent cleanup). */
+esp_err_t transport_espnow_remove_peer(const uint8_t mac[6]);
+
+/* Receive handler — invoked from the ESP-NOW Wi-Fi task after CRC +
+ * length validation. Implementations must return quickly (no blocking).
+ * The pkt pointer is on the caller's stack; copy out anything needed
+ * beyond the call. There is at most one registered handler. */
+typedef void (*transport_espnow_recv_fn)(const uint8_t src[6],
+                                         const narbis_packet_t *pkt,
+                                         void *ctx);
+
+/* Register a single receive handler. Pass NULL/NULL to unregister. */
+void transport_espnow_register_recv_handler(transport_espnow_recv_fn fn, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

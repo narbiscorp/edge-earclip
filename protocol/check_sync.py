@@ -43,6 +43,8 @@ STRUCT_ALIASES = {
     "narbis_sqi_payload_t": "NarbisSqiPayload",
     "narbis_heartbeat_payload_t": "NarbisHeartbeatPayload",
     "narbis_config_ack_payload_t": "NarbisConfigAckPayload",
+    "narbis_pair_discover_payload_t": "NarbisPairDiscoverPayload",
+    "narbis_pair_offer_payload_t": "NarbisPairOfferPayload",
     "narbis_runtime_config_t": "NarbisRuntimeConfig",
     "beat_event_t": "BeatEvent",
 }
@@ -57,6 +59,7 @@ ENUM_ALIASES = {
     "narbis_ota_opcode_t": "NarbisOtaOpcode",
     "narbis_ota_status_t": "NarbisOtaStatus",
     "narbis_ota_error_t": "NarbisOtaError",
+    "narbis_pair_offer_status_t": "NarbisPairOfferStatus",
 }
 
 # C enum value name → TS enum member name. C convention is
@@ -71,6 +74,7 @@ ENUM_MEMBER_PREFIX_STRIP = {
     "narbis_ota_opcode_t": "NARBIS_OTA_OP_",
     "narbis_ota_status_t": "NARBIS_OTA_ST_",
     "narbis_ota_error_t": "NARBIS_OTA_ERR_",
+    "narbis_pair_offer_status_t": "NARBIS_PAIR_OFFER_",
 }
 
 

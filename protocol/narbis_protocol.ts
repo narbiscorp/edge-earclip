@@ -71,6 +71,17 @@ export enum NarbisMsgType {
   SQI = 0x04,
   HEARTBEAT = 0x05,
   CONFIG_ACK = 0x06,
+  // Auto-pair handshake. PAIR_DISCOVER goes broadcast (earclip → "any Edge"),
+  // PAIR_OFFER comes back unicast (Edge → earclip). Both bypass the normal
+  // partner-MAC RX filter on the receiving side until pairing is complete.
+  PAIR_DISCOVER = 0x10,
+  PAIR_OFFER = 0x11,
+}
+
+export enum NarbisPairOfferStatus {
+  OK = 0,
+  BUSY = 1,
+  REJECTED = 2,
 }
 
 export enum NarbisTransportMode {
@@ -189,6 +200,19 @@ export interface NarbisConfigAckPayload {
   field_id: number;
 }
 
+export interface NarbisPairDiscoverPayload {
+  earclip_mac: Uint8Array; // length 6
+  nonce: number;
+  fw_major: number;
+  fw_minor: number;
+}
+
+export interface NarbisPairOfferPayload {
+  nonce: number;
+  status: number; // NarbisPairOfferStatus
+  reserved: number;
+}
+
 export interface NarbisHeader {
   msg_type: number;
   device_id: number;
@@ -205,7 +229,9 @@ export type NarbisPayload =
   | { type: NarbisMsgType.BATTERY; battery: NarbisBatteryPayload }
   | { type: NarbisMsgType.SQI; sqi: NarbisSqiPayload }
   | { type: NarbisMsgType.HEARTBEAT; heartbeat: NarbisHeartbeatPayload }
-  | { type: NarbisMsgType.CONFIG_ACK; config_ack: NarbisConfigAckPayload };
+  | { type: NarbisMsgType.CONFIG_ACK; config_ack: NarbisConfigAckPayload }
+  | { type: NarbisMsgType.PAIR_DISCOVER; pair_discover: NarbisPairDiscoverPayload }
+  | { type: NarbisMsgType.PAIR_OFFER; pair_offer: NarbisPairOfferPayload };
 
 export interface NarbisPacket {
   header: NarbisHeader;
@@ -411,6 +437,53 @@ function deserializeConfigAck(
   return { value: { config_version, status, field_id }, offset: off };
 }
 
+function serializePairDiscover(
+  view: DataView,
+  off: number,
+  p: NarbisPairDiscoverPayload,
+): number {
+  if (p.earclip_mac.length !== 6) {
+    throw new Error(`pair_discover earclip_mac must be 6 bytes, got ${p.earclip_mac.length}`);
+  }
+  new Uint8Array(view.buffer, view.byteOffset + off, 6).set(p.earclip_mac);
+  off += 6;
+  view.setUint16(off, p.nonce, true); off += 2;
+  view.setUint8(off, p.fw_major); off += 1;
+  view.setUint8(off, p.fw_minor); off += 1;
+  return off;
+}
+
+function deserializePairDiscover(
+  view: DataView,
+  off: number,
+): { value: NarbisPairDiscoverPayload; offset: number } {
+  const earclip_mac = new Uint8Array(
+    view.buffer.slice(view.byteOffset + off, view.byteOffset + off + 6),
+  );
+  off += 6;
+  const nonce = view.getUint16(off, true); off += 2;
+  const fw_major = view.getUint8(off); off += 1;
+  const fw_minor = view.getUint8(off); off += 1;
+  return { value: { earclip_mac, nonce, fw_major, fw_minor }, offset: off };
+}
+
+function serializePairOffer(view: DataView, off: number, p: NarbisPairOfferPayload): number {
+  view.setUint16(off, p.nonce, true); off += 2;
+  view.setUint8(off, p.status); off += 1;
+  view.setUint8(off, p.reserved); off += 1;
+  return off;
+}
+
+function deserializePairOffer(
+  view: DataView,
+  off: number,
+): { value: NarbisPairOfferPayload; offset: number } {
+  const nonce = view.getUint16(off, true); off += 2;
+  const status = view.getUint8(off); off += 1;
+  const reserved = view.getUint8(off); off += 1;
+  return { value: { nonce, status, reserved }, offset: off };
+}
+
 // =============================================================
 // Header (de)serialization
 // =============================================================
@@ -458,6 +531,10 @@ export function payloadSize(pkt: NarbisPacket): number {
       return 12;
     case NarbisMsgType.CONFIG_ACK:
       return 4;
+    case NarbisMsgType.PAIR_DISCOVER:
+      return 10;
+    case NarbisMsgType.PAIR_OFFER:
+      return 4;
   }
 }
 
@@ -491,6 +568,10 @@ export function serializePacket(pkt: NarbisPacket): Uint8Array {
       off = serializeHeartbeat(view, off, pkt.payload.heartbeat); break;
     case NarbisMsgType.CONFIG_ACK:
       off = serializeConfigAck(view, off, pkt.payload.config_ack); break;
+    case NarbisMsgType.PAIR_DISCOVER:
+      off = serializePairDiscover(view, off, pkt.payload.pair_discover); break;
+    case NarbisMsgType.PAIR_OFFER:
+      off = serializePairOffer(view, off, pkt.payload.pair_offer); break;
   }
 
   const crc = narbisCrc16(buf, NARBIS_HEADER_SIZE + payload_len);
@@ -553,6 +634,16 @@ export function deserializePacket(buf: Uint8Array): NarbisPacket {
     case NarbisMsgType.CONFIG_ACK: {
       const r = deserializeConfigAck(view, off); off = r.offset;
       payload = { type: NarbisMsgType.CONFIG_ACK, config_ack: r.value };
+      break;
+    }
+    case NarbisMsgType.PAIR_DISCOVER: {
+      const r = deserializePairDiscover(view, off); off = r.offset;
+      payload = { type: NarbisMsgType.PAIR_DISCOVER, pair_discover: r.value };
+      break;
+    }
+    case NarbisMsgType.PAIR_OFFER: {
+      const r = deserializePairOffer(view, off); off = r.offset;
+      payload = { type: NarbisMsgType.PAIR_OFFER, pair_offer: r.value };
       break;
     }
     default:
