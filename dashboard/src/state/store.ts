@@ -199,22 +199,60 @@ narbisDevice.addEventListener('error', (e) => {
   setState({ lastError: `${phase}: ${error.message}` });
 });
 
+// Coalesce zustand updates from BLE event handlers into one setState per
+// RAF. Without this, every BLE notification (1–10 Hz across 4 streams)
+// triggers a store update, which re-renders every component that calls
+// useDashboardStore — including all four streaming charts. We accumulate
+// here and flush once per frame.
+const pending = {
+  beats: 0,
+  rawSamples: 0,
+  sqi: 0,
+  polarBeats: 0,
+  lastBeat: null as NarbisBeatEvent | null,
+  lastSqi: null as NarbisSqiPayload | null,
+};
+let flushRaf = 0;
+
+function scheduleCounterFlush(): void {
+  if (flushRaf) return;
+  flushRaf = requestAnimationFrame(() => {
+    flushRaf = 0;
+    const cur = useDashboardStore.getState();
+    const patch: Partial<DashboardState> = {
+      counters: {
+        beats: cur.counters.beats + pending.beats,
+        rawSamples: cur.counters.rawSamples + pending.rawSamples,
+        sqi: cur.counters.sqi + pending.sqi,
+        polarBeats: cur.counters.polarBeats + pending.polarBeats,
+      },
+    };
+    if (pending.lastBeat) patch.lastBeat = pending.lastBeat;
+    if (pending.lastSqi) patch.lastSqi = pending.lastSqi;
+    setState(patch);
+    pending.beats = 0;
+    pending.rawSamples = 0;
+    pending.sqi = 0;
+    pending.polarBeats = 0;
+    pending.lastBeat = null;
+    pending.lastSqi = null;
+  });
+}
+
 narbisDevice.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<NarbisBeatEvent>).detail;
   liveBuffers.narbisBeats.push(beat.timestamp, beat);
-  setState((s) => ({
-    lastBeat: beat,
-    counters: { ...s.counters, beats: s.counters.beats + 1 },
-  }));
+  pending.beats += 1;
+  pending.lastBeat = beat;
+  scheduleCounterFlush();
 });
 
 narbisDevice.addEventListener('sqiReceived', (e) => {
   const sqi = (e as CustomEvent<NarbisSqiEvent>).detail;
   liveBuffers.sqi.push(sqi.timestamp, sqi);
-  setState((s) => ({
-    lastSqi: sqi,
-    counters: { ...s.counters, sqi: s.counters.sqi + 1 },
-  }));
+  pending.sqi += 1;
+  pending.lastSqi = sqi;
+  scheduleCounterFlush();
 });
 
 narbisDevice.addEventListener('rawSampleReceived', (e) => {
@@ -240,9 +278,8 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
   }
   lastRawTs = firstTs + (n - 1) * periodMs;
 
-  setState((s) => ({
-    counters: { ...s.counters, rawSamples: s.counters.rawSamples + n },
-  }));
+  pending.rawSamples += n;
+  scheduleCounterFlush();
 });
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
@@ -299,9 +336,8 @@ polarH10.addEventListener('error', (e) => {
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
   liveBuffers.polarBeats.push(beat.timestamp, { bpm: beat.bpm, rr: beat.rrIntervals_ms });
-  setState((s) => ({
-    counters: { ...s.counters, polarBeats: s.counters.polarBeats + 1 },
-  }));
+  pending.polarBeats += 1;
+  scheduleCounterFlush();
 });
 
 export function setRecordingState(active: boolean, startedAt: number | null): void {

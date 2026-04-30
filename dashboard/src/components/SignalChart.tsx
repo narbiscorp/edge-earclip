@@ -13,11 +13,11 @@ export default function SignalChart() {
   const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
-  // Spline is the default — without it Plotly draws straight segments
-  // between samples and the chart looks jagged with batch arrival
-  // patterns. User can switch to linear for max performance or step
-  // for ECG-paper-style rendering.
-  const [shape, setShape] = useState<LineShape>('spline');
+  // Linear is the default. With sliding-window scrolling at 30 Hz the
+  // chart already looks continuous, and 'linear' lets Plotly use scattergl
+  // (WebGL-accelerated) instead of the SVG scatter path required by spline
+  // — the SVG path becomes the dominant render cost above ~1500 points.
+  const [shape, setShape] = useState<LineShape>('linear');
 
   const pausedRef = useRef(false);
   pausedRef.current = paused;
@@ -106,15 +106,15 @@ export default function SignalChart() {
     }),
     pull: () => {
       const buf = getActiveBuffers().rawPpg;
-      const samples = buf.getWindow(windowSecRef.current);
-      const x = new Array<number>(samples.length);
-      const red = new Array<number>(samples.length);
-      const ir = new Array<number>(samples.length);
-      for (let i = 0; i < samples.length; i++) {
-        x[i] = samples[i].timestamp;
-        red[i] = samples[i].value.red;
-        ir[i] = samples[i].value.ir;
-      }
+      const seq = buf.seq;
+      const x: number[] = [];
+      const red: number[] = [];
+      const ir: number[] = [];
+      buf.forEachInWindow(windowSecRef.current, (ts, v) => {
+        x.push(ts);
+        red.push(v.red);
+        ir.push(v.ir);
+      });
       const n = smoothNRef.current;
       const redOut = n > 1 ? movingAverage(red, n) : red;
       const irOut = n > 1 ? movingAverage(ir, n) : ir;
@@ -137,10 +137,11 @@ export default function SignalChart() {
 
       // scattergl renders 'linear' shape only — spline and step need SVG
       // 'scatter'. We pick the type based on the user's shape choice and
-      // sample count: above ~3000 points SVG starts to lag, so we cap
-      // spline/step at that point and fall back to scattergl+linear.
+      // sample count: above ~1500 points SVG starts to dominate the
+      // render budget at 30 Hz × 4 charts, so we fall back to
+      // scattergl+linear there.
       const desired = shapeRef.current;
-      const tooMany = redOut.length > 3000;
+      const tooMany = redOut.length > 1500;
       const effectiveShape: LineShape = tooMany ? 'linear' : desired;
       const traceType: 'scattergl' | 'scatter' = effectiveShape === 'linear' ? 'scattergl' : 'scatter';
 
@@ -164,7 +165,7 @@ export default function SignalChart() {
           yaxis: 'y2',
         },
       ];
-      return { traces, layoutPatch };
+      return { traces, layoutPatch, seq };
     },
   });
 

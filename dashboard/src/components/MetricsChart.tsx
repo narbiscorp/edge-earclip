@@ -90,7 +90,8 @@ export default function MetricsChart() {
     }),
     pull: () => {
       const source = useDashboardStore.getState().dataSource;
-      const samples = (source === 'replay' ? metricsBuffers.replay : metricsBuffers.live).getWindow(windowSecRef.current);
+      const buf = source === 'replay' ? metricsBuffers.replay : metricsBuffers.live;
+      const seq = buf.seq;
       const rmssd = emptySeries();
       const sdnn = emptySeries();
       const hr = emptySeries();
@@ -99,17 +100,16 @@ export default function MetricsChart() {
       const lfhf = emptySeries();
       const hm = emptySeries();
       const resonance = emptySeries();
-      for (const s of samples) {
-        const v: MetricsSnapshot = s.value;
-        rmssd.x.push(s.timestamp); rmssd.y.push(v.rmssd);
-        sdnn.x.push(s.timestamp); sdnn.y.push(v.sdnn);
-        hr.x.push(s.timestamp); hr.y.push(v.meanHr);
-        lf.x.push(s.timestamp); lf.y.push(v.lf);
-        hf.x.push(s.timestamp); hf.y.push(v.hf);
-        lfhf.x.push(s.timestamp); lfhf.y.push(v.lfHfRatio);
-        hm.x.push(s.timestamp); hm.y.push(v.hmCoherence);
-        resonance.x.push(s.timestamp); resonance.y.push(v.resonanceCoherence);
-      }
+      buf.forEachInWindow(windowSecRef.current, (ts, v: MetricsSnapshot) => {
+        rmssd.x.push(ts); rmssd.y.push(v.rmssd);
+        sdnn.x.push(ts); sdnn.y.push(v.sdnn);
+        hr.x.push(ts); hr.y.push(v.meanHr);
+        lf.x.push(ts); lf.y.push(v.lf);
+        hf.x.push(ts); hf.y.push(v.hf);
+        lfhf.x.push(ts); lfhf.y.push(v.lfHfRatio);
+        hm.x.push(ts); hm.y.push(v.hmCoherence);
+        resonance.x.push(ts); resonance.y.push(v.resonanceCoherence);
+      });
 
       const n = smoothNRef.current;
       const smooth = (vals: number[]): number[] => (n > 1 ? movingAverage(vals, n) : vals);
@@ -198,7 +198,7 @@ export default function MetricsChart() {
           visible: 'legendonly',
         },
       ];
-      return { traces, layoutPatch };
+      return { traces, layoutPatch, seq };
     },
   });
 

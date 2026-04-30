@@ -11,7 +11,8 @@ export default function FilteredChart() {
   const setWindowSec = useDashboardStore((s) => s.setWindowSec);
   const [smoothN, setSmoothN] = useState(0);
   const [rescaleSec, setRescaleSec] = useState(0);
-  const [shape, setShape] = useState<LineShape>('spline');
+  // Linear default — see SignalChart for rationale.
+  const [shape, setShape] = useState<LineShape>('linear');
 
   const windowSecRef = useRef(windowSec);
   windowSecRef.current = windowSec;
@@ -66,7 +67,7 @@ export default function FilteredChart() {
     }),
     pull: () => {
       const buf = getActiveBuffers().filtered;
-      const samples = buf.getWindow(windowSecRef.current);
+      const seq = buf.seq;
 
       const fX: number[] = [];
       const fY: number[] = [];
@@ -75,8 +76,7 @@ export default function FilteredChart() {
       const rejectX: number[] = [];
       const rejectY: number[] = [];
 
-      for (const s of samples) {
-        const v = s.value;
+      buf.forEachInWindow(windowSecRef.current, (_ts, v) => {
         if (v.kind === 'filtered') {
           fX.push(v.timestamp);
           fY.push(v.value);
@@ -89,7 +89,7 @@ export default function FilteredChart() {
             acceptY.push(v.amplitude);
           }
         }
-      }
+      });
 
       // Smooth the continuous filtered trace; peak markers stay at their
       // true amplitudes (smoothing them would move the dots off the line).
@@ -115,7 +115,7 @@ export default function FilteredChart() {
       }
 
       const desired = shapeRef.current;
-      const tooMany = fYOut.length > 3000;
+      const tooMany = fYOut.length > 1500;
       const filteredShape: LineShape = tooMany ? 'linear' : desired;
       const filteredType: 'scattergl' | 'scatter' = filteredShape === 'linear' ? 'scattergl' : 'scatter';
 
@@ -145,7 +145,7 @@ export default function FilteredChart() {
           marker: { color: CHART_COLORS.peakReject, size: 8, symbol: 'x' },
         },
       ];
-      return { traces, layoutPatch };
+      return { traces, layoutPatch, seq };
     },
   });
 

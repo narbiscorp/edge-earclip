@@ -17,6 +17,11 @@ class MetricsRunner extends EventTarget {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
   private nextRequestId = 1;
+  // Skip the worker post when no new beats have arrived since the last
+  // tick. v13_26 strides frequency-domain HRV every 5 beats for the same
+  // reason — Lomb-Scargle is the dominant cost and HRV moves on a ~30 s
+  // timescale, so per-second recompute is wasted when nothing changed.
+  private lastBeatSeq = -1;
 
   start(): void {
     if (this.worker) return;
@@ -36,6 +41,7 @@ class MetricsRunner extends EventTarget {
       this.worker = null;
     }
     this.inFlight = false;
+    this.lastBeatSeq = -1;
     metricsBuffers.live.clear();
   }
 
@@ -46,7 +52,9 @@ class MetricsRunner extends EventTarget {
   private tick = (): void => {
     if (!this.worker || this.inFlight) return;
     if (useDashboardStore.getState().dataSource !== 'live') return;
-    const beats = useDashboardStore.getState().buffers.narbisBeats.getAll();
+    const beatBuf = useDashboardStore.getState().buffers.narbisBeats;
+    if (beatBuf.seq === this.lastBeatSeq) return;
+    const beats = beatBuf.getAll();
     if (beats.length < 4) return;
     const beatEvents = beats.map((s) => s.value);
     const { times_s, ibis_ms } = extractIbiWindow(beatEvents, METRICS_WINDOW_SEC, Date.now());
@@ -60,6 +68,7 @@ class MetricsRunner extends EventTarget {
       ibis_ms,
     };
     this.inFlight = true;
+    this.lastBeatSeq = beatBuf.seq;
     this.worker.postMessage(msg, [times_s.buffer, ibis_ms.buffer]);
   };
 

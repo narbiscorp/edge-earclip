@@ -9,6 +9,9 @@ export class StreamBuffer<T> {
   private readonly values: Array<T | undefined>;
   private head = 0;
   private count = 0;
+  // Monotonic write counter — chart render loops compare against the last
+  // value they consumed and skip Plotly.react when nothing has changed.
+  private _seq = 0;
 
   constructor(capacity: number) {
     if (capacity <= 0) throw new Error(`capacity must be positive, got ${capacity}`);
@@ -17,11 +20,16 @@ export class StreamBuffer<T> {
     this.values = new Array<T | undefined>(capacity);
   }
 
+  get seq(): number {
+    return this._seq;
+  }
+
   push(timestamp: number, value: T): void {
     this.timestamps[this.head] = timestamp;
     this.values[this.head] = value;
     this.head = (this.head + 1) % this.capacity;
     if (this.count < this.capacity) this.count += 1;
+    this._seq++;
   }
 
   getWindow(seconds: number): StreamSample<T>[] {
@@ -37,6 +45,28 @@ export class StreamBuffer<T> {
       }
     }
     return out;
+  }
+
+  // Zero-allocation window iterator. The callback receives raw values and
+  // an output index so chart pulls can fill caller-owned typed arrays
+  // without first materialising a `StreamSample[]` per frame.
+  forEachInWindow(
+    seconds: number,
+    cb: (timestamp: number, value: T, index: number) => void,
+  ): number {
+    if (this.count === 0) return 0;
+    const cutoff = this.latestTimestamp() - seconds * 1000;
+    const start = (this.head - this.count + this.capacity) % this.capacity;
+    let n = 0;
+    for (let i = 0; i < this.count; i++) {
+      const idx = (start + i) % this.capacity;
+      const ts = this.timestamps[idx];
+      if (ts >= cutoff) {
+        cb(ts, this.values[idx] as T, n);
+        n++;
+      }
+    }
+    return n;
   }
 
   getAll(): StreamSample<T>[] {
@@ -59,6 +89,8 @@ export class StreamBuffer<T> {
   clear(): void {
     this.head = 0;
     this.count = 0;
+    // Bump seq so chart consumers re-render the cleared state.
+    this._seq++;
   }
 
   size(): number {

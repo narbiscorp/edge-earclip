@@ -6,6 +6,15 @@ import { chartSync, type ChartId } from './chartSync';
 export interface LivePlotSnapshot {
   traces: Data[];
   layoutPatch?: Partial<Layout>;
+  /**
+   * Monotonic data revision. When set, useLivePlot skips the full
+   * Plotly.react() trace re-diff if `seq` has not advanced since the
+   * previous frame and only the layout (sliding window, crosshair,
+   * external range) needs updating — using the cheaper Plotly.relayout
+   * instead. Without this, a 30 Hz refresh re-diffs the entire trace
+   * even when no new sample arrived.
+   */
+  seq?: number;
 }
 
 export interface UseLivePlotOptions {
@@ -57,6 +66,10 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
     let externalRange: [number, number] | null = null;
     let raf = 0;
     let lastDraw = 0;
+    let prevSeq = -1;
+    let prevExternalLeft: number | null = null;
+    let prevExternalRight: number | null = null;
+    let prevCrosshair: number | null = null;
     const period = 1000 / (optsRef.current.refreshHz ?? DEFAULT_HZ);
 
     const tick = (now: number): void => {
@@ -73,6 +86,7 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       // gridcolor, etc. Same applies to the y-axes (each chart handles
       // its own y-axis style preservation in pull()).
       const baseXaxis = optsRef.current.baseLayout.xaxis ?? {};
+      const followingWindow = !externalRange && !!optsRef.current.followWindowSec;
       if (externalRange) {
         layoutPatch.xaxis = {
           ...baseXaxis,
@@ -110,7 +124,44 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       } else {
         layoutPatch.shapes = [];
       }
-      void Plotly.react(div, snap.traces, { ...optsRef.current.baseLayout, ...layoutPatch });
+
+      // Decide whether the trace data actually changed since the last
+      // draw. If the chart's pull() didn't supply a seq we have to
+      // assume yes (legacy behavior). Otherwise compare and use the
+      // cheaper Plotly.relayout when only the layout (sliding window,
+      // external range, crosshair) needs to update.
+      const seq = snap.seq;
+      const dataChanged = seq === undefined || seq !== prevSeq;
+      const externalLeft = externalRange?.[0] ?? null;
+      const externalRight = externalRange?.[1] ?? null;
+      const externalChanged =
+        externalLeft !== prevExternalLeft || externalRight !== prevExternalRight;
+      const crosshairChanged = crosshair_ms !== prevCrosshair;
+
+      if (!dataChanged && !externalChanged && !crosshairChanged && !followingWindow) {
+        // Nothing to redraw — buffer is idle and no layout change.
+        return;
+      }
+
+      if (dataChanged) {
+        void Plotly.react(div, snap.traces, {
+          ...optsRef.current.baseLayout,
+          ...layoutPatch,
+        });
+      } else {
+        // Traces unchanged — only layout (sliding window / crosshair /
+        // external range) moved. Plotly.relayout skips the trace diff
+        // entirely, which is the bulk of the cost at 30 Hz × 4 charts.
+        void Plotly.relayout(div, {
+          ...optsRef.current.baseLayout,
+          ...layoutPatch,
+        });
+      }
+
+      prevSeq = seq ?? prevSeq;
+      prevExternalLeft = externalLeft;
+      prevExternalRight = externalRight;
+      prevCrosshair = crosshair_ms;
     };
     raf = requestAnimationFrame(tick);
 

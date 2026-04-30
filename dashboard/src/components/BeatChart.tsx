@@ -70,39 +70,41 @@ export default function BeatChart() {
     }),
     pull: () => {
       const bufs = getActiveBuffers();
-      const earclipSamples = bufs.narbisBeats.getWindow(windowSecRef.current);
-      const polarSamples = bufs.polarBeats.getWindow(windowSecRef.current);
+      // Combined seq across the two beat sources — useLivePlot redraws
+      // when either buffer ticks. Polar's seq is offset so they don't
+      // collide on identical counts.
+      const seq = bufs.narbisBeats.seq + bufs.polarBeats.seq * 0x10000;
 
       const ecX: number[] = [];
       const ecY: number[] = [];
       const artX: number[] = [];
       const artY: number[] = [];
-      for (const s of earclipSamples) {
-        if (s.value.ibi_ms <= 0) continue;
-        if (isArtifactBeat(s.value)) {
-          artX.push(s.timestamp);
-          artY.push(s.value.ibi_ms);
+      bufs.narbisBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
+        if (v.ibi_ms <= 0) return;
+        if (isArtifactBeat(v)) {
+          artX.push(ts);
+          artY.push(v.ibi_ms);
         } else {
-          ecX.push(s.timestamp);
-          ecY.push(s.value.ibi_ms);
+          ecX.push(ts);
+          ecY.push(v.ibi_ms);
         }
-      }
+      });
 
       const polarX: number[] = [];
       const polarY: number[] = [];
-      for (const s of polarSamples) {
-        const rrs = s.value.rr;
-        if (!rrs || rrs.length === 0) continue;
+      bufs.polarBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
+        const rrs = v.rr;
+        if (!rrs || rrs.length === 0) return;
         let totalRemaining = 0;
         for (let i = rrs.length - 1; i >= 0; i--) totalRemaining += rrs[i];
         let acc = 0;
         for (let i = 0; i < rrs.length; i++) {
-          const t = s.timestamp - (totalRemaining - acc);
+          const t = ts - (totalRemaining - acc);
           polarX.push(t);
           polarY.push(rrs[i]);
           acc += rrs[i];
         }
-      }
+      });
 
       // Smoothing applies to the accepted Earclip and Polar beat series
       // (a running mean over the last N IBIs). Artifacts are NOT smoothed —
@@ -157,7 +159,7 @@ export default function BeatChart() {
           marker: { color: CHART_COLORS.artifact, size: 6, symbol: 'x' },
         },
       ];
-      return { traces, layoutPatch };
+      return { traces, layoutPatch, seq };
     },
   });
 
