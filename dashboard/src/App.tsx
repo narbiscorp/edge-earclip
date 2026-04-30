@@ -28,6 +28,9 @@ export default function App() {
       <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0">
         <h1 className="text-lg font-semibold tracking-tight">
           Narbis Earclip Dashboard
+          <span className="ml-2 text-[10px] font-mono text-emerald-400 align-middle">
+            perf-v1 · {__BUILD_ID__}
+          </span>
         </h1>
         <ConnectionPanel />
       </header>
