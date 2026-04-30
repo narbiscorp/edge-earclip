@@ -150,10 +150,18 @@ static esp_err_t apply_sensor(const narbis_runtime_config_t *c,
 static esp_err_t apply_transport(const narbis_runtime_config_t *c,
                                  const narbis_runtime_config_t *prev)
 {
-    if (prev == NULL || c->ble_profile != prev->ble_profile) {
+    bool profile_changed = (prev == NULL) || (c->ble_profile != prev->ble_profile);
+    bool period_changed  = (prev == NULL) ||
+                           (c->ble_batch_period_ms != prev->ble_batch_period_ms);
+    if (profile_changed) {
         ble_service_hrs_set_profile(c->ble_profile);
         esp_err_t err = transport_ble_set_profile(c->ble_profile);
         if (err != ESP_OK) return err;
+    }
+    if (profile_changed || period_changed) {
+        uint32_t period = (c->ble_profile == NARBIS_BLE_BATCHED)
+                            ? c->ble_batch_period_ms : 0u;
+        ble_service_hrs_set_batch_period(period);
     }
     if (prev == NULL || memcmp(c->partner_mac, prev->partner_mac, 6) != 0) {
         if (!mac_is_special(c->partner_mac)) {
@@ -357,6 +365,8 @@ esp_err_t config_apply_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t
     esp_err_t err = ESP_OK;
     if (profile_changed) {
         ble_service_hrs_set_profile(ble_profile);
+        ble_service_hrs_set_batch_period(
+            (ble_profile == NARBIS_BLE_BATCHED) ? g_config.ble_batch_period_ms : 0u);
         err = transport_ble_set_profile(ble_profile);
     }
     if (err == ESP_OK) {

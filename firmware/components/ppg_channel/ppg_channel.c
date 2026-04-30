@@ -55,6 +55,7 @@ typedef struct {
     uint32_t agc_target_dc_max;
     uint16_t agc_step_ma_x10;
     int64_t  agc_last_step_us;      /* esp_timer_get_time() of last AGC LED write */
+    uint16_t agc_last_known_x10;    /* tracker for active-channel LED current */
 
     portMUX_TYPE cb_lock;
     ppg_channel_output_cb_t out_cb;
@@ -96,6 +97,7 @@ static void apply_default_agc(ppg_channel_state_t *st)
     st->agc_target_dc_min   = (uint32_t)PPG_ADC_MAX_18BIT / 4u;
     st->agc_target_dc_max   = ((uint32_t)PPG_ADC_MAX_18BIT * 3u) / 4u;
     st->agc_step_ma_x10     = 5;
+    st->agc_last_known_x10  = 70;   /* matches default 7.0 mA */
 }
 
 esp_err_t ppg_channel_init(void)
@@ -148,6 +150,13 @@ esp_err_t ppg_channel_apply_config(const narbis_runtime_config_t *cfg)
                                        ? cfg->agc_target_dc_max
                                        : (cfg->agc_target_dc_min + 1u);
     s_state.agc_step_ma_x10      = (cfg->agc_step_ma_x10 > 0) ? cfg->agc_step_ma_x10 : 5;
+    /* Re-sync the AGC's LED-current tracker to whatever the active channel's
+     * configured current is. Without this, AGC's first adjustment after a
+     * user-driven LED change would compute from a stale baseline and stomp
+     * the user's setting. */
+    s_state.agc_last_known_x10 = (k_active == PPG_ACTIVE_RED)
+                                     ? cfg->led_red_ma_x10
+                                     : cfg->led_ir_ma_x10;
     return ESP_OK;
 }
 
@@ -182,19 +191,18 @@ static void agc_update(uint32_t dc, bool saturated)
         return;
     }
 
-    /* Read current LED current via driver: not exposed — track our own
-     * estimate. Easiest: read via static, updated each successful write. */
-    static uint16_t last_known_x10 = 70;  /* matches default 7.0 mA */
-    int new_x10 = (int)last_known_x10 + delta_x10;
+    /* Tracker lives in s_state and is re-synced from runtime config in
+     * ppg_channel_apply_config() whenever the user changes LED current. */
+    int new_x10 = (int)s_state.agc_last_known_x10 + delta_x10;
     if (new_x10 < 0)   new_x10 = 0;
     if (new_x10 > 510) new_x10 = 510;
-    if ((uint16_t)new_x10 == last_known_x10) return;
+    if ((uint16_t)new_x10 == s_state.agc_last_known_x10) return;
 
     esp_err_t err = ppg_driver_set_led_current(active_to_led(), (uint16_t)new_x10);
     if (err == ESP_OK) {
-        last_known_x10 = (uint16_t)new_x10;
+        s_state.agc_last_known_x10 = (uint16_t)new_x10;
         s_state.agc_last_step_us = now;
-        ESP_LOGD(TAG, "agc: dc=%lu sat=%d → led=%d.%d mA",
+        ESP_LOGI(TAG, "agc: dc=%lu sat=%d → led=%d.%d mA",
                  (unsigned long)dc, (int)saturated,
                  new_x10 / 10, new_x10 % 10);
     }

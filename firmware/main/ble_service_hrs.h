@@ -30,6 +30,11 @@ void ble_service_hrs_flush(void);
  * dropping into LOW_LATENCY. */
 void ble_service_hrs_set_profile(uint8_t ble_profile);
 
+/* Configure the BATCHED-mode flush cadence in milliseconds. Pass 0 to
+ * stop the timer. The timer only runs while profile is BATCHED; this
+ * call is a no-op until the next profile switch when in LOW_LATENCY. */
+void ble_service_hrs_set_batch_period(uint32_t period_ms);
+
 #ifdef __cplusplus
 }
 #endif

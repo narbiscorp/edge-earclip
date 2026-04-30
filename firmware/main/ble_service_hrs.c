@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -41,11 +42,16 @@ static uint8_t  g_profile = NARBIS_BLE_BATCHED;
 
 /* BATCHED mode accumulator. Protected by a critical section since
  * ble_service_hrs_push_beat is called from the beat-validator task and
- * ble_service_hrs_flush from the BLE host task / a future batch timer. */
+ * ble_service_hrs_flush from the BLE host task or the batch timer. */
 static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t g_rr_buf[HRS_BATCH_MAX_RR];
 static uint8_t  g_rr_count;
 static uint8_t  g_last_bpm;
+
+/* Batch flush timer. Active only while profile == BATCHED. */
+static esp_timer_handle_t g_batch_timer;
+static uint32_t           g_batch_period_ms;
+static bool               g_batch_timer_running;
 
 static int body_sensor_loc_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                                      struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -101,11 +107,21 @@ esp_err_t ble_service_hrs_init(void)
     g_rr_count = 0;
     g_last_bpm = 0;
     g_profile = NARBIS_BLE_BATCHED;
+    g_batch_period_ms = 0;
+    g_batch_timer_running = false;
     return ESP_OK;
 }
 
 esp_err_t ble_service_hrs_deinit(void)
 {
+    if (g_batch_timer != NULL) {
+        if (g_batch_timer_running) {
+            esp_timer_stop(g_batch_timer);
+            g_batch_timer_running = false;
+        }
+        esp_timer_delete(g_batch_timer);
+        g_batch_timer = NULL;
+    }
     return ESP_OK;
 }
 
@@ -197,10 +213,68 @@ void ble_service_hrs_flush(void)
     emit_notify_locked(bpm, local_buf, n);
 }
 
+static void batch_timer_cb(void *arg)
+{
+    (void)arg;
+    ble_service_hrs_flush();
+}
+
+static void batch_timer_stop(void)
+{
+    if (g_batch_timer != NULL && g_batch_timer_running) {
+        esp_timer_stop(g_batch_timer);
+        g_batch_timer_running = false;
+    }
+}
+
+static esp_err_t batch_timer_ensure_running(uint32_t period_ms)
+{
+    if (period_ms == 0) {
+        batch_timer_stop();
+        return ESP_OK;
+    }
+    if (g_batch_timer == NULL) {
+        const esp_timer_create_args_t targs = {
+            .callback        = &batch_timer_cb,
+            .name            = "hrs_batch",
+            .dispatch_method = ESP_TIMER_TASK,
+        };
+        esp_err_t err = esp_timer_create(&targs, &g_batch_timer);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_timer_create: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+    batch_timer_stop();
+    esp_err_t err = esp_timer_start_periodic(g_batch_timer,
+                                             (uint64_t)period_ms * 1000u);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_timer_start_periodic: %s", esp_err_to_name(err));
+        return err;
+    }
+    g_batch_timer_running = true;
+    return ESP_OK;
+}
+
+void ble_service_hrs_set_batch_period(uint32_t period_ms)
+{
+    g_batch_period_ms = period_ms;
+    if (g_profile == NARBIS_BLE_BATCHED) {
+        (void)batch_timer_ensure_running(period_ms);
+    } else {
+        batch_timer_stop();
+    }
+}
+
 void ble_service_hrs_set_profile(uint8_t ble_profile)
 {
     if (ble_profile == NARBIS_BLE_LOW_LATENCY && g_profile != NARBIS_BLE_LOW_LATENCY) {
         ble_service_hrs_flush();
     }
     g_profile = ble_profile;
+    if (ble_profile == NARBIS_BLE_BATCHED) {
+        (void)batch_timer_ensure_running(g_batch_period_ms);
+    } else {
+        batch_timer_stop();
+    }
 }
