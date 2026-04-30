@@ -33,6 +33,16 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
 # sleep entry; here we just enable the framework.
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+# Light-sleep / lock-holder profiling. esp_pm_dump_locks() prints which
+# component is holding the CPU/APB at MAX. Enabled while we hunt down
+# why average current is far above target.
+CONFIG_PM_PROFILING=y
+CONFIG_PM_DFS_INIT_AUTO=y
+# Track total time spent in light sleep so we can verify it's actually
+# entering. esp_pm_get_sleep_stats() (or the dump_locks output) reports it.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 
 # ---------------- Logging ----------------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

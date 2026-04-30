@@ -298,7 +298,23 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             g_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "connected handle=%u", g_conn_handle);
+            /* Pull current connection params so we can log average current
+             * cost: avg ≈ (interval × radio-on-time) / interval. Lower
+             * latency = higher current. itvl is in 1.25 ms units, timeout
+             * in 10 ms units. */
+            struct ble_gap_conn_desc desc;
+            int drc = ble_gap_conn_find(g_conn_handle, &desc);
+            if (drc == 0) {
+                ESP_LOGI(TAG,
+                         "connected handle=%u itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
+                         g_conn_handle, desc.conn_itvl,
+                         (desc.conn_itvl * 125u) / 100u,
+                         (desc.conn_itvl * 125u) % 100u,
+                         desc.conn_latency, desc.supervision_timeout,
+                         desc.supervision_timeout * 10u);
+            } else {
+                ESP_LOGI(TAG, "connected handle=%u (conn_find rc=%d)", g_conn_handle, drc);
+            }
 
             /* Latch first-connect — wakes the OTA validity self-test. */
             if (!g_first_connect_seen && g_first_connect_sem) {
@@ -349,9 +365,21 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         break;
     }
 
-    case BLE_GAP_EVENT_CONN_UPDATE:
-        ESP_LOGI(TAG, "conn_update status=%d", event->conn_update.status);
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+            ESP_LOGI(TAG,
+                     "conn_update status=%d itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
+                     event->conn_update.status, desc.conn_itvl,
+                     (desc.conn_itvl * 125u) / 100u,
+                     (desc.conn_itvl * 125u) % 100u,
+                     desc.conn_latency, desc.supervision_timeout,
+                     desc.supervision_timeout * 10u);
+        } else {
+            ESP_LOGI(TAG, "conn_update status=%d", event->conn_update.status);
+        }
         break;
+    }
 
     default:
         break;

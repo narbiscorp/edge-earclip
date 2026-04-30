@@ -32,6 +32,12 @@ bool power_mgmt_can_ota(void);
 void power_mgmt_acquire_ble_active(void);
 void power_mgmt_release_ble_active(void);
 
+/* Dump everything we know about the current power state to the log:
+ * esp_pm config, who's holding pm_locks, Wi-Fi PS mode, current CPU
+ * frequency, MAX3010x LED currents, free heap. Cheap (one-shot) — call
+ * at boot and from periodic ticks while debugging high-current draw. */
+void power_mgmt_log_diagnostics(const char *reason);
+
 #ifdef __cplusplus
 }
 #endif

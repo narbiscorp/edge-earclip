@@ -498,6 +498,17 @@ static esp_err_t apply_led_currents(void)
     return ESP_OK;
 }
 
+esp_err_t ppg_driver_get_led_current(ppg_led_t led, uint16_t *milliamps_x10)
+{
+    if (milliamps_x10 == NULL) return ESP_ERR_INVALID_ARG;
+    switch (led) {
+        case PPG_LED_RED:   *milliamps_x10 = s.cfg.led_red_ma_x10;   return ESP_OK;
+        case PPG_LED_IR:    *milliamps_x10 = s.cfg.led_ir_ma_x10;    return ESP_OK;
+        case PPG_LED_GREEN: *milliamps_x10 = s.cfg.led_green_ma_x10; return ESP_OK;
+        default:            return ESP_ERR_INVALID_ARG;
+    }
+}
+
 static esp_err_t install_isr(int int_gpio)
 {
     gpio_config_t io = {

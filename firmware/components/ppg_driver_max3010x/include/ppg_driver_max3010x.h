@@ -80,6 +80,12 @@ ppg_chip_type_t ppg_driver_get_chip_type(void);
  * the detected chip (e.g. GREEN on MAX30102). */
 esp_err_t ppg_driver_set_led_current(ppg_led_t led, uint16_t milliamps_x10);
 
+/* Read back the last-applied LED current in 0.1 mA units. Reflects the
+ * driver's internal cache of the last successful set, NOT a register
+ * readback — but since AGC writes go through ppg_driver_set_led_current()
+ * the cache is authoritative. Returns ESP_ERR_INVALID_ARG on bad LED. */
+esp_err_t ppg_driver_get_led_current(ppg_led_t led, uint16_t *milliamps_x10);
+
 /* Change sample rate at runtime. Valid: 50, 100, 200, 400. */
 esp_err_t ppg_driver_set_sample_rate(uint16_t hz);
 

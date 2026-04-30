@@ -18,11 +18,15 @@
 
 #include "power_mgmt.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
+#include "esp_heap_caps.h"
+#include "soc/rtc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -31,6 +35,7 @@
 
 #include "ble_service_battery.h"
 #include "ble_service_narbis.h"
+#include "ppg_driver_max3010x.h"
 #include "transport_ble.h"
 #include "transport_espnow.h"
 
@@ -268,6 +273,106 @@ static void battery_tick(void *arg)
     }
 
     emit_battery_frames(mv, soc, charging);
+
+    /* Periodic diagnostics — every battery tick (30 s). Cheap. */
+    power_mgmt_log_diagnostics("periodic");
+}
+
+/* ============================================================================
+ * Diagnostics dump — figure out who's preventing light sleep.
+ * ========================================================================= */
+
+static const char *wifi_ps_name(wifi_ps_type_t ps)
+{
+    switch (ps) {
+    case WIFI_PS_NONE:       return "NONE (modem always on)";
+    case WIFI_PS_MIN_MODEM:  return "MIN_MODEM";
+    case WIFI_PS_MAX_MODEM:  return "MAX_MODEM";
+    default:                 return "?";
+    }
+}
+
+void power_mgmt_log_diagnostics(const char *reason)
+{
+    ESP_LOGI(TAG, "==== diagnostics dump (%s) ====", reason ? reason : "");
+
+    /* Uptime */
+    int64_t up_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "uptime=%lld.%03lld s",
+             (long long)(up_us / 1000000), (long long)((up_us / 1000) % 1000));
+
+    /* esp_pm config */
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_cfg = {0};
+    if (esp_pm_get_configuration(&pm_cfg) == ESP_OK) {
+        ESP_LOGI(TAG, "pm_cfg: max=%d MHz min=%d MHz light_sleep=%d",
+                 pm_cfg.max_freq_mhz, pm_cfg.min_freq_mhz,
+                 (int)pm_cfg.light_sleep_enable);
+    } else {
+        ESP_LOGW(TAG, "esp_pm_get_configuration failed");
+    }
+#else
+    ESP_LOGW(TAG, "CONFIG_PM_ENABLE not set in built sdkconfig — light sleep impossible");
+#endif
+
+    /* Current CPU frequency. */
+    rtc_cpu_freq_config_t freq_cfg = {0};
+    rtc_clk_cpu_freq_get_config(&freq_cfg);
+    ESP_LOGI(TAG, "cpu now: %u MHz (source div=%u)",
+             freq_cfg.freq_mhz, freq_cfg.div);
+
+    /* Wi-Fi power save. Note: WIFI_PS_MIN_MODEM only saves power if the
+     * STA is associated with an AP and DTIM beacons anchor sleep windows.
+     * For ESP-NOW with no AP it's effectively WIFI_PS_NONE in practice. */
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    if (esp_wifi_get_ps(&ps) == ESP_OK) {
+        ESP_LOGI(TAG, "wifi_ps=%s (note: useless for ESP-NOW without AP assoc)",
+                 wifi_ps_name(ps));
+    } else {
+        ESP_LOGW(TAG, "esp_wifi_get_ps failed");
+    }
+
+    /* MAX3010x LED currents (read back from driver state). AGC may have
+     * raised these — at 51 mA per LED max, two LEDs alone can dominate
+     * the entire power budget. */
+    uint16_t red_x10 = 0, ir_x10 = 0;
+    (void)ppg_driver_get_led_current(PPG_LED_RED, &red_x10);
+    (void)ppg_driver_get_led_current(PPG_LED_IR,  &ir_x10);
+    ESP_LOGI(TAG, "LED currents: RED=%u.%u mA  IR=%u.%u mA",
+             red_x10 / 10, red_x10 % 10, ir_x10 / 10, ir_x10 % 10);
+
+    /* Heap. */
+    size_t free_now = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t free_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "heap: free=%u min_free=%u", (unsigned)free_now, (unsigned)free_min);
+
+    /* BLE state — gives us advertising vs connected vs idle. */
+    uint16_t conn = transport_ble_get_conn_handle();
+    uint16_t mtu  = transport_ble_get_mtu();
+    if (conn == 0xFFFF) {
+        ESP_LOGI(TAG, "BLE: no central connected (likely advertising)");
+    } else {
+        ESP_LOGI(TAG, "BLE: connected conn_handle=0x%04x mtu=%u", conn, mtu);
+    }
+
+    /* Who's holding the locks that keep light sleep off. This is the
+     * most direct evidence of why we can't sleep. Output goes to stdout,
+     * which is the same UART as ESP_LOG by default. */
+#if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+    fputs("---- esp_pm_dump_locks ----\n", stdout);
+    esp_pm_dump_locks(stdout);
+    fputs("---- end pm_dump_locks ----\n", stdout);
+#elif CONFIG_PM_ENABLE
+    ESP_LOGW(TAG, "rebuild with CONFIG_PM_PROFILING=y to see lock holders");
+#endif
+
+    ESP_LOGI(TAG, "==== end diagnostics ====");
+}
+
+static void boot_diag_oneshot(void *arg)
+{
+    (void)arg;
+    power_mgmt_log_diagnostics("boot+5s");
 }
 
 /* ============================================================================
@@ -282,7 +387,13 @@ esp_err_t power_mgmt_init(void)
     }
 
 #if CONFIG_PM_ENABLE
-    esp_err_t err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "ble_active",
+    /* Intent: keep light sleep off for the duration of a BLE notify submit.
+     * Use ESP_PM_NO_LIGHT_SLEEP rather than ESP_PM_CPU_FREQ_MAX — the former
+     * is the right primitive for "don't sleep right now", and lets DFS
+     * still drop the CPU frequency between notifies. CPU_FREQ_MAX would
+     * pin the CPU at 160 MHz across every notify boundary in raw-PPG
+     * mode (29-sample batches at ~7 Hz on top of beat events). */
+    esp_err_t err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "ble_active",
                                        &s_ble_active_lock);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "pm_lock_create ble_active: %s", esp_err_to_name(err));
@@ -308,7 +419,21 @@ esp_err_t power_mgmt_init(void)
     };
     esp_err_t terr = esp_timer_create(&targs, &s_batt_timer);
     if (terr != ESP_OK) return terr;
-    return esp_timer_start_periodic(s_batt_timer, BATT_TICK_PERIOD_US);
+    terr = esp_timer_start_periodic(s_batt_timer, BATT_TICK_PERIOD_US);
+    if (terr != ESP_OK) return terr;
+
+    /* One-shot boot diagnostics 5 s in — by then BLE advertising is up,
+     * Wi-Fi is initialised, and any peer-driven pm_locks have settled. */
+    const esp_timer_create_args_t bargs = {
+        .callback        = &boot_diag_oneshot,
+        .name            = "diag_boot",
+        .dispatch_method = ESP_TIMER_TASK,
+    };
+    esp_timer_handle_t bt = NULL;
+    if (esp_timer_create(&bargs, &bt) == ESP_OK) {
+        (void)esp_timer_start_once(bt, 5ULL * 1000ULL * 1000ULL);
+    }
+    return ESP_OK;
 }
 
 esp_err_t power_mgmt_deinit(void)
