@@ -167,6 +167,9 @@ static void test_sqi(FILE *gold)
 
 static void test_heartbeat(FILE *gold)
 {
+    /* mode_byte still packs three 2-bit fields for byte-layout compat with
+     * older NVS blobs and the existing dashboard parser. transport bits
+     * are now always 0 (Path B has only one transport, BLE). */
     narbis_packet_t pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.msg_type = NARBIS_MSG_HEARTBEAT;
@@ -177,7 +180,6 @@ static void test_heartbeat(FILE *gold)
     pkt.payload.heartbeat.free_heap = 200000;
     pkt.payload.heartbeat.rssi_dbm = -55;
     pkt.payload.heartbeat.mode_byte = (uint8_t)(
-        (NARBIS_TRANSPORT_HYBRID & 0x03) |
         ((NARBIS_BLE_LOW_LATENCY & 0x03) << 2) |
         ((NARBIS_DATA_IBI_PLUS_RAW & 0x03) << 4));
     pkt.payload.heartbeat.reserved = 0;
@@ -202,7 +204,7 @@ static void test_config(FILE *gold)
 {
     narbis_runtime_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.config_version       = 2;
+    cfg.config_version       = 3;
     cfg.sample_rate_hz       = 200;
     cfg.led_red_ma_x10       = 70;
     cfg.led_ir_ma_x10        = 70;
@@ -220,13 +222,9 @@ static void test_config(FILE *gold)
     cfg.ibi_min_ms           = 300;
     cfg.ibi_max_ms           = 2000;
     cfg.ibi_max_delta_pct    = 30;
-    cfg.transport_mode       = NARBIS_TRANSPORT_EDGE_ONLY;
     cfg.ble_profile          = NARBIS_BLE_BATCHED;
     cfg.data_format          = NARBIS_DATA_IBI_ONLY;
     cfg.ble_batch_period_ms  = 500;
-    uint8_t mac[6] = {0x24, 0x6F, 0x28, 0x00, 0x11, 0x22};
-    memcpy(cfg.partner_mac, mac, 6);
-    cfg.espnow_channel       = 1;
     cfg.diagnostics_enabled  = 1;
     cfg.light_sleep_enabled  = 1;
     cfg.diagnostics_mask     = NARBIS_DIAG_STREAM_PRE_FILTER | NARBIS_DIAG_STREAM_POST_FILTER;
@@ -255,6 +253,15 @@ static void test_crc_smoke(void)
     if (got != 0x29B1) {
         fprintf(stderr, "  expected 0x29B1, got 0x%04X\n", got);
     }
+}
+
+static void test_peer_role_enum(void)
+{
+    /* Path B: peer-role values are written 1 byte to NARBIS_CHR_PEER_ROLE.
+     * Validate the enum numbering hasn't drifted. */
+    check(NARBIS_PEER_ROLE_UNKNOWN   == 0, "NARBIS_PEER_ROLE_UNKNOWN==0");
+    check(NARBIS_PEER_ROLE_DASHBOARD == 1, "NARBIS_PEER_ROLE_DASHBOARD==1");
+    check(NARBIS_PEER_ROLE_GLASSES   == 2, "NARBIS_PEER_ROLE_GLASSES==2");
 }
 
 static void test_corruption_detected(void)
@@ -297,6 +304,7 @@ int main(void)
 
     fclose(gold);
 
+    test_peer_role_enum();
     test_corruption_detected();
 
     if (failures != 0) {

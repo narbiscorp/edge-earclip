@@ -2,10 +2,10 @@
  * transport_ble.c — NimBLE host bring-up, GAP, advertising, and the
  * consolidated GATT service table.
  *
- * Stage 06 wires up the four services (DIS, HRS, Battery, custom Narbis)
- * and exposes a small notify/subscribe helper to the rest of the firmware.
- * Each service module owns its characteristic definitions; this file
- * stitches them into a single ble_gatts_add_svcs() call.
+ * Multi-central: the earclip accepts up to NARBIS_BLE_MAX_CONNECTIONS
+ * simultaneous centrals (dashboard + glasses, plus a debug slot).
+ * Per-connection state (handle, subscriptions, role) lives in fixed-size
+ * slot arrays indexed 0..NARBIS_BLE_MAX_CONNECTIONS-1.
  */
 
 #include "transport_ble.h"
@@ -41,27 +41,69 @@ static const char *TAG = "transport_ble";
 #define BLE_TRANSPORT_PREF_MTU      247
 #define BLE_TRANSPORT_INVALID_CONN  0xFFFF
 
-static uint8_t g_own_addr_type;
-static uint16_t g_conn_handle = BLE_TRANSPORT_INVALID_CONN;
-static uint16_t g_mtu;
-static char g_device_name[32];
+/* Per-connection slot. handle == BLE_TRANSPORT_INVALID_CONN means free. */
+typedef struct {
+    uint16_t            handle;
+    uint16_t            mtu;
+    narbis_peer_role_t  role;
+    bool                subscribed[BLE_SUB_COUNT];
+} ble_slot_t;
 
-/* Subscription state per characteristic. Indexed by ble_subscription_t. */
-static bool g_subscribed[BLE_SUB_COUNT];
+static uint8_t g_own_addr_type;
+static char    g_device_name[32];
+static ble_slot_t g_slots[NARBIS_BLE_MAX_CONNECTIONS];
+
+/* Value handles are global (one set per characteristic, populated when
+ * the GATT services register). Subscriptions are per-slot. */
 static uint16_t g_val_handles[BLE_SUB_COUNT];
 
-/* One-shot latch: given exactly once on the first successful BLE_GAP_EVENT_CONNECT
- * after boot. Used by the OTA validity self-test (ble_ota.c) to commit a
- * freshly OTA'd image once the dashboard reconnects. */
 static SemaphoreHandle_t g_first_connect_sem;
 static bool              g_first_connect_seen;
+static bool              g_advertising;
 
-static int gap_event_handler(struct ble_gap_event *event, void *arg);
-static void start_advertising(void);
+static int  gap_event_handler(struct ble_gap_event *event, void *arg);
+static void start_advertising_if_room(void);
 
 /* ============================================================================
- * Subscription / handle bookkeeping (called from service modules during
- * gatts_register_cb)
+ * Slot helpers
+ * ========================================================================= */
+
+static int find_slot_by_handle(uint16_t handle)
+{
+    if (handle == BLE_TRANSPORT_INVALID_CONN) return -1;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle == handle) return i;
+    }
+    return -1;
+}
+
+static int find_free_slot(void)
+{
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle == BLE_TRANSPORT_INVALID_CONN) return i;
+    }
+    return -1;
+}
+
+static int active_slot_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle != BLE_TRANSPORT_INVALID_CONN) n++;
+    }
+    return n;
+}
+
+static void clear_slot(int idx)
+{
+    g_slots[idx].handle = BLE_TRANSPORT_INVALID_CONN;
+    g_slots[idx].mtu    = 0;
+    g_slots[idx].role   = NARBIS_PEER_ROLE_UNKNOWN;
+    memset(g_slots[idx].subscribed, 0, sizeof(g_slots[idx].subscribed));
+}
+
+/* ============================================================================
+ * Subscription / handle bookkeeping
  * ========================================================================= */
 
 void transport_ble_set_val_handle(ble_subscription_t which, uint16_t val_handle)
@@ -81,85 +123,133 @@ uint16_t transport_ble_val_handle(ble_subscription_t which)
 
 bool transport_ble_is_subscribed(ble_subscription_t which)
 {
-    if ((unsigned)which >= BLE_SUB_COUNT) {
-        return false;
+    if ((unsigned)which >= BLE_SUB_COUNT) return false;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle != BLE_TRANSPORT_INVALID_CONN &&
+            g_slots[i].subscribed[which]) {
+            return true;
+        }
     }
-    return g_conn_handle != BLE_TRANSPORT_INVALID_CONN && g_subscribed[which];
+    return false;
 }
 
 uint16_t transport_ble_get_mtu(void)
 {
-    return g_mtu ? g_mtu : 23;
+    uint16_t lowest = 0;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle == BLE_TRANSPORT_INVALID_CONN) continue;
+        uint16_t m = g_slots[i].mtu ? g_slots[i].mtu : 23;
+        if (lowest == 0 || m < lowest) lowest = m;
+    }
+    return lowest ? lowest : 23;
+}
+
+bool transport_ble_any_connected(void)
+{
+    return active_slot_count() > 0;
 }
 
 uint16_t transport_ble_get_conn_handle(void)
 {
-    return g_conn_handle;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle != BLE_TRANSPORT_INVALID_CONN) {
+            return g_slots[i].handle;
+        }
+    }
+    return BLE_TRANSPORT_INVALID_CONN;
 }
 
 /* ============================================================================
  * Profile application (connection params)
  * ========================================================================= */
 
-esp_err_t transport_ble_set_profile(uint8_t ble_profile)
+static void params_for_profile(uint8_t ble_profile, struct ble_gap_upd_params *p)
 {
-    if (g_conn_handle == BLE_TRANSPORT_INVALID_CONN) {
-        return ESP_OK;  /* applies on next connect */
-    }
-
-    struct ble_gap_upd_params params = {0};
+    memset(p, 0, sizeof(*p));
     if (ble_profile == NARBIS_BLE_LOW_LATENCY) {
-        /* 12 * 1.25ms = 15ms .. 24 * 1.25ms = 30ms */
-        params.itvl_min = 12;
-        params.itvl_max = 24;
-        params.latency  = 0;
-        params.supervision_timeout = 200;  /* 2 s */
+        p->itvl_min = 12;   /* 15 ms */
+        p->itvl_max = 24;   /* 30 ms */
+        p->latency  = 0;
+        p->supervision_timeout = 200;
     } else {
-        /* 40 * 1.25ms = 50ms .. 80 * 1.25ms = 100ms */
-        params.itvl_min = 40;
-        params.itvl_max = 80;
-        params.latency  = 4;
-        params.supervision_timeout = 400;  /* 4 s */
+        p->itvl_min = 40;   /* 50 ms */
+        p->itvl_max = 80;   /* 100 ms */
+        p->latency  = 4;
+        p->supervision_timeout = 400;
     }
-    int rc = ble_gap_update_params(g_conn_handle, &params);
+}
+
+static esp_err_t apply_profile_to_handle(uint16_t handle, uint8_t ble_profile)
+{
+    struct ble_gap_upd_params params;
+    params_for_profile(ble_profile, &params);
+    int rc = ble_gap_update_params(handle, &params);
     if (rc != 0) {
-        ESP_LOGW(TAG, "gap_update_params: rc=%d", rc);
+        ESP_LOGW(TAG, "gap_update_params handle=%u rc=%d", handle, rc);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "profile %s applied (itvl=%u..%u lat=%u)",
+    ESP_LOGI(TAG, "profile %s applied to handle=%u",
              ble_profile == NARBIS_BLE_LOW_LATENCY ? "LOW_LATENCY" : "BATCHED",
-             params.itvl_min, params.itvl_max, params.latency);
+             handle);
     return ESP_OK;
 }
 
+esp_err_t transport_ble_set_profile(uint8_t ble_profile)
+{
+    if (active_slot_count() == 0) return ESP_OK;
+    esp_err_t any_err = ESP_OK;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle == BLE_TRANSPORT_INVALID_CONN) continue;
+        esp_err_t e = apply_profile_to_handle(g_slots[i].handle, ble_profile);
+        if (e != ESP_OK) any_err = e;
+    }
+    return any_err;
+}
+
+esp_err_t transport_ble_set_peer_role(uint16_t conn_handle, narbis_peer_role_t role)
+{
+    int slot = find_slot_by_handle(conn_handle);
+    if (slot < 0) return ESP_ERR_NOT_FOUND;
+    g_slots[slot].role = role;
+    ESP_LOGI(TAG, "peer slot=%d handle=%u role=%d", slot, conn_handle, (int)role);
+    uint8_t profile = (role == NARBIS_PEER_ROLE_DASHBOARD)
+                        ? NARBIS_BLE_LOW_LATENCY
+                        : NARBIS_BLE_BATCHED;
+    return apply_profile_to_handle(conn_handle, profile);
+}
+
 /* ============================================================================
- * Notify helper
+ * Notify helper — fan out to every subscribed peer
  * ========================================================================= */
 
 esp_err_t transport_ble_notify(ble_subscription_t which,
                                const uint8_t *data, uint16_t len)
 {
-    if (g_conn_handle == BLE_TRANSPORT_INVALID_CONN) return ESP_ERR_INVALID_STATE;
-    if (!transport_ble_is_subscribed(which))         return ESP_OK;
-
-    uint16_t val_handle = transport_ble_val_handle(which);
+    if ((unsigned)which >= BLE_SUB_COUNT) return ESP_ERR_INVALID_ARG;
+    uint16_t val_handle = g_val_handles[which];
     if (val_handle == 0) return ESP_ERR_INVALID_STATE;
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (om == NULL) return ESP_ERR_NO_MEM;
+    esp_err_t any_err = ESP_OK;
+    bool sent_any = false;
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle == BLE_TRANSPORT_INVALID_CONN) continue;
+        if (!g_slots[i].subscribed[which]) continue;
 
-    /* Hold light-sleep off for the duration of the notification submit so
-     * the radio stays warm. NimBLE itself buffers and sends async — this
-     * scope only covers ble_gatts_notify_custom. Long-running batches are
-     * already chunked at the per-characteristic push helpers. */
-    power_mgmt_acquire_ble_active();
-    int rc = ble_gatts_notify_custom(g_conn_handle, val_handle, om);
-    power_mgmt_release_ble_active();
-    if (rc != 0) {
-        ESP_LOGD(TAG, "notify rc=%d which=%d len=%u", rc, (int)which, len);
-        return ESP_FAIL;
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+        if (om == NULL) {
+            any_err = ESP_ERR_NO_MEM;
+            continue;
+        }
+        power_mgmt_acquire_ble_active();
+        int rc = ble_gatts_notify_custom(g_slots[i].handle, val_handle, om);
+        power_mgmt_release_ble_active();
+        if (rc != 0) {
+            ESP_LOGD(TAG, "notify handle=%u which=%d rc=%d", g_slots[i].handle, (int)which, rc);
+            any_err = ESP_FAIL;
+        }
+        sent_any = true;
     }
-    return ESP_OK;
+    return sent_any ? any_err : ESP_OK;
 }
 
 /* ============================================================================
@@ -169,7 +259,7 @@ esp_err_t transport_ble_notify(ble_subscription_t which,
 esp_err_t transport_ble_send_beat(const beat_event_t *beat)
 {
     if (beat == NULL) return ESP_ERR_INVALID_ARG;
-    if (g_conn_handle == BLE_TRANSPORT_INVALID_CONN) return ESP_OK;
+    if (!transport_ble_any_connected()) return ESP_OK;
 
     ble_service_hrs_push_beat(beat);
     ble_service_narbis_push_ibi(beat);
@@ -181,7 +271,7 @@ esp_err_t transport_ble_send_raw_sample(const ppg_sample_t *sample,
                                         uint8_t data_format)
 {
     if (sample == NULL) return ESP_ERR_INVALID_ARG;
-    if (g_conn_handle == BLE_TRANSPORT_INVALID_CONN) return ESP_OK;
+    if (!transport_ble_any_connected()) return ESP_OK;
     if (data_format != NARBIS_DATA_RAW_PPG && data_format != NARBIS_DATA_IBI_PLUS_RAW) {
         return ESP_OK;
     }
@@ -190,7 +280,7 @@ esp_err_t transport_ble_send_raw_sample(const ppg_sample_t *sample,
 
 esp_err_t transport_ble_send_battery(uint8_t soc_pct, uint16_t mv, uint8_t charging)
 {
-    if (g_conn_handle == BLE_TRANSPORT_INVALID_CONN) return ESP_OK;
+    if (!transport_ble_any_connected()) return ESP_OK;
     ble_service_battery_push(soc_pct, mv, charging);
     return ESP_OK;
 }
@@ -207,8 +297,6 @@ esp_err_t transport_ble_wait_first_connect(uint32_t timeout_ms)
     TickType_t ticks = (timeout_ms == UINT32_MAX) ? portMAX_DELAY
                                                   : pdMS_TO_TICKS(timeout_ms);
     if (xSemaphoreTake(g_first_connect_sem, ticks) == pdTRUE) {
-        /* Re-give so subsequent waiters return immediately. The latch
-         * is one-shot per boot, but multiple consumers shouldn't deadlock. */
         xSemaphoreGive(g_first_connect_sem);
         return ESP_OK;
     }
@@ -227,8 +315,14 @@ static void format_device_name(void)
              "Narbis Earclip %02X%02X%02X", mac[3], mac[4], mac[5]);
 }
 
-static void start_advertising(void)
+static void start_advertising_if_room(void)
 {
+    if (active_slot_count() >= NARBIS_BLE_MAX_CONNECTIONS) {
+        return;
+    }
+    if (g_advertising) {
+        return;  /* NimBLE will resume after the next disconnect-triggered restart */
+    }
     int rc;
 
     rc = ble_svc_gap_device_name_set(g_device_name);
@@ -236,10 +330,6 @@ static void start_advertising(void)
         ESP_LOGW(TAG, "gap_name_set rc=%d", rc);
     }
 
-    /* Legacy BLE adv PDU is 31 bytes max. Flags(3) + name(2 + 21) +
-     * tx_pwr(3) + 128-bit UUID(2 + 16) = 47 bytes, which overflows.
-     * Split: put flags + service UUID in the adv PDU (so service-UUID
-     * scan filters match) and put name + TX power in the scan response. */
     static const ble_uuid128_t narbis_svc_uuid = {
         .u = { .type = BLE_UUID_TYPE_128 },
         .value = NARBIS_SVC_UUID_BYTES,
@@ -249,16 +339,10 @@ static void start_advertising(void)
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.uuids128 = (ble_uuid128_t *)&narbis_svc_uuid;
     fields.num_uuids128 = 1;
-    /* Mark complete (AD type 0x07 not 0x06). Chrome's Web Bluetooth on
-     * Windows (WinRT stack) only reliably matches service-UUID filters
-     * against the Complete list; Incomplete is silently skipped on some
-     * Windows builds. We only have one service to advertise, so this is
-     * accurate as well as compatible. */
     fields.uuids128_is_complete = 1;
 
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
-        /* Common culprit: BLE_HS_EMSGSIZE (8) — adv PDU > 31 bytes. */
         ESP_LOGE(TAG, "adv_set_fields rc=%d", rc);
         return;
     }
@@ -279,8 +363,6 @@ static void start_advertising(void)
     struct ble_gap_adv_params adv_params = {0};
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    /* Default interval (~1.28 s). Connection establishment is the
-     * dominant cost; faster adv burns battery without much benefit. */
 
     rc = ble_gap_adv_start(g_own_addr_type, NULL, BLE_HS_FOREVER,
                            &adv_params, gap_event_handler, NULL);
@@ -288,7 +370,9 @@ static void start_advertising(void)
         ESP_LOGE(TAG, "adv_start rc=%d", rc);
         return;
     }
-    ESP_LOGI(TAG, "advertising as \"%s\"", g_device_name);
+    g_advertising = true;
+    ESP_LOGI(TAG, "advertising as \"%s\" (slots used %d/%d)",
+             g_device_name, active_slot_count(), NARBIS_BLE_MAX_CONNECTIONS);
 }
 
 static int gap_event_handler(struct ble_gap_event *event, void *arg)
@@ -296,69 +380,83 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
+        g_advertising = false;  /* NimBLE auto-stops adv on connect */
         if (event->connect.status == 0) {
-            g_conn_handle = event->connect.conn_handle;
-            /* Pull current connection params so we can log average current
-             * cost: avg ≈ (interval × radio-on-time) / interval. Lower
-             * latency = higher current. itvl is in 1.25 ms units, timeout
-             * in 10 ms units. */
+            int slot = find_free_slot();
+            if (slot < 0) {
+                ESP_LOGW(TAG, "connect %u: no free slot, terminating",
+                         event->connect.conn_handle);
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                start_advertising_if_room();
+                break;
+            }
+            clear_slot(slot);
+            g_slots[slot].handle = event->connect.conn_handle;
+
             struct ble_gap_conn_desc desc;
-            int drc = ble_gap_conn_find(g_conn_handle, &desc);
+            int drc = ble_gap_conn_find(g_slots[slot].handle, &desc);
             if (drc == 0) {
                 ESP_LOGI(TAG,
-                         "connected handle=%u itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
-                         g_conn_handle, desc.conn_itvl,
+                         "connected slot=%d handle=%u itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
+                         slot, g_slots[slot].handle, desc.conn_itvl,
                          (desc.conn_itvl * 125u) / 100u,
                          (desc.conn_itvl * 125u) % 100u,
                          desc.conn_latency, desc.supervision_timeout,
                          desc.supervision_timeout * 10u);
             } else {
-                ESP_LOGI(TAG, "connected handle=%u (conn_find rc=%d)", g_conn_handle, drc);
+                ESP_LOGI(TAG, "connected slot=%d handle=%u (conn_find rc=%d)",
+                         slot, g_slots[slot].handle, drc);
             }
 
-            /* Latch first-connect — wakes the OTA validity self-test. */
             if (!g_first_connect_seen && g_first_connect_sem) {
                 g_first_connect_seen = true;
                 xSemaphoreGive(g_first_connect_sem);
             }
 
-            /* Negotiate higher MTU. */
-            int rc = ble_gattc_exchange_mtu(g_conn_handle, NULL, NULL);
+            int rc = ble_gattc_exchange_mtu(g_slots[slot].handle, NULL, NULL);
             if (rc != 0) {
                 ESP_LOGW(TAG, "exchange_mtu rc=%d", rc);
             }
 
-            /* Apply default profile params. The Narbis service updates this
-             * later if the central writes MODE. */
-            (void)transport_ble_set_profile(NARBIS_BLE_BATCHED);
+            (void)apply_profile_to_handle(g_slots[slot].handle, NARBIS_BLE_BATCHED);
+            start_advertising_if_room();
         } else {
             ESP_LOGW(TAG, "connect failed status=%d", event->connect.status);
-            start_advertising();
+            start_advertising_if_room();
         }
         break;
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected reason=0x%02x",
-                 event->disconnect.reason);
-        g_conn_handle = BLE_TRANSPORT_INVALID_CONN;
-        g_mtu = 0;
-        memset(g_subscribed, 0, sizeof(g_subscribed));
-        start_advertising();
+    case BLE_GAP_EVENT_DISCONNECT: {
+        uint16_t handle = event->disconnect.conn.conn_handle;
+        int slot = find_slot_by_handle(handle);
+        ESP_LOGI(TAG, "disconnected slot=%d handle=%u reason=0x%02x",
+                 slot, handle, event->disconnect.reason);
+        if (slot >= 0) clear_slot(slot);
+        start_advertising_if_room();
         break;
+    }
 
-    case BLE_GAP_EVENT_MTU:
-        g_mtu = event->mtu.value;
-        ESP_LOGI(TAG, "MTU=%u", g_mtu);
+    case BLE_GAP_EVENT_MTU: {
+        int slot = find_slot_by_handle(event->mtu.conn_handle);
+        if (slot >= 0) {
+            g_slots[slot].mtu = event->mtu.value;
+            ESP_LOGI(TAG, "MTU slot=%d handle=%u mtu=%u",
+                     slot, event->mtu.conn_handle, event->mtu.value);
+        }
         break;
+    }
 
     case BLE_GAP_EVENT_SUBSCRIBE: {
-        uint16_t handle = event->subscribe.attr_handle;
+        uint16_t handle = event->subscribe.conn_handle;
+        int slot = find_slot_by_handle(handle);
+        if (slot < 0) break;
+        uint16_t attr = event->subscribe.attr_handle;
         bool subscribed = event->subscribe.cur_notify || event->subscribe.cur_indicate;
         for (int i = 0; i < BLE_SUB_COUNT; i++) {
-            if (g_val_handles[i] == handle) {
-                g_subscribed[i] = subscribed;
-                ESP_LOGI(TAG, "subscribe which=%d %s", i,
-                         subscribed ? "on" : "off");
+            if (g_val_handles[i] == attr) {
+                g_slots[slot].subscribed[i] = subscribed;
+                ESP_LOGI(TAG, "subscribe slot=%d which=%d %s",
+                         slot, i, subscribed ? "on" : "off");
                 break;
             }
         }
@@ -369,17 +467,21 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
             ESP_LOGI(TAG,
-                     "conn_update status=%d itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
-                     event->conn_update.status, desc.conn_itvl,
+                     "conn_update handle=%u status=%d itvl=%u (%u.%02u ms) latency=%u timeout=%u (%u ms)",
+                     event->conn_update.conn_handle, event->conn_update.status,
+                     desc.conn_itvl,
                      (desc.conn_itvl * 125u) / 100u,
                      (desc.conn_itvl * 125u) % 100u,
                      desc.conn_latency, desc.supervision_timeout,
                      desc.supervision_timeout * 10u);
-        } else {
-            ESP_LOGI(TAG, "conn_update status=%d", event->conn_update.status);
         }
         break;
     }
+
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        g_advertising = false;
+        start_advertising_if_room();
+        break;
 
     default:
         break;
@@ -406,10 +508,9 @@ static void on_sync(void)
 
     format_device_name();
 
-    /* Default ATT MTU we prefer when negotiating with the central. */
     (void)ble_att_set_preferred_mtu(BLE_TRANSPORT_PREF_MTU);
 
-    start_advertising();
+    start_advertising_if_room();
 }
 
 static void on_reset(int reason)
@@ -424,9 +525,6 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-/* gatts_register_cb — service modules cache their value handles here via
- * transport_ble_set_val_handle when a characteristic with the matching UUID
- * is registered. */
 static void on_gatts_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
 {
     (void)arg;
@@ -446,10 +544,12 @@ static void on_gatts_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
 
 esp_err_t transport_ble_init(void)
 {
-    g_conn_handle = BLE_TRANSPORT_INVALID_CONN;
-    g_mtu = 0;
-    memset(g_subscribed, 0, sizeof(g_subscribed));
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        clear_slot(i);
+    }
     memset(g_val_handles, 0, sizeof(g_val_handles));
+    g_advertising = false;
+
     if (g_first_connect_sem == NULL) {
         g_first_connect_sem = xSemaphoreCreateBinary();
         if (g_first_connect_sem == NULL) {
@@ -468,12 +568,9 @@ esp_err_t transport_ble_init(void)
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.gatts_register_cb = on_gatts_register;
 
-    /* Register standard GAP/GATT supporting services first. */
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
-    /* Now register Narbis services. Each module returns a service-def array;
-     * we count them all into NimBLE's GATT table. */
     int rc;
     rc = ble_gatts_count_cfg(ble_service_dis_svc_defs());
     if (rc != 0) { ESP_LOGE(TAG, "count_cfg dis rc=%d", rc); return ESP_FAIL; }
@@ -499,7 +596,7 @@ esp_err_t transport_ble_init(void)
 
     nimble_port_freertos_init(host_task);
 
-    ESP_LOGI(TAG, "init complete");
+    ESP_LOGI(TAG, "init complete (max %d connections)", NARBIS_BLE_MAX_CONNECTIONS);
     return ESP_OK;
 }
 

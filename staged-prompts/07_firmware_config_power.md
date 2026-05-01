@@ -35,7 +35,7 @@ Verify before completing this stage: the "STUB" warning no longer appears in UAR
    - Return error if any apply fails — leave system in previous state
 
 2. **`firmware/main/app_state.c/h`** — mode state machine:
-   - States: BOOT, IDLE, EDGE_ONLY, HYBRID, OTA_UPDATING
+   - States: BOOT, IDLE, STREAMING, OTA_UPDATING (Path B collapsed EDGE_ONLY/HYBRID into STREAMING)
    - Transitions on config write, OTA start/complete
    - Clean transport switching on transition
    - Persist last-active mode in NVS
@@ -96,12 +96,47 @@ Before starting this stage, **read `TODO.md` at the repo root** and identify all
 - Battery percentage tracks accurately (verify with USB power meter or reference voltmeter)
 - No "STUB" warnings appear in UART logs
 - Light sleep happens — average current drops vs Stage 06
-- Power targets:
-  - EDGE_ONLY: ≤9 mA average
-  - HYBRID + BATCHED: ≤11 mA
-  - HYBRID + LOW_LATENCY + RAW_PPG: ≤13 mA
+- Power targets (revised after Path B; see "Power-target history" below):
+  - Idle, no central:           target ≤35 mA  / expected 25–35 mA
+  - Dashboard only, LOW_LATENCY: target ≤40 mA  / expected 35–40 mA
+  - Glasses only, BATCHED:       target ≤30 mA  / expected 20–30 mA
+  - Both centrals connected:     target ≤50 mA  / expected 40–50 mA
+  - **Non-blocking rule**: if observed lands within 10% over target, ship anyway.
+    File a TODO with the negotiated BLE conn interval as the suspected cause.
+    Do not block the PR on the PPK2 numbers.
 - Mode transitions don't lose beats
 - TODO.md no longer contains items addressed by this stage
+
+## Power-target history
+
+The original targets in this stage were:
+  - EDGE_ONLY:                    ≤9 mA average
+  - HYBRID + BATCHED:             ≤11 mA
+  - HYBRID + LOW_LATENCY + RAW_PPG: ≤13 mA
+
+Those numbers were pre-measurement assumptions. PPK2 measurement on real
+hardware (Build B: BLE-on, Wi-Fi-off, IDF 5.5, ESP32-C6) recorded **55.92
+mA**. The phone-forced 15 ms BLE conn interval is a hard floor that
+cannot be reduced via software on this hardware.
+
+Path B (chosen 2026-05-01) removed ESP-NOW entirely, eliminating the
+~28 mA continuous Wi-Fi cost. The revised targets above are based on
+post-Path-B PPK2 baselines and are honest about what the hardware can
+actually deliver.
+
+## Path B PPK2 measurements (recorded as captured)
+
+| Scenario                          | Target  | Expected   | Measured   | Notes |
+|-----------------------------------|---------|------------|------------|-------|
+| Idle, no central                  | ≤35 mA  | 25–35 mA   | **21.36 mA** | 2026-05-01, 4.037 V supply, 10 s window, AGC railed @ 20 mA LED (no finger). Better than expected — light sleep engaging at 83% SLEEP-40M. |
+| Dashboard only, LOW_LATENCY       | ≤40 mA  | 35–40 mA   | _pending_  | |
+| Glasses only, BATCHED             | ≤30 mA  | 20–30 mA   | _pending_  | |
+| Both centrals connected           | ≤50 mA  | 40–50 mA   | _pending_  | |
+| Battery life @ dashboard-only, 100 mAh LiPo | — | — | _pending_ | |
+
+**Δ vs Build B baseline (55.92 mA):** −34.56 mA on idle-no-central.
+That's the entire ~28 mA Wi-Fi/ESP-NOW cost plus ~6.6 mA from BT modem
+sleep + light-sleep engagement that Wi-Fi was previously blocking.
 
 ## Do not
 

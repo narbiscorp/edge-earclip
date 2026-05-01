@@ -32,8 +32,12 @@ export const NARBIS_CHR_CONFIG_UUID = "553abc98-6406-4e37-b9fd-34df85b2b6c1";
 // Config write (whole struct or single field)
 export const NARBIS_CHR_CONFIG_WRITE_UUID = "129fbe56-cbd6-4f52-957b-d80834d6abf3";
 
-// Mode write (3-axis: transport / ble_profile / data_format)
+// Mode write (2-axis after Path B: ble_profile / data_format).
 export const NARBIS_CHR_MODE_UUID = "71db6de8-5bff-480f-8db1-0d01c90d17d0";
+
+// Peer role — central announces "I am dashboard" or "I am glasses" via
+// a 1-byte write on connect. Earclip applies the matching BLE profile.
+export const NARBIS_CHR_PEER_ROLE_UUID = "e987719a-26a6-48d4-b8e9-128994e62e6c";
 
 // OTA service — Edge-compatible 16-bit UUIDs (ported from existing Edge
 // firmware; see narbis_protocol.h). Three characteristics: control point,

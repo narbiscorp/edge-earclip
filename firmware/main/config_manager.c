@@ -5,9 +5,12 @@
  * via config_get(); writes go through config_apply*().
  *
  * NVS layout (namespace "narbis_pair"):
- *   "partner_mac"  blob, 6 bytes        ESP-NOW peer MAC (legacy key)
  *   "cfg_blob"     blob, NARBIS_CONFIG_WIRE_SIZE  serialized config + CRC16
- *   "last_mode"    blob, 3 bytes        transport, ble_profile, data_format
+ *   "last_mode"    blob, 2 bytes                  ble_profile, data_format
+ *
+ * Path B (config_version 3) dropped the "partner_mac" key. Old blobs survive
+ * harmlessly until the next factory_reset; load_blob rejects them via the
+ * version-3 minimum check in config_manager_init.
  */
 
 #include "config_manager.h"
@@ -26,7 +29,6 @@
 #include "diagnostics.h"
 #include "power_mgmt.h"
 #include "transport_ble.h"
-#include "transport_espnow.h"
 
 #include "beat_validator.h"
 #include "elgendi.h"
@@ -36,7 +38,6 @@
 static const char *TAG = "config_manager";
 
 static const char *NVS_NS         = "narbis_pair";
-static const char *KEY_PARTNER    = "partner_mac";
 static const char *KEY_CFG_BLOB   = "cfg_blob";
 static const char *KEY_LAST_MODE  = "last_mode";
 
@@ -50,7 +51,7 @@ static SemaphoreHandle_t       g_config_mutex;
 static void load_default_config(narbis_runtime_config_t *c)
 {
     memset(c, 0, sizeof(*c));
-    c->config_version        = 2;
+    c->config_version        = 3;
     c->sample_rate_hz        = 200;
     c->led_red_ma_x10        = 70;
     c->led_ir_ma_x10         = 70;
@@ -68,11 +69,9 @@ static void load_default_config(narbis_runtime_config_t *c)
     c->ibi_min_ms            = 300;
     c->ibi_max_ms            = 2000;
     c->ibi_max_delta_pct     = 30;
-    c->transport_mode        = NARBIS_TRANSPORT_HYBRID;
     c->ble_profile           = NARBIS_BLE_BATCHED;
     c->data_format           = NARBIS_DATA_IBI_ONLY;
     c->ble_batch_period_ms   = 500;
-    c->espnow_channel        = 1;
     c->diagnostics_enabled   = 1;
     c->light_sleep_enabled   = 1;
     c->diagnostics_mask      = 0;
@@ -94,22 +93,10 @@ static bool validate_config(const narbis_runtime_config_t *c)
         c->elgendi_w1_ms >= c->elgendi_w2_ms)                 return false;
     if (c->ibi_min_ms == 0 || c->ibi_min_ms >= c->ibi_max_ms) return false;
     if (c->ibi_max_delta_pct > 100)                            return false;
-    if (c->transport_mode > NARBIS_TRANSPORT_HYBRID)           return false;
     if (c->ble_profile > NARBIS_BLE_LOW_LATENCY)               return false;
     if (c->data_format > NARBIS_DATA_IBI_PLUS_RAW)             return false;
-    if (c->espnow_channel < 1 || c->espnow_channel > 13)       return false;
     if (c->battery_low_mv < 2800 || c->battery_low_mv > 4200)  return false;
     return true;
-}
-
-static bool mac_is_special(const uint8_t mac[6])
-{
-    bool all_zero = true, all_ff = true;
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] != 0x00) all_zero = false;
-        if (mac[i] != 0xFF) all_ff = false;
-    }
-    return all_zero || all_ff;
 }
 
 /* ============================================================================
@@ -163,12 +150,6 @@ static esp_err_t apply_transport(const narbis_runtime_config_t *c,
                             ? c->ble_batch_period_ms : 0u;
         ble_service_hrs_set_batch_period(period);
     }
-    if (prev == NULL || memcmp(c->partner_mac, prev->partner_mac, 6) != 0) {
-        if (!mac_is_special(c->partner_mac)) {
-            esp_err_t err = transport_espnow_set_partner(c->partner_mac);
-            if (err != ESP_OK) return err;
-        }
-    }
     return ESP_OK;
 }
 
@@ -194,7 +175,6 @@ static esp_err_t apply_diff(const narbis_runtime_config_t *new_cfg,
     esp_err_t err;
     if ((err = apply_sensor(new_cfg, prev)) != ESP_OK) return err;
 
-    /* DSP fields are interdependent; if any changed, reapply all. */
     bool dsp_changed =
         new_cfg->bandpass_low_hz_x100  != prev->bandpass_low_hz_x100  ||
         new_cfg->bandpass_high_hz_x100 != prev->bandpass_high_hz_x100 ||
@@ -277,7 +257,7 @@ esp_err_t config_manager_init(void)
 
     narbis_runtime_config_t loaded;
     esp_err_t err = load_blob(&loaded);
-    if (err == ESP_OK && loaded.config_version >= 2 && validate_config(&loaded)) {
+    if (err == ESP_OK && loaded.config_version >= 3 && validate_config(&loaded)) {
         g_config = loaded;
         ESP_LOGI(TAG, "loaded persisted config (version=%u)", loaded.config_version);
     } else {
@@ -324,7 +304,7 @@ esp_err_t config_apply(const narbis_runtime_config_t *new_cfg)
     narbis_runtime_config_t prev = g_config;
     g_config = *new_cfg;
     /* config_version is owned by the firmware; ignore whatever the writer sent. */
-    g_config.config_version = 2;
+    g_config.config_version = 3;
 
     esp_err_t err = apply_diff(&g_config, &prev);
     if (err != ESP_OK) {
@@ -345,11 +325,10 @@ esp_err_t config_apply(const narbis_runtime_config_t *new_cfg)
     return ESP_OK;
 }
 
-esp_err_t config_apply_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t data_format)
+esp_err_t config_apply_mode(uint8_t ble_profile, uint8_t data_format)
 {
-    if (transport_mode > NARBIS_TRANSPORT_HYBRID ||
-        ble_profile    > NARBIS_BLE_LOW_LATENCY  ||
-        data_format    > NARBIS_DATA_IBI_PLUS_RAW) {
+    if (ble_profile > NARBIS_BLE_LOW_LATENCY  ||
+        data_format > NARBIS_DATA_IBI_PLUS_RAW) {
         return ESP_ERR_INVALID_ARG;
     }
     if (app_state_current() == APP_STATE_OTA_UPDATING) {
@@ -358,9 +337,8 @@ esp_err_t config_apply_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t
 
     xSemaphoreTake(g_config_mutex, portMAX_DELAY);
     bool profile_changed = (g_config.ble_profile != ble_profile);
-    g_config.transport_mode = transport_mode;
-    g_config.ble_profile    = ble_profile;
-    g_config.data_format    = data_format;
+    g_config.ble_profile = ble_profile;
+    g_config.data_format = data_format;
 
     esp_err_t err = ESP_OK;
     if (profile_changed) {
@@ -375,29 +353,10 @@ esp_err_t config_apply_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t
     xSemaphoreGive(g_config_mutex);
 
     if (err == ESP_OK) {
-        (void)config_persist_last_mode(transport_mode, ble_profile, data_format);
-        (void)app_state_request_mode(transport_mode, ble_profile, data_format);
+        (void)config_persist_last_mode(ble_profile, data_format);
+        (void)app_state_request_mode(ble_profile, data_format);
         (void)ble_service_narbis_notify_config();
-        ESP_LOGI(TAG, "mode applied transport=%u profile=%u format=%u",
-                 transport_mode, ble_profile, data_format);
-    }
-    return err;
-}
-
-esp_err_t config_apply_partner_mac(const uint8_t mac[6])
-{
-    if (mac == NULL)         return ESP_ERR_INVALID_ARG;
-    if (mac_is_special(mac)) return ESP_ERR_INVALID_ARG;
-
-    xSemaphoreTake(g_config_mutex, portMAX_DELAY);
-    memcpy(g_config.partner_mac, mac, 6);
-    esp_err_t err = transport_espnow_set_partner(mac);
-    if (err == ESP_OK) {
-        (void)persist_blob_locked();
-    }
-    xSemaphoreGive(g_config_mutex);
-    if (err == ESP_OK) {
-        (void)ble_service_narbis_notify_config();
+        ESP_LOGI(TAG, "mode applied profile=%u format=%u", ble_profile, data_format);
     }
     return err;
 }
@@ -410,9 +369,9 @@ esp_err_t config_persist(void)
     return err;
 }
 
-esp_err_t config_persist_last_mode(uint8_t transport_mode, uint8_t ble_profile, uint8_t data_format)
+esp_err_t config_persist_last_mode(uint8_t ble_profile, uint8_t data_format)
 {
-    uint8_t blob[3] = { transport_mode, ble_profile, data_format };
+    uint8_t blob[2] = { ble_profile, data_format };
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
@@ -422,23 +381,22 @@ esp_err_t config_persist_last_mode(uint8_t transport_mode, uint8_t ble_profile, 
     return err;
 }
 
-esp_err_t config_get_last_mode(uint8_t *transport_mode, uint8_t *ble_profile, uint8_t *data_format)
+esp_err_t config_get_last_mode(uint8_t *ble_profile, uint8_t *data_format)
 {
-    if (transport_mode == NULL || ble_profile == NULL || data_format == NULL) {
+    if (ble_profile == NULL || data_format == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &h);
     if (err != ESP_OK) return err;
-    uint8_t blob[3];
+    uint8_t blob[2];
     size_t  len = sizeof(blob);
     err = nvs_get_blob(h, KEY_LAST_MODE, blob, &len);
     nvs_close(h);
     if (err != ESP_OK) return err;
-    if (len != 3) return ESP_ERR_INVALID_SIZE;
-    *transport_mode = blob[0];
-    *ble_profile    = blob[1];
-    *data_format    = blob[2];
+    if (len != 2) return ESP_ERR_INVALID_SIZE;
+    *ble_profile = blob[0];
+    *data_format = blob[1];
     return ESP_OK;
 }
 
@@ -447,9 +405,7 @@ esp_err_t config_factory_reset(void)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
-        (void)nvs_erase_key(h, KEY_PARTNER);
-        (void)nvs_erase_key(h, KEY_CFG_BLOB);
-        (void)nvs_erase_key(h, KEY_LAST_MODE);
+        (void)nvs_erase_all(h);
         (void)nvs_commit(h);
         nvs_close(h);
     }
@@ -460,46 +416,4 @@ esp_err_t config_factory_reset(void)
     (void)ble_service_narbis_notify_config();
     ESP_LOGW(TAG, "factory reset: %s", esp_err_to_name(aerr));
     return aerr;
-}
-
-/* ============================================================================
- * Pairing helpers — unchanged behaviour.
- * ========================================================================= */
-
-esp_err_t config_get_partner_mac(uint8_t mac[6])
-{
-    if (mac == NULL) return ESP_ERR_INVALID_ARG;
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &h);
-    if (err != ESP_OK) return err;
-    size_t len = 6;
-    err = nvs_get_blob(h, KEY_PARTNER, mac, &len);
-    nvs_close(h);
-    if (err != ESP_OK) return err;
-    if (len != 6) return ESP_ERR_INVALID_SIZE;
-    return ESP_OK;
-}
-
-esp_err_t config_set_partner_mac(const uint8_t mac[6])
-{
-    if (mac == NULL) return ESP_ERR_INVALID_ARG;
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_set_blob(h, KEY_PARTNER, mac, 6);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
-}
-
-esp_err_t config_clear_pairing(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_erase_key(h, KEY_PARTNER);
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
 }

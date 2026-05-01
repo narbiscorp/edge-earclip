@@ -20,6 +20,7 @@ import {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
+  NARBIS_CHR_PEER_ROLE_UUID,
   NARBIS_CHR_DIAGNOSTICS_UUID,
   NARBIS_OTA_SVC_UUID16,
   NARBIS_OTA_CHR_CONTROL_UUID16,
@@ -36,6 +37,7 @@ export {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
+  NARBIS_CHR_PEER_ROLE_UUID,
   NARBIS_CHR_DIAGNOSTICS_UUID,
   NARBIS_OTA_SVC_UUID16,
   NARBIS_OTA_CHR_CONTROL_UUID16,
@@ -64,6 +66,10 @@ export const NARBIS_RAW_PPG_MAX_SAMPLES = 29;
 // Enums (values match the C side exactly)
 // =============================================================
 
+// Legacy ESP-NOW message types. Path B (config_version 3) removed the
+// ESP-NOW transport entirely; values survive only for the in-memory
+// packet helpers used by the cross-language roundtrip tests. Stable
+// numbering — never renumber.
 export enum NarbisMsgType {
   IBI = 0x01,
   RAW_PPG = 0x02,
@@ -71,22 +77,15 @@ export enum NarbisMsgType {
   SQI = 0x04,
   HEARTBEAT = 0x05,
   CONFIG_ACK = 0x06,
-  // Auto-pair handshake. PAIR_DISCOVER goes broadcast (earclip → "any Edge"),
-  // PAIR_OFFER comes back unicast (Edge → earclip). Both bypass the normal
-  // partner-MAC RX filter on the receiving side until pairing is complete.
-  PAIR_DISCOVER = 0x10,
-  PAIR_OFFER = 0x11,
 }
 
-export enum NarbisPairOfferStatus {
-  OK = 0,
-  BUSY = 1,
-  REJECTED = 2,
-}
-
-export enum NarbisTransportMode {
-  EDGE_ONLY = 0,
-  HYBRID = 1,
+// Peer role — central announces its role to the earclip via a 1-byte
+// write to NARBIS_CHR_PEER_ROLE on each connect. Earclip uses this to
+// pick the per-connection BLE conn-update profile.
+export enum NarbisPeerRole {
+  UNKNOWN = 0,
+  DASHBOARD = 1,
+  GLASSES = 2,
 }
 
 export enum NarbisBleProfile {
@@ -200,19 +199,6 @@ export interface NarbisConfigAckPayload {
   field_id: number;
 }
 
-export interface NarbisPairDiscoverPayload {
-  earclip_mac: Uint8Array; // length 6
-  nonce: number;
-  fw_major: number;
-  fw_minor: number;
-}
-
-export interface NarbisPairOfferPayload {
-  nonce: number;
-  status: number; // NarbisPairOfferStatus
-  reserved: number;
-}
-
 export interface NarbisHeader {
   msg_type: number;
   device_id: number;
@@ -229,9 +215,7 @@ export type NarbisPayload =
   | { type: NarbisMsgType.BATTERY; battery: NarbisBatteryPayload }
   | { type: NarbisMsgType.SQI; sqi: NarbisSqiPayload }
   | { type: NarbisMsgType.HEARTBEAT; heartbeat: NarbisHeartbeatPayload }
-  | { type: NarbisMsgType.CONFIG_ACK; config_ack: NarbisConfigAckPayload }
-  | { type: NarbisMsgType.PAIR_DISCOVER; pair_discover: NarbisPairDiscoverPayload }
-  | { type: NarbisMsgType.PAIR_OFFER; pair_offer: NarbisPairOfferPayload };
+  | { type: NarbisMsgType.CONFIG_ACK; config_ack: NarbisConfigAckPayload };
 
 export interface NarbisPacket {
   header: NarbisHeader;
@@ -275,12 +259,9 @@ export interface NarbisRuntimeConfig {
   ibi_min_ms: number;
   ibi_max_ms: number;
   ibi_max_delta_pct: number;
-  transport_mode: number;
   ble_profile: number;
   data_format: number;
   ble_batch_period_ms: number;
-  partner_mac: Uint8Array; // length 6
-  espnow_channel: number;
   diagnostics_enabled: number;
   light_sleep_enabled: number;
   diagnostics_mask: number;
@@ -437,53 +418,6 @@ function deserializeConfigAck(
   return { value: { config_version, status, field_id }, offset: off };
 }
 
-function serializePairDiscover(
-  view: DataView,
-  off: number,
-  p: NarbisPairDiscoverPayload,
-): number {
-  if (p.earclip_mac.length !== 6) {
-    throw new Error(`pair_discover earclip_mac must be 6 bytes, got ${p.earclip_mac.length}`);
-  }
-  new Uint8Array(view.buffer, view.byteOffset + off, 6).set(p.earclip_mac);
-  off += 6;
-  view.setUint16(off, p.nonce, true); off += 2;
-  view.setUint8(off, p.fw_major); off += 1;
-  view.setUint8(off, p.fw_minor); off += 1;
-  return off;
-}
-
-function deserializePairDiscover(
-  view: DataView,
-  off: number,
-): { value: NarbisPairDiscoverPayload; offset: number } {
-  const earclip_mac = new Uint8Array(
-    view.buffer.slice(view.byteOffset + off, view.byteOffset + off + 6),
-  );
-  off += 6;
-  const nonce = view.getUint16(off, true); off += 2;
-  const fw_major = view.getUint8(off); off += 1;
-  const fw_minor = view.getUint8(off); off += 1;
-  return { value: { earclip_mac, nonce, fw_major, fw_minor }, offset: off };
-}
-
-function serializePairOffer(view: DataView, off: number, p: NarbisPairOfferPayload): number {
-  view.setUint16(off, p.nonce, true); off += 2;
-  view.setUint8(off, p.status); off += 1;
-  view.setUint8(off, p.reserved); off += 1;
-  return off;
-}
-
-function deserializePairOffer(
-  view: DataView,
-  off: number,
-): { value: NarbisPairOfferPayload; offset: number } {
-  const nonce = view.getUint16(off, true); off += 2;
-  const status = view.getUint8(off); off += 1;
-  const reserved = view.getUint8(off); off += 1;
-  return { value: { nonce, status, reserved }, offset: off };
-}
-
 // =============================================================
 // Header (de)serialization
 // =============================================================
@@ -531,10 +465,6 @@ export function payloadSize(pkt: NarbisPacket): number {
       return 12;
     case NarbisMsgType.CONFIG_ACK:
       return 4;
-    case NarbisMsgType.PAIR_DISCOVER:
-      return 10;
-    case NarbisMsgType.PAIR_OFFER:
-      return 4;
   }
 }
 
@@ -568,10 +498,6 @@ export function serializePacket(pkt: NarbisPacket): Uint8Array {
       off = serializeHeartbeat(view, off, pkt.payload.heartbeat); break;
     case NarbisMsgType.CONFIG_ACK:
       off = serializeConfigAck(view, off, pkt.payload.config_ack); break;
-    case NarbisMsgType.PAIR_DISCOVER:
-      off = serializePairDiscover(view, off, pkt.payload.pair_discover); break;
-    case NarbisMsgType.PAIR_OFFER:
-      off = serializePairOffer(view, off, pkt.payload.pair_offer); break;
   }
 
   const crc = narbisCrc16(buf, NARBIS_HEADER_SIZE + payload_len);
@@ -636,16 +562,6 @@ export function deserializePacket(buf: Uint8Array): NarbisPacket {
       payload = { type: NarbisMsgType.CONFIG_ACK, config_ack: r.value };
       break;
     }
-    case NarbisMsgType.PAIR_DISCOVER: {
-      const r = deserializePairDiscover(view, off); off = r.offset;
-      payload = { type: NarbisMsgType.PAIR_DISCOVER, pair_discover: r.value };
-      break;
-    }
-    case NarbisMsgType.PAIR_OFFER: {
-      const r = deserializePairOffer(view, off); off = r.offset;
-      payload = { type: NarbisMsgType.PAIR_OFFER, pair_offer: r.value };
-      break;
-    }
     default:
       throw new Error(`unknown msg_type 0x${header.msg_type.toString(16)}`);
   }
@@ -663,7 +579,9 @@ export function deserializePacket(buf: Uint8Array): NarbisPacket {
 // Config (de)serialize
 // =============================================================
 
-export const NARBIS_CONFIG_STRUCT_SIZE = 56; // sum of field sizes; verified by C-side test
+// Sum of field sizes; verified by C-side test. Path B (config_version 3)
+// dropped 8 bytes: transport_mode (1) + partner_mac (6) + espnow_channel (1).
+export const NARBIS_CONFIG_STRUCT_SIZE = 48;
 export const NARBIS_CONFIG_WIRE_SIZE = NARBIS_CONFIG_STRUCT_SIZE + NARBIS_CRC_SIZE;
 
 export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
@@ -689,15 +607,9 @@ export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
   view.setUint16(o, cfg.ibi_min_ms, true); o += 2;
   view.setUint16(o, cfg.ibi_max_ms, true); o += 2;
   view.setUint8(o, cfg.ibi_max_delta_pct); o += 1;
-  view.setUint8(o, cfg.transport_mode); o += 1;
   view.setUint8(o, cfg.ble_profile); o += 1;
   view.setUint8(o, cfg.data_format); o += 1;
   view.setUint16(o, cfg.ble_batch_period_ms, true); o += 2;
-  if (cfg.partner_mac.length !== 6) {
-    throw new Error(`partner_mac must be 6 bytes, got ${cfg.partner_mac.length}`);
-  }
-  buf.set(cfg.partner_mac, o); o += 6;
-  view.setUint8(o, cfg.espnow_channel); o += 1;
   view.setUint8(o, cfg.diagnostics_enabled); o += 1;
   view.setUint8(o, cfg.light_sleep_enabled); o += 1;
   view.setUint8(o, cfg.diagnostics_mask); o += 1;
@@ -741,12 +653,9 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
   const ibi_min_ms = view.getUint16(o, true); o += 2;
   const ibi_max_ms = view.getUint16(o, true); o += 2;
   const ibi_max_delta_pct = view.getUint8(o); o += 1;
-  const transport_mode = view.getUint8(o); o += 1;
   const ble_profile = view.getUint8(o); o += 1;
   const data_format = view.getUint8(o); o += 1;
   const ble_batch_period_ms = view.getUint16(o, true); o += 2;
-  const partner_mac = buf.slice(o, o + 6); o += 6;
-  const espnow_channel = view.getUint8(o); o += 1;
   const diagnostics_enabled = view.getUint8(o); o += 1;
   const light_sleep_enabled = view.getUint8(o); o += 1;
   const diagnostics_mask = view.getUint8(o); o += 1;
@@ -759,8 +668,7 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
     bandpass_low_hz_x100, bandpass_high_hz_x100,
     elgendi_w1_ms, elgendi_w2_ms, elgendi_beta_x1000,
     sqi_threshold_x100, ibi_min_ms, ibi_max_ms, ibi_max_delta_pct,
-    transport_mode, ble_profile, data_format, ble_batch_period_ms,
-    partner_mac, espnow_channel,
+    ble_profile, data_format, ble_batch_period_ms,
     diagnostics_enabled, light_sleep_enabled, diagnostics_mask, battery_low_mv,
   };
 }

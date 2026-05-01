@@ -2,8 +2,6 @@ idf_component_register(
     SRCS
         "main.c"
         "app_state.c"
-        "auto_pair.c"
-        "transport_espnow.c"
         "transport_ble.c"
         "ble_service_hrs.c"
         "ble_service_battery.c"
@@ -17,9 +15,6 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
-        esp_wifi
-        esp_event
-        esp_netif
         esp_timer
         esp_pm
         esp_adc

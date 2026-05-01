@@ -58,10 +58,6 @@ export function validateConfig(cfg: NarbisRuntimeConfig): ValidationErrors {
     }
   }
 
-  if (cfg.espnow_channel < 1 || cfg.espnow_channel > 13) {
-    errors.espnow_channel = 'channel must be 1–13';
-  }
-
   return errors;
 }
 

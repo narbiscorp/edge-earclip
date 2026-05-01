@@ -36,7 +36,7 @@ Set up the bare ESP-IDF project under `firmware/` for the XIAO ESP32-C6. All com
 5. **`firmware/main/`** with:
    - `CMakeLists.txt` listing all source files
    - `main.c` — minimal entry: NVS init, log "Narbis earclip booting v0.1.0", print protocol version, then enter empty FreeRTOS task
-   - Stub files for: `app_state.c/h`, `transport_espnow.c/h`, `transport_ble.c/h`, `ble_service_hrs.c/h`, `ble_service_battery.c/h`, `ble_service_dis.c/h`, `ble_service_narbis.c/h`, `ble_ota.c/h`, `config_manager.c/h`, `power_mgmt.c/h`, `diagnostics.c/h`
+   - Stub files for: `app_state.c/h`, `transport_ble.c/h`, `ble_service_hrs.c/h`, `ble_service_battery.c/h`, `ble_service_dis.c/h`, `ble_service_narbis.c/h`, `ble_ota.c/h`, `config_manager.c/h`, `power_mgmt.c/h`, `diagnostics.c/h` (Path B removed `transport_espnow.c/h` from this list — see Stage 05's deprecation banner)
    - Each stub has init/deinit functions returning ESP_OK with a TODO comment
 
 6. **`firmware/components/`**:

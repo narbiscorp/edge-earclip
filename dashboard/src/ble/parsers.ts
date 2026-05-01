@@ -13,7 +13,7 @@ export {
   serializeConfig,
   deserializeConfig,
   NarbisMsgType,
-  NarbisTransportMode,
+  NarbisPeerRole,
   NarbisBleProfile,
   NarbisDataFormat,
   NARBIS_BEAT_FLAG_ARTIFACT,

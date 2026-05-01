@@ -29,6 +29,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 
+#include "sdkconfig.h"
+
 static const char *TAG = "ppg_channel";
 
 #define PPG_ADC_MAX_18BIT       0x3FFFFu        /* 262143 */
@@ -56,6 +58,7 @@ typedef struct {
     uint16_t agc_step_ma_x10;
     int64_t  agc_last_step_us;      /* esp_timer_get_time() of last AGC LED write */
     uint16_t agc_last_known_x10;    /* tracker for active-channel LED current */
+    bool     agc_cap_warned;        /* one-shot rail-cap warning flag */
 
     portMUX_TYPE cb_lock;
     ppg_channel_output_cb_t out_cb;
@@ -192,10 +195,28 @@ static void agc_update(uint32_t dc, bool saturated)
     }
 
     /* Tracker lives in s_state and is re-synced from runtime config in
-     * ppg_channel_apply_config() whenever the user changes LED current. */
+     * ppg_channel_apply_config() whenever the user changes LED current.
+     *
+     * AGC LED-current cap (Kconfig CONFIG_NARBIS_AGC_LED_MAX_X10): the
+     * MAX3010x can drive each LED to 51 mA, but past ~20 mA the optical
+     * coupling is almost certainly broken (loose earclip, no finger,
+     * etc.) and pumping more current can't fix that — it just wastes
+     * power. Cap at 200 (= 20.0 mA) by default and log once when railed. */
     int new_x10 = (int)s_state.agc_last_known_x10 + delta_x10;
-    if (new_x10 < 0)   new_x10 = 0;
-    if (new_x10 > 510) new_x10 = 510;
+    if (new_x10 < 0) new_x10 = 0;
+    if (new_x10 > CONFIG_NARBIS_AGC_LED_MAX_X10) {
+        new_x10 = CONFIG_NARBIS_AGC_LED_MAX_X10;
+        if (!s_state.agc_cap_warned) {
+            ESP_LOGW(TAG,
+                     "agc railed at LED cap (%d.%d mA) — likely poor optical coupling",
+                     CONFIG_NARBIS_AGC_LED_MAX_X10 / 10,
+                     CONFIG_NARBIS_AGC_LED_MAX_X10 % 10);
+            s_state.agc_cap_warned = true;
+        }
+    } else {
+        /* Re-arm the warning once we drop back below the cap. */
+        s_state.agc_cap_warned = false;
+    }
     if ((uint16_t)new_x10 == s_state.agc_last_known_x10) return;
 
     esp_err_t err = ppg_driver_set_led_current(active_to_led(), (uint16_t)new_x10);

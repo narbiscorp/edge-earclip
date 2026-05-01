@@ -43,8 +43,6 @@ STRUCT_ALIASES = {
     "narbis_sqi_payload_t": "NarbisSqiPayload",
     "narbis_heartbeat_payload_t": "NarbisHeartbeatPayload",
     "narbis_config_ack_payload_t": "NarbisConfigAckPayload",
-    "narbis_pair_discover_payload_t": "NarbisPairDiscoverPayload",
-    "narbis_pair_offer_payload_t": "NarbisPairOfferPayload",
     "narbis_runtime_config_t": "NarbisRuntimeConfig",
     "beat_event_t": "BeatEvent",
 }
@@ -52,14 +50,13 @@ STRUCT_ALIASES = {
 # C enum (with _t) → TS enum name.
 ENUM_ALIASES = {
     "narbis_msg_type_t": "NarbisMsgType",
-    "narbis_transport_mode_t": "NarbisTransportMode",
+    "narbis_peer_role_t": "NarbisPeerRole",
     "narbis_ble_profile_t": "NarbisBleProfile",
     "narbis_data_format_t": "NarbisDataFormat",
     "narbis_config_ack_status_t": "NarbisConfigAckStatus",
     "narbis_ota_opcode_t": "NarbisOtaOpcode",
     "narbis_ota_status_t": "NarbisOtaStatus",
     "narbis_ota_error_t": "NarbisOtaError",
-    "narbis_pair_offer_status_t": "NarbisPairOfferStatus",
 }
 
 # C enum value name → TS enum member name. C convention is
@@ -67,14 +64,13 @@ ENUM_ALIASES = {
 # the enum name itself).
 ENUM_MEMBER_PREFIX_STRIP = {
     "narbis_msg_type_t": "NARBIS_MSG_",
-    "narbis_transport_mode_t": "NARBIS_TRANSPORT_",
+    "narbis_peer_role_t": "NARBIS_PEER_ROLE_",
     "narbis_ble_profile_t": "NARBIS_BLE_",
     "narbis_data_format_t": "NARBIS_DATA_",
     "narbis_config_ack_status_t": "NARBIS_CFG_ACK_",
     "narbis_ota_opcode_t": "NARBIS_OTA_OP_",
     "narbis_ota_status_t": "NARBIS_OTA_ST_",
     "narbis_ota_error_t": "NARBIS_OTA_ERR_",
-    "narbis_pair_offer_status_t": "NARBIS_PAIR_OFFER_",
 }
 
 

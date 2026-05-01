@@ -1,4 +1,3 @@
-import { macToString } from '../components/config/fields/MacField';
 import type {
   Annotation,
   BeatRecord,
@@ -171,7 +170,7 @@ export function writeConfigHistoryJSON(history: ConfigChangeEntry[]): string {
 }
 
 function serializeConfig(cfg: ConfigChangeEntry['config']): Record<string, unknown> {
-  return { ...cfg, partner_mac: macToString(cfg.partner_mac) };
+  return { ...cfg };
 }
 
 export function writeManifestJSON(manifest: RecordingManifest): string {

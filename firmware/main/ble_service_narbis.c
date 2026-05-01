@@ -8,8 +8,13 @@
  *   BATTERY        notify   narbis_battery_payload_t (richer than 0x2A19)
  *   CONFIG         read+notify  serialised narbis_runtime_config_t + CRC16
  *   CONFIG_WRITE   write        full config struct + CRC16
- *   MODE           write        3 bytes: transport, ble_profile, data_format
- *   ESPNOW_PAIR    write        6 bytes: new partner MAC
+ *   MODE           write        2 bytes (post Path B): ble_profile, data_format
+ *                              (still accepts 3 for legacy clients; first byte
+ *                              ignored)
+ *   PEER_ROLE      write        1 byte: NARBIS_PEER_ROLE_DASHBOARD/GLASSES.
+ *                              Routes the slot to the right BLE conn-update
+ *                              profile. Not persisted; central re-announces
+ *                              on every connect.
  *   FACTORY_RESET  write        4-byte magic 'NUKE'
  *   DIAGNOSTICS    notify       Stage 07 owns emission; chr is registered now
  *
@@ -31,12 +36,10 @@
 #include "host/ble_uuid.h"
 #include "os/os_mbuf.h"
 
-#include "auto_pair.h"
 #include "ble_service_hrs.h"
 #include "config_manager.h"
 #include "narbis_protocol.h"
 #include "transport_ble.h"
-#include "transport_espnow.h"
 
 static const char *TAG = "ble_service_narbis";
 
@@ -60,27 +63,14 @@ static const ble_uuid128_t CHR_BATTERY_UUID      = NARBIS_UUID128(NARBIS_CHR_BAT
 static const ble_uuid128_t CHR_CONFIG_UUID       = NARBIS_UUID128(NARBIS_CHR_CONFIG_UUID_BYTES);
 static const ble_uuid128_t CHR_CONFIG_WRITE_UUID = NARBIS_UUID128(NARBIS_CHR_CONFIG_WRITE_UUID_BYTES);
 static const ble_uuid128_t CHR_MODE_UUID         = NARBIS_UUID128(NARBIS_CHR_MODE_UUID_BYTES);
+static const ble_uuid128_t CHR_PEER_ROLE_UUID    = NARBIS_UUID128(NARBIS_CHR_PEER_ROLE_UUID_BYTES);
 static const ble_uuid128_t CHR_DIAGNOSTICS_UUID  = NARBIS_UUID128(NARBIS_CHR_DIAGNOSTICS_UUID_BYTES);
 
-/* Custom UUIDs invented here (write-only) for ESP-NOW pairing and factory
- * reset — these are firmware-internal control surfaces, not used by the
- * dashboard yet. */
-static const ble_uuid128_t CHR_PAIR_UUID = {
-    .u = { .type = BLE_UUID_TYPE_128 },
-    .value = { 0x10, 0xC4, 0xD9, 0xA8, 0x47, 0x7E, 0x4A, 0x36,
-               0x9D, 0x0F, 0x33, 0x16, 0xB1, 0x21, 0xE2, 0xC0 },
-};
+/* Factory-reset characteristic — write the 4-byte magic 'NUKE' to wipe
+ * NVS and force defaults on the next boot. Firmware-internal control. */
 static const ble_uuid128_t CHR_FACTORY_RESET_UUID = {
     .u = { .type = BLE_UUID_TYPE_128 },
     .value = { 0x11, 0xC4, 0xD9, 0xA8, 0x47, 0x7E, 0x4A, 0x36,
-               0x9D, 0x0F, 0x33, 0x16, 0xB1, 0x21, 0xE2, 0xC0 },
-};
-/* CHR_FORGET_PEER — write any 1-byte value to clear the persisted ESP-NOW
- * partner MAC and re-run auto-pair discovery. Used by the dashboard's
- * "Forget Edge" button. */
-static const ble_uuid128_t CHR_FORGET_PEER_UUID = {
-    .u = { .type = BLE_UUID_TYPE_128 },
-    .value = { 0x12, 0xC4, 0xD9, 0xA8, 0x47, 0x7E, 0x4A, 0x36,
                0x9D, 0x0F, 0x33, 0x16, 0xB1, 0x21, 0xE2, 0xC0 },
 };
 
@@ -184,38 +174,26 @@ static int access_mode(uint16_t conn_handle, uint16_t attr_handle,
     }
     uint8_t buf[3];
     uint16_t len = 0;
-    if (read_om_to_bytes(ctxt->om, buf, sizeof(buf), &len) != 0 || len != 3) {
+    /* Accept 2 or 3 bytes. Pre-Path-B clients send [transport, ble_profile,
+     * data_format]; we ignore the leading transport byte. New clients send
+     * [ble_profile, data_format]. */
+    if (read_om_to_bytes(ctxt->om, buf, sizeof(buf), &len) != 0 ||
+        (len != 2 && len != 3)) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
-    esp_err_t err = config_apply_mode(buf[0], buf[1], buf[2]);
+    uint8_t ble_profile  = (len == 3) ? buf[1] : buf[0];
+    uint8_t data_format  = (len == 3) ? buf[2] : buf[1];
+    esp_err_t err = config_apply_mode(ble_profile, data_format);
     if (err == ESP_ERR_INVALID_ARG)   return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     if (err == ESP_ERR_INVALID_STATE) return BLE_ATT_ERR_UNLIKELY;
     if (err != ESP_OK)                return BLE_ATT_ERR_UNLIKELY;
     return 0;
 }
 
-static int access_pair(uint16_t conn_handle, uint16_t attr_handle,
-                       struct ble_gatt_access_ctxt *ctxt, void *arg)
+static int access_peer_role(uint16_t conn_handle, uint16_t attr_handle,
+                            struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle; (void)attr_handle; (void)arg;
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
-    }
-    uint8_t mac[6];
-    uint16_t len = 0;
-    if (read_om_to_bytes(ctxt->om, mac, sizeof(mac), &len) != 0 || len != 6) {
-        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-    }
-    esp_err_t err = config_apply_partner_mac(mac);
-    if (err == ESP_ERR_INVALID_ARG) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
-    if (err != ESP_OK)              return BLE_ATT_ERR_UNLIKELY;
-    return 0;
-}
-
-static int access_forget_peer(uint16_t conn_handle, uint16_t attr_handle,
-                              struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    (void)conn_handle; (void)attr_handle; (void)arg;
+    (void)attr_handle; (void)arg;
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
         return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
     }
@@ -224,11 +202,13 @@ static int access_forget_peer(uint16_t conn_handle, uint16_t attr_handle,
     if (read_om_to_bytes(ctxt->om, buf, sizeof(buf), &len) != 0 || len != 1) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
-    esp_err_t err = auto_pair_request_repair();
-    if (err == ESP_ERR_INVALID_STATE) return BLE_ATT_ERR_UNLIKELY;
-    if (err != ESP_OK)                return BLE_ATT_ERR_UNLIKELY;
-    ESP_LOGW(TAG, "forget_peer: re-discovery requested");
-    return 0;
+    if (buf[0] > NARBIS_PEER_ROLE_GLASSES) {
+        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    }
+    esp_err_t err = transport_ble_set_peer_role(conn_handle,
+                                                (narbis_peer_role_t)buf[0]);
+    if (err == ESP_ERR_NOT_FOUND) return BLE_ATT_ERR_UNLIKELY;
+    return err == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
 }
 
 static int access_factory_reset(uint16_t conn_handle, uint16_t attr_handle,
@@ -250,7 +230,7 @@ static int access_factory_reset(uint16_t conn_handle, uint16_t attr_handle,
     if (magic != FACTORY_RESET_MAGIC) {
         return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     }
-    esp_err_t err = config_clear_pairing();
+    esp_err_t err = config_factory_reset();
     ESP_LOGW(TAG, "factory reset: %s", esp_err_to_name(err));
     return err == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
 }
@@ -301,18 +281,13 @@ static const struct ble_gatt_chr_def NARBIS_CHRS[] = {
         .flags      = BLE_GATT_CHR_F_WRITE,
     },
     {
-        .uuid       = &CHR_PAIR_UUID.u,
-        .access_cb  = access_pair,
+        .uuid       = &CHR_PEER_ROLE_UUID.u,
+        .access_cb  = access_peer_role,
         .flags      = BLE_GATT_CHR_F_WRITE,
     },
     {
         .uuid       = &CHR_FACTORY_RESET_UUID.u,
         .access_cb  = access_factory_reset,
-        .flags      = BLE_GATT_CHR_F_WRITE,
-    },
-    {
-        .uuid       = &CHR_FORGET_PEER_UUID.u,
-        .access_cb  = access_forget_peer,
         .flags      = BLE_GATT_CHR_F_WRITE,
     },
     {

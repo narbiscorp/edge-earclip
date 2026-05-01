@@ -1,33 +1,5 @@
 menu "Narbis earclip"
 
-    config NARBIS_HARDCODED_PARTNER_MAC
-        bool "Use hardcoded ESP-NOW partner MAC as fallback"
-        default y
-        help
-            When the runtime config has not yet been populated (partner_mac is
-            all zero in NVS), fall back to the MAC compiled in via
-            NARBIS_HARDCODED_PARTNER_MAC_VAL. Disable this in production builds
-            where every device must be paired via the dashboard before use.
-
-    config NARBIS_HARDCODED_PARTNER_MAC_VAL
-        string "Hardcoded ESP-NOW partner MAC"
-        depends on NARBIS_HARDCODED_PARTNER_MAC
-        default "FF:FF:FF:FF:FF:FF"
-        help
-            Six-byte MAC, colon-separated, used when no partner MAC is stored
-            in NVS. The default broadcast address is intentional — it makes
-            unconfigured units inert until paired.
-
-    config NARBIS_ESPNOW_CHANNEL
-        int "ESP-NOW Wi-Fi channel"
-        range 1 13
-        default 1
-        help
-            Wi-Fi channel used for ESP-NOW frames. The earclip sets this on the
-            radio at boot and on each peer entry. Must match the receiver's
-            channel. Stage 07 will override this at runtime from
-            narbis_runtime_config_t.espnow_channel.
-
     config NARBIS_TEST_INJECT
         bool "Use synthetic 1 Hz PPG injector instead of real driver"
         default n
@@ -83,12 +55,43 @@ menu "Narbis earclip"
         help
             If nonzero, ppg_task wakes every N ms and drains the MAX3010x
             FIFO directly via I2C, in addition to whatever the chip's INT
-            line does. Useful as a workaround when the INT pin is
-            unreliable (broken solder, dead chip output stage, hardware
-            mod in progress). Polling at 25 ms keeps up comfortably with
-            200 Hz sampling (FIFO crosses A_FULL threshold every ~85 ms).
-            Set to 0 to disable polling and rely purely on the GPIO
-            interrupt — recommended once hardware is verified good.
+            line does. Useful — and apparently necessary on the current
+            hardware revision — as a workaround for an unreliable INT
+            line. Setting this to 0 (pure-IRQ) saves ~1–2 mA but the
+            FIFO will overrun and the device will produce no beats if
+            the INT pin doesn't fire reliably. Default 25 ms is safe
+            and keeps up comfortably with 200 Hz sampling (FIFO crosses
+            A_FULL threshold every ~85 ms). Drop to 0 only after
+            verifying that "no IRQ in 1s — sensor stalled?" warnings
+            never appear in the boot log.
+
+    config NARBIS_AGC_LED_MAX_X10
+        int "AGC LED current cap (0.1 mA units)"
+        range 50 510
+        default 200
+        help
+            Maximum LED current the AGC will drive each LED to, in 0.1 mA
+            units. The MAX3010x hardware max is 510 (51.0 mA), but
+            pumping the LED that hard rarely fixes a real signal problem
+            — it usually means the optical interface is broken (loose
+            earclip, no finger, dirt) and the extra current is wasted.
+            Default 200 (= 20.0 mA) is roughly the upper bound of "useful
+            on a reasonable optical interface". Logs a one-shot warning
+            ("agc railed at LED cap") when this cap is hit, so a poor
+            optical coupling stays visible.
+
+    menu "Power-draw bisection (debug only)"
+
+        config NARBIS_DISABLE_BLE
+            bool "Skip BLE init at boot"
+            default n
+            help
+                Skips transport_ble_init() and every ble_service_*_init().
+                NimBLE stack stays down, dropping the BT controller
+                pm_lock that pins CPU at 160 MHz. Use only for
+                current-draw bisection.
+
+    endmenu
 
     menu "OTA"
 

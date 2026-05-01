@@ -87,9 +87,20 @@ extern "C" {
 #define NARBIS_CHR_CONFIG_WRITE_UUID_STR    "129fbe56-cbd6-4f52-957b-d80834d6abf3"
 #define NARBIS_CHR_CONFIG_WRITE_UUID_BYTES  { 0xF3, 0xAB, 0xD6, 0x34, 0x08, 0xD8, 0x7B, 0x95, 0x52, 0x4F, 0xD6, 0xCB, 0x56, 0xBE, 0x9F, 0x12 }
 
-/* Mode write (3-axis: transport / ble_profile / data_format) */
+/* Mode write (2-axis: ble_profile / data_format).
+ * Wire layout is unchanged from the 3-axis version: mode_byte still packs
+ * transport(2) | ble_profile(2) | data_format(2) | reserved(2). transport
+ * field is now ignored on read and written as 0; kept for byte-layout
+ * compat with older NVS blobs that survived a pre-config_version-3 boot. */
 #define NARBIS_CHR_MODE_UUID_STR    "71db6de8-5bff-480f-8db1-0d01c90d17d0"
 #define NARBIS_CHR_MODE_UUID_BYTES  { 0xD0, 0x17, 0x0D, 0xC9, 0x01, 0x0D, 0xB1, 0x8D, 0x0F, 0x48, 0xFF, 0x5B, 0xE8, 0x6D, 0xDB, 0x71 }
+
+/* Peer-role write — central tells earclip what kind of peer it is.
+ * 1 byte: 0=unknown, 1=dashboard, 2=glasses. Earclip applies the right
+ * BLE conn-update profile per role (DASHBOARD→LOW_LATENCY, GLASSES→
+ * BATCHED). Not persisted; central re-announces on every connect. */
+#define NARBIS_CHR_PEER_ROLE_UUID_STR    "e987719a-26a6-48d4-b8e9-128994e62e6c"
+#define NARBIS_CHR_PEER_ROLE_UUID_BYTES  { 0x6C, 0x2E, 0xE6, 0x94, 0x89, 0x12, 0xE9, 0xB8, 0xD4, 0x48, 0xA6, 0x26, 0x9A, 0x71, 0x87, 0xE9 }
 
 /* OTA service — Edge-compatible 16-bit UUIDs (ported from existing Edge
  * firmware so a single OTA webapp updates both products). Three
@@ -109,27 +120,29 @@ extern "C" {
  * Enums
  * ============================================================= */
 
-/* ESP-NOW message types. Values are stable on the wire — never renumber. */
+/* Legacy ESP-NOW message types. Path B (config_version 3) removed the
+ * ESP-NOW transport entirely; these values survive only because the BLE
+ * GATT-side per-stream payload structs reference them via the in-memory
+ * narbis_packet_t union helpers. After full cleanup, this enum and the
+ * packet machinery below can be deleted. Values are stable on the wire —
+ * never renumber. */
 typedef enum {
-    NARBIS_MSG_IBI            = 0x01,  /* one or more beat events */
-    NARBIS_MSG_RAW_PPG        = 0x02,  /* raw red+IR sample batch */
-    NARBIS_MSG_BATTERY        = 0x03,  /* battery state */
-    NARBIS_MSG_SQI            = 0x04,  /* signal quality indicator */
-    NARBIS_MSG_HEARTBEAT      = 0x05,  /* keepalive + diagnostics summary */
-    NARBIS_MSG_CONFIG_ACK     = 0x06,  /* ack of a config write */
-    /* Auto-pair handshake (channel 1, broadcast then unicast). Both sides
-     * accept these regardless of the stored partner filter so an unpaired
-     * device can find its peer. After PAIR_OFFER, normal filtered traffic
-     * resumes. See firmware/main/auto_pair.c and the Edge receiver. */
-    NARBIS_MSG_PAIR_DISCOVER  = 0x10,  /* broadcast: earclip → "any Edge" */
-    NARBIS_MSG_PAIR_OFFER     = 0x11   /* unicast:   Edge → earclip */
+    NARBIS_MSG_IBI            = 0x01,
+    NARBIS_MSG_RAW_PPG        = 0x02,
+    NARBIS_MSG_BATTERY        = 0x03,
+    NARBIS_MSG_SQI            = 0x04,
+    NARBIS_MSG_HEARTBEAT      = 0x05,
+    NARBIS_MSG_CONFIG_ACK     = 0x06
 } narbis_msg_type_t;
 
-/* Transport mode — earclip → Edge / dashboard routing. */
+/* Peer role — central announces its role to the earclip via a 1-byte
+ * write to NARBIS_CHR_PEER_ROLE on each connect. Earclip uses this to
+ * pick the per-connection BLE conn-update profile. */
 typedef enum {
-    NARBIS_TRANSPORT_EDGE_ONLY = 0,
-    NARBIS_TRANSPORT_HYBRID    = 1
-} narbis_transport_mode_t;
+    NARBIS_PEER_ROLE_UNKNOWN   = 0,
+    NARBIS_PEER_ROLE_DASHBOARD = 1,
+    NARBIS_PEER_ROLE_GLASSES   = 2
+} narbis_peer_role_t;
 
 /* BLE profile — controls notify cadence. */
 typedef enum {
@@ -269,31 +282,6 @@ typedef struct __attribute__((packed)) {
     uint8_t  field_id;          /* offset (in bytes) of the field, or 0xFF for whole-struct */
 } narbis_config_ack_payload_t;
 
-/* PAIR_DISCOVER payload — sent by an unpaired earclip to broadcast
- * (FF:FF:FF:FF:FF:FF) so any in-range Edge with the auto-pair RX bypass
- * picks it up. earclip_mac duplicates the ESP-NOW src_addr but lets Edge
- * log/verify independently. nonce is echoed in the matching PAIR_OFFER. */
-typedef struct __attribute__((packed)) {
-    uint8_t  earclip_mac[6];    /* sender's STA MAC */
-    uint16_t nonce;             /* random; echoed in PAIR_OFFER */
-    uint8_t  fw_major;
-    uint8_t  fw_minor;
-} narbis_pair_discover_payload_t;
-
-/* PAIR_OFFER payload — sent by Edge unicast to the discovered earclip
- * once its MAC has been learned + persisted. status carries the result. */
-typedef enum {
-    NARBIS_PAIR_OFFER_OK       = 0,  /* paired; resume normal traffic */
-    NARBIS_PAIR_OFFER_BUSY     = 1,  /* Edge already paired with someone else */
-    NARBIS_PAIR_OFFER_REJECTED = 2   /* explicit rejection (reserved) */
-} narbis_pair_offer_status_t;
-
-typedef struct __attribute__((packed)) {
-    uint16_t nonce;             /* echo of PAIR_DISCOVER.nonce */
-    uint8_t  status;            /* narbis_pair_offer_status_t */
-    uint8_t  reserved;          /* must be 0 */
-} narbis_pair_offer_payload_t;
-
 /* =============================================================
  * Packet header + in-memory packet
  *
@@ -328,8 +316,6 @@ typedef union {
     narbis_sqi_payload_t           sqi;
     narbis_heartbeat_payload_t     heartbeat;
     narbis_config_ack_payload_t    config_ack;
-    narbis_pair_discover_payload_t pair_discover;
-    narbis_pair_offer_payload_t    pair_offer;
 } narbis_payload_t;
 
 typedef struct {
@@ -365,8 +351,14 @@ typedef struct {
  * ============================================================= */
 
 typedef struct __attribute__((packed)) {
-    /* ---- meta ---- */
-    uint16_t config_version;        /* increments on incompatible NVS changes */
+    /* ---- meta ----
+     * config_version: increments on incompatible NVS changes.
+     *   1 — initial.
+     *   2 — diagnostics_mask repurposed from reserved_pwr.
+     *   3 — Path B: removed transport_mode / partner_mac / espnow_channel
+     *       (ESP-NOW deleted). Older blobs harmlessly fall back to defaults
+     *       on load via the version>=3 check in config_manager_init. */
+    uint16_t config_version;
 
     /* ---- sensor ---- */
     uint16_t sample_rate_hz;        /* 50 / 100 / 200 / 400; reboot to apply */
@@ -395,15 +387,12 @@ typedef struct __attribute__((packed)) {
     uint16_t ibi_max_ms;            /* validator ceiling (default 2000, ≈30 BPM) */
     uint8_t  ibi_max_delta_pct;     /* continuity threshold (default 30) */
 
-    /* ---- mode (3-axis) ---- */
-    uint8_t  transport_mode;        /* narbis_transport_mode_t */
+    /* ---- mode (2-axis after Path B) ---- */
     uint8_t  ble_profile;           /* narbis_ble_profile_t */
     uint8_t  data_format;           /* narbis_data_format_t */
 
     /* ---- transport ---- */
     uint16_t ble_batch_period_ms;   /* BATCHED mode flush interval (default 500) */
-    uint8_t  partner_mac[6];        /* ESP-NOW peer; all-zero = use Kconfig fallback */
-    uint8_t  espnow_channel;        /* 1–13 */
 
     /* ---- power / diag ---- */
     uint8_t  diagnostics_enabled;   /* 0/1 — master enable for diagnostics emission */

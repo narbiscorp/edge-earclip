@@ -1,5 +1,4 @@
 import {
-  NarbisTransportMode,
   NarbisBleProfile,
   NarbisDataFormat,
 } from '../../ble/parsers';
@@ -275,15 +274,6 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
   }),
 
   // --- Transport & Mode ---
-  transport_mode: enumField({
-    key: 'transport_mode',
-    section: 'transport',
-    label: 'Transport mode',
-    options: [
-      { value: NarbisTransportMode.EDGE_ONLY, label: 'Edge only' },
-      { value: NarbisTransportMode.HYBRID,    label: 'Hybrid (Edge + BLE)' },
-    ],
-  }),
   ble_profile: enumField({
     key: 'ble_profile',
     section: 'transport',
@@ -309,18 +299,6 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
     label: 'BLE batch period',
     min: 100, max: 2000, step: 10,
     unit: 'ms',
-  }),
-  partner_mac: mac({
-    key: 'partner_mac',
-    section: 'transport',
-    label: 'ESP-NOW partner MAC',
-    help: 'All zeros uses the Kconfig fallback. All FF disables ESP-NOW peer.',
-  }),
-  espnow_channel: numeric({
-    key: 'espnow_channel',
-    section: 'transport',
-    label: 'ESP-NOW WiFi channel',
-    min: 1, max: 13, step: 1,
   }),
   battery_low_mv: numeric({
     key: 'battery_low_mv',

@@ -13,6 +13,11 @@
 extern "C" {
 #endif
 
+/* Maximum simultaneous BLE centrals the earclip will accept. Path B
+ * supports 2 (dashboard + glasses); 3 leaves headroom for a debug client.
+ * Must match CONFIG_BT_NIMBLE_MAX_CONNECTIONS in sdkconfig.defaults. */
+#define NARBIS_BLE_MAX_CONNECTIONS 3
+
 typedef enum {
     BLE_SUB_HRS_HR_MEASUREMENT = 0,
     BLE_SUB_BATTERY_LEVEL,
@@ -28,53 +33,55 @@ typedef enum {
 esp_err_t transport_ble_init(void);
 esp_err_t transport_ble_deinit(void);
 
-/* Returns true if a central is connected and has CCCD-enabled the given
- * characteristic. Used by main.c and the per-service push helpers to gate
- * notify work. */
+/* Returns true if any currently-connected central has CCCD-enabled the
+ * given characteristic. Used to gate notify work — it's wasteful to
+ * compute a payload nobody's listening to. */
 bool transport_ble_is_subscribed(ble_subscription_t which);
 
-/* Returns the negotiated ATT MTU for the active connection, or 23 if no
- * exchange has happened yet. 0 if no connection. */
+/* Returns the lowest MTU among active connections, or 23 if none. */
 uint16_t transport_ble_get_mtu(void);
 
-/* Returns active conn handle (or BLE_HS_CONN_HANDLE_NONE-equivalent 0xFFFF). */
+/* True iff at least one BLE central is currently connected. */
+bool transport_ble_any_connected(void);
+
+/* Returns the connection handle of any currently-connected central, or
+ * 0xFFFF if none. Used by ble_ota and diagnostics — best-effort, picks
+ * the first active slot. Prefer transport_ble_notify() for per-peer
+ * fan-out where possible. */
 uint16_t transport_ble_get_conn_handle(void);
 
-/* Apply BLE profile (connection-interval + slave-latency change). Called
- * by ble_service_narbis when the central writes MODE / CONFIG. */
+/* Apply a BLE profile (connection-interval + slave-latency change) to
+ * all currently-connected centrals. Called by config_manager when the
+ * runtime ble_profile changes. Per-peer role-based profiles set via
+ * transport_ble_set_peer_role() override this on the next role write. */
 esp_err_t transport_ble_set_profile(uint8_t ble_profile);
+
+/* Set the role for the given connection and apply the matching default
+ * profile (DASHBOARD → LOW_LATENCY, GLASSES → BATCHED). Called by
+ * ble_service_narbis when the central writes CHR_PEER_ROLE. */
+esp_err_t transport_ble_set_peer_role(uint16_t conn_handle, narbis_peer_role_t role);
 
 /* Per-characteristic value handles, looked up after gatts_register_cb runs.
  * Returns 0 if the characteristic is not yet registered. */
 uint16_t transport_ble_val_handle(ble_subscription_t which);
 
-/* Cache the value handle for `which` once NimBLE assigns it (called from
- * each service module's gatts_register_cb after a CHR is registered). */
 void transport_ble_set_val_handle(ble_subscription_t which, uint16_t val_handle);
 
 /* Convenience notify helper: emits `data[0..len)` as a single notification
- * on the given characteristic. Caller is responsible for upper-layer gating
- * (data_format, profile) — this only checks subscription. */
+ * to every subscribed peer on the given characteristic. */
 esp_err_t transport_ble_notify(ble_subscription_t which,
                                const uint8_t *data, uint16_t len);
 
-/* High-level sends used by main.c — internally gated by subscription, profile,
- * and data_format. Cheap no-ops when nothing should go out. */
 esp_err_t transport_ble_send_beat(const beat_event_t *beat);
 esp_err_t transport_ble_send_raw_sample(const ppg_sample_t *sample,
                                         uint16_t sample_rate_hz,
                                         uint8_t data_format);
 esp_err_t transport_ble_send_battery(uint8_t soc_pct, uint16_t mv, uint8_t charging);
 
-/* Re-emit the current runtime config snapshot to subscribed clients. */
 esp_err_t transport_ble_notify_config(void);
 
 /* Block until the first BLE central connects after boot, or `timeout_ms`
- * elapses. Returns ESP_OK on connect, ESP_ERR_TIMEOUT otherwise. The
- * latch is one-shot per boot — subsequent calls return ESP_OK
- * immediately if a connect already happened. Used by the OTA validity
- * self-test to commit a freshly OTA'd image after the dashboard
- * reconnects. */
+ * elapses. One-shot per boot — used by the OTA validity self-test. */
 esp_err_t transport_ble_wait_first_connect(uint32_t timeout_ms);
 
 #ifdef __cplusplus

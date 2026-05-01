@@ -12,8 +12,7 @@
  *     no ADC blocking on the caller.
  *   - When NARBIS_BATT_DIVIDER_PRESENT=n: stub returning 4000 mV / 80%, with
  *     a once-per-minute rate-limited STUB warning. The 30 s tick still emits
- *     ESP-NOW + BLE battery frames (with stub values) so the transport stays
- *     warm.
+ *     BLE battery frames (with stub values) so subscribers stay warm.
  */
 
 #include "power_mgmt.h"
@@ -24,7 +23,6 @@
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
 #include "esp_heap_caps.h"
 #include "soc/rtc.h"
 #include "freertos/FreeRTOS.h"
@@ -37,7 +35,6 @@
 #include "ble_service_narbis.h"
 #include "ppg_driver_max3010x.h"
 #include "transport_ble.h"
-#include "transport_espnow.h"
 
 #if CONFIG_NARBIS_BATT_DIVIDER_PRESENT
 #include "esp_adc/adc_cali.h"
@@ -225,10 +222,6 @@ static esp_err_t adc_sample_mv(uint16_t *out_mv)
 
 static void emit_battery_frames(uint16_t mv, uint8_t soc, uint8_t charging)
 {
-    esp_err_t err = transport_espnow_send_battery(soc, mv, charging);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "espnow send_battery: %s", esp_err_to_name(err));
-    }
     (void)transport_ble_send_battery(soc, mv, charging);
     (void)ble_service_narbis_push_battery(soc, mv, charging);
     ble_service_battery_push(soc, mv, charging);
@@ -282,16 +275,6 @@ static void battery_tick(void *arg)
  * Diagnostics dump — figure out who's preventing light sleep.
  * ========================================================================= */
 
-static const char *wifi_ps_name(wifi_ps_type_t ps)
-{
-    switch (ps) {
-    case WIFI_PS_NONE:       return "NONE (modem always on)";
-    case WIFI_PS_MIN_MODEM:  return "MIN_MODEM";
-    case WIFI_PS_MAX_MODEM:  return "MAX_MODEM";
-    default:                 return "?";
-    }
-}
-
 void power_mgmt_log_diagnostics(const char *reason)
 {
     ESP_LOGI(TAG, "==== diagnostics dump (%s) ====", reason ? reason : "");
@@ -320,17 +303,6 @@ void power_mgmt_log_diagnostics(const char *reason)
     rtc_clk_cpu_freq_get_config(&freq_cfg);
     ESP_LOGI(TAG, "cpu now: %u MHz (source div=%u)",
              freq_cfg.freq_mhz, freq_cfg.div);
-
-    /* Wi-Fi power save. Note: WIFI_PS_MIN_MODEM only saves power if the
-     * STA is associated with an AP and DTIM beacons anchor sleep windows.
-     * For ESP-NOW with no AP it's effectively WIFI_PS_NONE in practice. */
-    wifi_ps_type_t ps = WIFI_PS_NONE;
-    if (esp_wifi_get_ps(&ps) == ESP_OK) {
-        ESP_LOGI(TAG, "wifi_ps=%s (note: useless for ESP-NOW without AP assoc)",
-                 wifi_ps_name(ps));
-    } else {
-        ESP_LOGW(TAG, "esp_wifi_get_ps failed");
-    }
 
     /* MAX3010x LED currents (read back from driver state). AGC may have
      * raised these — at 51 mA per LED max, two LEDs alone can dominate

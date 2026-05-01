@@ -7,11 +7,39 @@ import {
   NARBIS_CHR_CONFIG_UUID,
   NARBIS_CHR_CONFIG_WRITE_UUID,
   NARBIS_CHR_MODE_UUID,
+  NARBIS_CHR_PEER_ROLE_UUID,
   NARBIS_CHR_DIAGNOSTICS_UUID,
   HEART_RATE_SERVICE,
   BATTERY_SERVICE,
   DEVICE_INFO_SERVICE,
 } from './characteristics';
+
+// Path B: dashboard announces its role via NARBIS_CHR_PEER_ROLE so the
+// earclip applies the LOW_LATENCY conn-update profile to this slot.
+const NARBIS_PEER_ROLE_DASHBOARD = 0x01;
+
+// Persistence keys for Web Bluetooth pairing. device.id is opaque/origin-
+// scoped; Chrome auto-matches a previously-accepted device on subsequent
+// requestDevice() calls without re-prompting.
+const PAIRED_DEVICE_ID_KEY = 'narbisPairedDeviceId';
+const PAIRED_DEVICE_NAME_KEY = 'narbisPairedDeviceName';
+
+export function getPairedDeviceName(): string | null {
+  try {
+    return localStorage.getItem(PAIRED_DEVICE_NAME_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function forgetPairedDevice(): void {
+  try {
+    localStorage.removeItem(PAIRED_DEVICE_ID_KEY);
+    localStorage.removeItem(PAIRED_DEVICE_NAME_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 import {
   parseNarbisIBI,
   parseSQI,
@@ -128,6 +156,12 @@ export class NarbisDevice extends EventTarget {
       });
       this.device = device;
       this._deviceName = device.name ?? 'Narbis Earclip';
+      try {
+        localStorage.setItem(PAIRED_DEVICE_ID_KEY, device.id);
+        localStorage.setItem(PAIRED_DEVICE_NAME_KEY, this._deviceName);
+      } catch {
+        /* ignore quota / private-mode errors */
+      }
       device.addEventListener('gattserverdisconnected', this.onGattDisconnected);
       // MTU 247 negotiated by browser/OS; not configurable from JS.
       await this.openSession();
@@ -136,6 +170,16 @@ export class NarbisDevice extends EventTarget {
     } catch (err) {
       this.setStatus('disconnected');
       this.cleanupConnection();
+      // Multi-central earclip rejects new connects when both slots are full.
+      // Web Bluetooth surfaces this as a generic GATT connect failure on
+      // the second peer; rewrap so the UI can show a useful hint.
+      if (err instanceof Error &&
+          /failed|gatt|connection/i.test(err.message) &&
+          this.device !== null) {
+        throw new Error(
+          'earclip is already paired with two devices — disconnect glasses or another browser tab and retry',
+        );
+      }
       throw err;
     }
   }
@@ -157,9 +201,9 @@ export class NarbisDevice extends EventTarget {
     await this.chConfigWrite.writeValueWithResponse(toBufferSource(serializeConfig(cfg)));
   }
 
-  async writeMode(transport: number, profile: number, format: number): Promise<void> {
+  async writeMode(profile: number, format: number): Promise<void> {
     if (!this.chMode) throw new Error('not connected');
-    const buf = new Uint8Array([transport & 0xff, profile & 0xff, format & 0xff]);
+    const buf = new Uint8Array([profile & 0xff, format & 0xff]);
     await this.chMode.writeValueWithResponse(toBufferSource(buf));
   }
 
@@ -180,6 +224,18 @@ export class NarbisDevice extends EventTarget {
     ]);
     this.chConfigWrite = chCfgWrite;
     this.chMode = chMode;
+
+    // Announce role to the earclip so it applies LOW_LATENCY conn-params
+    // to this slot. Pre-Path-B firmware lacks this characteristic — log
+    // and continue (older earclip falls back to BATCHED, which is fine).
+    try {
+      const chPeerRole = await narbisSvc.getCharacteristic(NARBIS_CHR_PEER_ROLE_UUID);
+      await chPeerRole.writeValueWithResponse(
+        toBufferSource(new Uint8Array([NARBIS_PEER_ROLE_DASHBOARD])),
+      );
+    } catch (err) {
+      this.emitError(err, 'peer-role-optional');
+    }
 
     this.attach(chIbi, this.onIbiNotify);
     this.attach(chSqi, this.onSqiNotify);

@@ -1,6 +1,13 @@
-# Stage 05 — Firmware: ESP-NOW transport
+# Stage 05 — Firmware: ESP-NOW transport [DEPRECATED]
 
-## Task
+> **Path B (BLE-only) chosen 2026-05-01.** ESP-NOW was removed from the
+> earclip; glasses now connect to the earclip as a BLE central (see
+> `EDGE/EDGE FIRMWARE/components/narbis_ble_central/`). This document is
+> preserved for history and is not on the critical path. The earclip's
+> `transport_espnow.c` and `auto_pair.c` files have been deleted; do not
+> re-introduce them.
+
+## Task (historical)
 
 Implement the ESP-NOW transport that sends beat events to the Edge glasses.
 

@@ -2,7 +2,6 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -13,7 +12,6 @@
 #include "ppg_driver_max3010x.h"
 
 #include "app_state.h"
-#include "auto_pair.h"
 #include "beat_validator.h"
 #include "ble_ota.h"
 #include "ble_service_battery.h"
@@ -26,7 +24,6 @@
 #include "power_mgmt.h"
 #include "ppg_channel.h"
 #include "transport_ble.h"
-#include "transport_espnow.h"
 
 #ifdef CONFIG_NARBIS_TEST_INJECT
 #include "test_inject.h"
@@ -46,40 +43,16 @@ static void on_beat(const beat_event_t *e, void *ctx)
              bpm_x10 / 10, bpm_x10 % 10, e->confidence_x100, e->flags,
              e->peak_amplitude);
 
-    /* ESP-NOW always: that's the path to Edge glasses. */
-    esp_err_t err = transport_espnow_send_beat(e);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "espnow send_beat: %s", esp_err_to_name(err));
-    }
-
-    /* BLE only in HYBRID mode (and only if a central is subscribed; the
-     * call internally no-ops otherwise). */
-    const narbis_runtime_config_t *cfg = ble_service_narbis_config();
-    if (cfg->transport_mode == NARBIS_TRANSPORT_HYBRID) {
-        (void)transport_ble_send_beat(e);
-    }
+    (void)transport_ble_send_beat(e);
 }
 
 static void boot_log_macs(void)
 {
-    uint8_t wifi_mac[6] = {0};
-    uint8_t ble_mac[6]  = {0};
-    uint8_t partner[6]  = {0};
-    const char *src     = "unset";
-
-    (void)esp_wifi_get_mac(WIFI_IF_STA, wifi_mac);
+    uint8_t ble_mac[6] = {0};
     (void)esp_read_mac(ble_mac, ESP_MAC_BT);
-    (void)transport_espnow_get_partner_info(partner, &src);
-
-    ESP_LOGI(TAG, "wifi MAC %02x:%02x:%02x:%02x:%02x:%02x",
-             wifi_mac[0], wifi_mac[1], wifi_mac[2],
-             wifi_mac[3], wifi_mac[4], wifi_mac[5]);
-    ESP_LOGI(TAG, "ble  MAC %02x:%02x:%02x:%02x:%02x:%02x",
+    ESP_LOGI(TAG, "ble MAC %02x:%02x:%02x:%02x:%02x:%02x",
              ble_mac[0], ble_mac[1], ble_mac[2],
              ble_mac[3], ble_mac[4], ble_mac[5]);
-    ESP_LOGI(TAG, "partner  %02x:%02x:%02x:%02x:%02x:%02x  src=%s",
-             partner[0], partner[1], partner[2],
-             partner[3], partner[4], partner[5], src);
 }
 
 static void on_peak(const elgendi_peak_t *p, void *ctx)
@@ -155,8 +128,12 @@ void app_main(void)
      * once everything is up. */
     ESP_ERROR_CHECK(config_manager_init());
     ESP_ERROR_CHECK(power_mgmt_init());
-    ESP_ERROR_CHECK(transport_espnow_init());
+
     boot_log_macs();
+
+#if CONFIG_NARBIS_DISABLE_BLE
+    ESP_LOGW(TAG, "BLE init SKIPPED (CONFIG_NARBIS_DISABLE_BLE=y) — power-draw bisection build");
+#else
     ESP_ERROR_CHECK(transport_ble_init());
     ESP_ERROR_CHECK(ble_service_dis_init());
     ESP_ERROR_CHECK(ble_service_battery_init());
@@ -169,6 +146,7 @@ void app_main(void)
      * silently (the bootloader rolls back on the next reset) when the
      * running partition is the factory image or already validated. */
     (void)ble_ota_validity_selftest_kickoff();
+#endif
     ESP_ERROR_CHECK(diagnostics_init());
 
     ESP_ERROR_CHECK(ppg_channel_init());
@@ -195,12 +173,6 @@ void app_main(void)
      * (or derives one from the loaded config on first boot). */
     ESP_ERROR_CHECK(app_state_init());
     (void)app_state_resume_last_mode();
-
-    /* Auto-pair: registers the ESP-NOW recv handler. If NVS already has a
-     * valid partner MAC this is a no-op. Otherwise spawns a one-shot
-     * discovery task that broadcasts PAIR_DISCOVER until an Edge replies
-     * with PAIR_OFFER (~30 s budget). Must run after transport_espnow_init. */
-    (void)auto_pair_init();
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

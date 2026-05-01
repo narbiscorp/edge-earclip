@@ -17,15 +17,25 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_CONTROLLER_ENABLED=y
-
-# ---------------- Wi-Fi / coex (for ESP-NOW alongside BLE) ----------------
-CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
-# STA-only; ESP-NOW does not need SoftAP. Saves ~12 KB flash.
-CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
-# Wi-Fi config lives in RAM (we call esp_wifi_set_storage(WIFI_STORAGE_RAM)).
-CONFIG_ESP_WIFI_NVS_ENABLED=n
-# No AP association → no WPA3 SAE needed.
-CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+# BLE controller modem-sleep. With this off (default in IDF 5.5), the BT
+# controller holds an ESP_PM_CPU_FREQ_MAX lock 100% of the time, pinning
+# the CPU at 160 MHz and blocking light sleep entirely (visible in
+# esp_pm_dump_locks as "bt CPU_FREQ_MAX 100%"). Turning it on lets the
+# controller dropthe lock between conn events. Sleep clock is the main
+# XTAL by default (BT_LE_LP_CLK_SRC_MAIN_XTAL) — XIAO C6 has no
+# external 32 kHz crystal.
+CONFIG_BT_LE_SLEEP_ENABLE=y
+# BLE light sleep requires the MAC and Baseband to power down with the
+# rest of the system — without this the controller's sleep callback
+# can't actually park the radio. Build error if BT_LE_SLEEP_ENABLE is
+# set without this.
+CONFIG_MAC_BB_PD=y
+# Multi-central. Path B accepts 2 simultaneous centrals (dashboard + glasses);
+# 3 leaves a slot for a debug client. Both host (NimBLE) and controller
+# (LE) caps must be raised — host alone is a footgun (the controller will
+# reject the third connect even though the host expected it to fit).
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+CONFIG_BT_LE_MAX_CONNECTIONS=3
 
 # ---------------- Power management ----------------
 # Light sleep is the only sleep mode allowed (CLAUDE.md: no deep sleep on the

@@ -15,7 +15,7 @@ narbis-earclip/
 │   ├── narbis_protocol.c
 │   ├── narbis_protocol.ts          # used by dashboard
 │   └── uuids.ts
-├── firmware/                       # earclip firmware (ESP-IDF, ESP32-C6)
+├── firmware/                       # earclip firmware (ESP-IDF, ESP32-C6, NimBLE)
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults
 │   ├── partitions.csv
@@ -25,9 +25,12 @@ narbis-earclip/
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── src/
-├── edge-additions/                 # files to copy into existing Edge firmware repo later
-│   └── narbis_esp_now_rx/
-├── ota-additions/                  # files to add to existing OTA webapp later
+├── EDGE/EDGE FIRMWARE/             # Edge glasses firmware (ESP32, Bluedroid)
+│   ├── CMakeLists.txt              # post-Path-B project structure
+│   ├── sdkconfig.defaults
+│   ├── main/
+│   └── components/
+│       └── narbis_ble_central/     # BLE central role: connects to earclip
 └── docs/
     ├── protocol.md
     ├── recording_format.md
@@ -61,8 +64,18 @@ Pin to **5.5.1** (matches existing Edge firmware). Do not silently upgrade.
 ```
 PPG sample → driver layer → channel layer → bandpass → Elgendi → IBI validator
                                                                        ↓
-                                                          ESP-NOW + BLE transport
+                                                              BLE GATT notify
+                                                              (multi-central)
 ```
+
+Earclip is a BLE peripheral (NimBLE). Dashboard and Edge glasses both
+connect simultaneously as BLE centrals. Each central writes its role on
+connect via NARBIS_CHR_PEER_ROLE; the earclip applies the matching
+conn-update profile (DASHBOARD → LOW_LATENCY, GLASSES → BATCHED).
+
+ESP-NOW was removed in Path B (config_version 3) — Wi-Fi is no longer
+brought up on the earclip. Glasses use Bluedroid central role to read
+IBI notifications over BLE.
 
 ### Firmware components
 
@@ -73,8 +86,7 @@ PPG sample → driver layer → channel layer → bandpass → Elgendi → IBI v
 
 ### Firmware main
 
-- **`firmware/main/transport_espnow.c`** — low-latency path to Edge glasses
-- **`firmware/main/transport_ble.c`** — BLE GATT server
+- **`firmware/main/transport_ble.c`** — BLE GATT server, multi-central
 - **`firmware/main/ble_service_hrs.c`** — standard Heart Rate Service (0x180D)
 - **`firmware/main/ble_service_battery.c`** — Battery Service (0x180F)
 - **`firmware/main/ble_service_dis.c`** — Device Information Service (0x180A)
@@ -101,16 +113,18 @@ PPG sample → driver layer → channel layer → bandpass → Elgendi → IBI v
 - **Sample rate**: 200 Hz default (configurable 50/100/200/400)
 - **LED currents**: 7 mA red and IR default, AGC adjusts
 - **BLE protocol**: standard Heart Rate Service + Battery + DIS + custom Narbis service
-- **ESP-NOW**: NVS-stored partner MAC, hardcoded fallback via Kconfig flag
+- **Multi-central BLE**: dashboard + Edge glasses both connect simultaneously
 - **OTA**: Nordic-style DFU, ported from Edge firmware
-- **Mode model**: 3-axis (transport / BLE profile / data format)
+- **Mode model**: 2-axis (BLE profile / data format)
 - **HRV computation**: in dashboard, not firmware
 
 ## Mode model
 
-Three orthogonal config axes:
-- **transport_mode**: `EDGE_ONLY` or `HYBRID`
-- **ble_profile**: `BATCHED` (every ~500 ms) or `LOW_LATENCY` (every beat)
+Two orthogonal config axes (post-Path-B):
+- **ble_profile**: `BATCHED` (every ~500 ms) or `LOW_LATENCY` (every beat).
+  Per-central default is set by role (DASHBOARD → LOW_LATENCY, GLASSES →
+  BATCHED) when the central writes NARBIS_CHR_PEER_ROLE; the runtime
+  config field overrides this for all peers.
 - **data_format**: `IBI_ONLY`, `RAW_PPG`, or `IBI_PLUS_RAW`
 
 Set via BLE config write, persisted to NVS.
@@ -121,10 +135,15 @@ Everything in `narbis_runtime_config_t` (see `protocol/narbis_protocol.h`) is da
 
 ## Validation targets
 
-- Beat detection lag from physiological event to ESP-NOW packet: <300 ms typical
+- Beat detection lag from physiological event to BLE notify: <300 ms typical
 - IBI agreement with simultaneous Polar H10: ±10 ms typical at rest
-- Battery life on 100 mAh LiPo, EDGE_ONLY mode: ≥9 hours
-- Battery life on 100 mAh LiPo, HYBRID + LOW_LATENCY + RAW_PPG: ≥6 hours
+- Idle, no central: target ≤35 mA (expected 25–35 mA)
+- Dashboard only, LOW_LATENCY: target ≤40 mA (expected 35–40 mA)
+- Glasses only, BATCHED: target ≤30 mA (expected 20–30 mA)
+- Both centrals connected: target ≤50 mA (expected 40–50 mA)
+
+See `staged-prompts/07_firmware_config_power.md` for the historical 9/11/13 mA
+targets and the Build B PPK2 measurement (55.92 mA) that invalidated them.
 
 ## Build commands
 
@@ -169,16 +188,16 @@ Build the parts in this order. Each depends on what came before.
 2. Firmware project skeleton (`firmware/`)
 3. Firmware PPG driver
 4. Firmware channel/AGC/Elgendi/validator
-5. Firmware ESP-NOW transport
-6. Firmware BLE services
-7. Firmware mode controller, config persistence, power management
-8. Firmware OTA (Nordic-style DFU port from Edge)
-9. Dashboard scaffolding
-10. Dashboard BLE connection + parsing
-11. Dashboard charts + HRV metrics
-12. Dashboard config panel + presets
-13. Dashboard recording + replay
-14. Edge firmware additions (separate repo, files prepared in `edge-additions/`)
-15. OTA webapp extensions (separate repo, files prepared in `ota-additions/`)
+5. Firmware BLE services + multi-central transport (Path B replaced ESP-NOW with BLE-only)
+6. Firmware mode controller, config persistence, power management
+7. Firmware OTA (Nordic-style DFU port from Edge)
+8. Dashboard scaffolding
+9. Dashboard BLE connection + parsing
+10. Dashboard charts + HRV metrics
+11. Dashboard config panel + presets
+12. Dashboard recording + replay
+13. Edge glasses BLE central role (`EDGE/EDGE FIRMWARE/components/narbis_ble_central/`)
 
 The staged prompts in `staged-prompts/` map to each of these in order.
+`staged-prompts/05_firmware_espnow.md` is preserved for history and not on
+the critical path.

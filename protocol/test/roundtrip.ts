@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   NarbisMsgType,
-  NarbisTransportMode,
+  NarbisPeerRole,
   NarbisBleProfile,
   NarbisDataFormat,
   NarbisConfigAckStatus,
@@ -186,7 +186,6 @@ function checkHeartbeat(g: GoldenLine): void {
   eq("HEARTBEAT free_heap", pkt.payload.heartbeat.free_heap, 200000);
   eq("HEARTBEAT rssi_dbm", pkt.payload.heartbeat.rssi_dbm, -55);
   const expectedMode =
-    (NarbisTransportMode.HYBRID & 0x03) |
     ((NarbisBleProfile.LOW_LATENCY & 0x03) << 2) |
     ((NarbisDataFormat.IBI_PLUS_RAW & 0x03) << 4);
   eq("HEARTBEAT mode_byte", pkt.payload.heartbeat.mode_byte, expectedMode);
@@ -208,7 +207,7 @@ function checkConfigAck(g: GoldenLine): void {
 
 function checkConfig(g: GoldenLine): void {
   const cfg = deserializeConfig(g.bytes);
-  eq("CONFIG config_version", cfg.config_version, 2);
+  eq("CONFIG config_version", cfg.config_version, 3);
   eq("CONFIG sample_rate_hz", cfg.sample_rate_hz, 200);
   eq("CONFIG led_red_ma_x10", cfg.led_red_ma_x10, 70);
   eq("CONFIG led_ir_ma_x10", cfg.led_ir_ma_x10, 70);
@@ -226,16 +225,9 @@ function checkConfig(g: GoldenLine): void {
   eq("CONFIG ibi_min_ms", cfg.ibi_min_ms, 300);
   eq("CONFIG ibi_max_ms", cfg.ibi_max_ms, 2000);
   eq("CONFIG ibi_max_delta_pct", cfg.ibi_max_delta_pct, 30);
-  eq("CONFIG transport_mode", cfg.transport_mode, NarbisTransportMode.EDGE_ONLY);
   eq("CONFIG ble_profile", cfg.ble_profile, NarbisBleProfile.BATCHED);
   eq("CONFIG data_format", cfg.data_format, NarbisDataFormat.IBI_ONLY);
   eq("CONFIG ble_batch_period_ms", cfg.ble_batch_period_ms, 500);
-  const macExpected = new Uint8Array([0x24, 0x6f, 0x28, 0x00, 0x11, 0x22]);
-  check(
-    cfg.partner_mac.length === 6 && cfg.partner_mac.every((b, i) => b === macExpected[i]),
-    "CONFIG partner_mac",
-  );
-  eq("CONFIG espnow_channel", cfg.espnow_channel, 1);
   eq("CONFIG diagnostics_enabled", cfg.diagnostics_enabled, 1);
   eq("CONFIG light_sleep_enabled", cfg.light_sleep_enabled, 1);
   eq(
@@ -245,6 +237,13 @@ function checkConfig(g: GoldenLine): void {
   );
   eq("CONFIG battery_low_mv", cfg.battery_low_mv, 3300);
   assertReencodeConfig("CONFIG", g.hex, cfg);
+}
+
+function checkPeerRoleEnum(): void {
+  // Path B sanity: peer-role wire values must stay 0/1/2.
+  eq("NarbisPeerRole.UNKNOWN", NarbisPeerRole.UNKNOWN, 0);
+  eq("NarbisPeerRole.DASHBOARD", NarbisPeerRole.DASHBOARD, 1);
+  eq("NarbisPeerRole.GLASSES", NarbisPeerRole.GLASSES, 2);
 }
 
 function main(): number {
@@ -277,6 +276,7 @@ function main(): number {
   checkHeartbeat(golden.get("HEARTBEAT")!);
   checkConfigAck(golden.get("CONFIG_ACK")!);
   checkConfig(golden.get("CONFIG")!);
+  checkPeerRoleEnum();
 
   if (failures !== 0) {
     console.error(`\nFAILED: ${failures} check(s)`);

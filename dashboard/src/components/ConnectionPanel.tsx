@@ -1,4 +1,5 @@
 import { useDashboardStore } from '../state/store';
+import { forgetPairedDevice, getPairedDeviceName } from '../ble/narbisDevice';
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
 
@@ -36,6 +37,7 @@ export default function ConnectionPanel() {
     });
   };
 
+  const pairedName = getPairedDeviceName();
   const narbisLabel =
     narbis.state === 'connected'
       ? `${narbis.deviceName ?? 'Narbis'}${narbis.battery !== null ? ` · ${narbis.battery}%` : ''}`
@@ -43,7 +45,14 @@ export default function ConnectionPanel() {
         ? 'reconnecting…'
         : narbis.state === 'connecting'
           ? 'connecting…'
-          : 'disconnected';
+          : pairedName
+            ? `disconnected (paired: ${pairedName})`
+            : 'disconnected';
+
+  const onForget = () => {
+    void useDashboardStore.getState().disconnectNarbis().catch(() => { /* ignore */ });
+    forgetPairedDevice();
+  };
 
   const polarLabel =
     polar.state === 'connected'
@@ -62,12 +71,23 @@ export default function ConnectionPanel() {
           dot={dotClass[narbis.state]}
         />
         {narbis.state === 'disconnected' ? (
-          <button
-            className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"
-            onClick={onConnectNarbis}
-          >
-            Connect Earclip
-          </button>
+          <>
+            <button
+              className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"
+              onClick={onConnectNarbis}
+            >
+              Connect Earclip
+            </button>
+            {pairedName ? (
+              <button
+                className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
+                onClick={onForget}
+                title="Clear the saved earclip; next connect will prompt"
+              >
+                Forget
+              </button>
+            ) : null}
+          </>
         ) : (
           <button
             className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"

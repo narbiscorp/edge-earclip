@@ -23,3 +23,11 @@ external systems, or work that is intentionally deferred to a later stage.
 - **OTA payload format (Stage 08).** `firmware/main/ble_ota.c` is still a
   stub. Stage 08 ports the Nordic-style DFU implementation from the Edge
   firmware repo.
+
+- **v2 — port glasses BLE host from Bluedroid to NimBLE.** Path B leaves the
+  earclip on NimBLE and the glasses on Bluedroid (intentional v1
+  divergence to avoid a port and a refactor in the same PR). Future
+  cleanup: port the glasses' GATT server + new BLE central code to
+  NimBLE so both halves of the product line share one stack. Reference:
+  `EDGE/EDGE FIRMWARE/components/narbis_ble_central/` (current
+  Bluedroid GATTC implementation).

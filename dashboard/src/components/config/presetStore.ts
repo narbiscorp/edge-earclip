@@ -1,7 +1,6 @@
 import type { NarbisRuntimeConfig } from '../../ble/parsers';
 import builtInsRaw from '../../presets/defaults.json';
 import { getDb, STORE_PRESETS } from '../../state/idb';
-import { macToString, parseMac } from './fields/MacField';
 import { ALL_FIELD_KEYS, FIELD_SCHEMA } from './fieldSchema';
 import { isValid, validateConfig } from './validateConfig';
 
@@ -25,18 +24,18 @@ interface JsonPreset {
   updatedAt?: number;
 }
 
-type JsonConfig = Omit<NarbisRuntimeConfig, 'partner_mac'> & { partner_mac: string };
+// Path B: NarbisRuntimeConfig is all-numeric on the wire; presets serialize
+// 1:1. Pre-Path-B presets carried partner_mac as a string — those keys are
+// silently ignored by jsonToConfig now.
+type JsonConfig = NarbisRuntimeConfig;
 
 function jsonToConfig(j: JsonConfig): NarbisRuntimeConfig {
-  const mac = parseMac(j.partner_mac);
-  if (!mac) throw new Error(`invalid partner_mac: ${j.partner_mac}`);
-  const cfg = { ...j, partner_mac: mac } as unknown as NarbisRuntimeConfig;
+  const cfg = { ...j } as NarbisRuntimeConfig;
   for (const key of ALL_FIELD_KEYS) {
     if (!(key in cfg)) {
       throw new Error(`preset missing field: ${String(key)}`);
     }
-    const spec = FIELD_SCHEMA[key];
-    if (spec.kind !== 'mac' && typeof cfg[key] !== 'number') {
+    if (typeof cfg[key] !== 'number') {
       throw new Error(`preset field ${String(key)} must be a number`);
     }
   }
@@ -44,7 +43,7 @@ function jsonToConfig(j: JsonConfig): NarbisRuntimeConfig {
 }
 
 function configToJson(cfg: NarbisRuntimeConfig): JsonConfig {
-  return { ...cfg, partner_mac: macToString(cfg.partner_mac) };
+  return { ...cfg };
 }
 
 export const BUILT_IN_PRESETS: SavedPreset[] = (builtInsRaw as JsonPreset[]).map((p) => ({
@@ -61,16 +60,14 @@ export const BUILT_IN_DEFAULT: SavedPreset =
 
 export async function listUserPresets(): Promise<SavedPreset[]> {
   const db = await getDb();
-  const rows = (await db.getAll(STORE)) as Array<JsonPreset & { config: JsonConfig | NarbisRuntimeConfig }>;
+  const rows = (await db.getAll(STORE)) as Array<JsonPreset>;
   return rows
     .map((r) => ({
       id: r.id,
       name: r.name,
       builtIn: false,
       description: r.description,
-      config: typeof (r.config as JsonConfig).partner_mac === 'string'
-        ? jsonToConfig(r.config as JsonConfig)
-        : (r.config as NarbisRuntimeConfig),
+      config: jsonToConfig(r.config),
       updatedAt: r.updatedAt ?? 0,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
