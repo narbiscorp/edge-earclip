@@ -66,10 +66,6 @@ export interface ToggleFieldSpec extends BaseFieldSpec {
   kind: 'toggle';
 }
 
-export interface MacFieldSpec extends BaseFieldSpec {
-  kind: 'mac';
-}
-
 export interface BitmaskBit {
   bit: number;
   label: string;
@@ -90,14 +86,12 @@ export type FieldSpec =
   | NumericFieldSpec
   | EnumFieldSpec
   | ToggleFieldSpec
-  | MacFieldSpec
   | BitmaskFieldSpec
   | ReadonlyFieldSpec;
 
 const numeric = (spec: Omit<NumericFieldSpec, 'kind'>): NumericFieldSpec => ({ kind: 'numeric', ...spec });
 const enumField = (spec: Omit<EnumFieldSpec, 'kind'>): EnumFieldSpec => ({ kind: 'enum', ...spec });
 const toggle = (spec: Omit<ToggleFieldSpec, 'kind'>): ToggleFieldSpec => ({ kind: 'toggle', ...spec });
-const mac = (spec: Omit<MacFieldSpec, 'kind'>): MacFieldSpec => ({ kind: 'mac', ...spec });
 const bitmask = (spec: Omit<BitmaskFieldSpec, 'kind'>): BitmaskFieldSpec => ({ kind: 'bitmask', ...spec });
 const readonly = (spec: Omit<ReadonlyFieldSpec, 'kind'>): ReadonlyFieldSpec => ({ kind: 'readonly', ...spec });
 

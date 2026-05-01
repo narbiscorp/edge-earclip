@@ -47,12 +47,6 @@ export function validateConfig(cfg: NarbisRuntimeConfig): ValidationErrors {
         if ((raw & ~allowed) !== 0) errors[key] = 'unknown bits set';
         break;
       }
-      case 'mac': {
-        if (!(raw instanceof Uint8Array) || raw.length !== 6) {
-          errors[key] = 'MAC must be 6 bytes';
-        }
-        break;
-      }
       case 'readonly':
         break;
     }

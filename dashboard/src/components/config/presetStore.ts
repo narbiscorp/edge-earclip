@@ -1,7 +1,7 @@
 import type { NarbisRuntimeConfig } from '../../ble/parsers';
 import builtInsRaw from '../../presets/defaults.json';
 import { getDb, STORE_PRESETS } from '../../state/idb';
-import { ALL_FIELD_KEYS, FIELD_SCHEMA } from './fieldSchema';
+import { ALL_FIELD_KEYS } from './fieldSchema';
 import { isValid, validateConfig } from './validateConfig';
 
 const STORE = STORE_PRESETS;

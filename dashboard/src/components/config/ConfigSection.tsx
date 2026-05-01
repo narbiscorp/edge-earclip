@@ -12,7 +12,6 @@ import NumericField from './fields/NumericField';
 import EnumField from './fields/EnumField';
 import ToggleField from './fields/ToggleField';
 import BitmaskField from './fields/BitmaskField';
-import MacField from './fields/MacField';
 import ReadonlyField from './fields/ReadonlyField';
 
 interface Props {
@@ -117,18 +116,6 @@ export default function ConfigSection({
                     key={key}
                     spec={spec}
                     value={value as number}
-                    error={err}
-                    status={status}
-                    disabled={disabled}
-                    onChange={(v) => onFieldChange(key, v as NarbisRuntimeConfig[typeof key])}
-                  />
-                );
-              case 'mac':
-                return (
-                  <MacField
-                    key={key}
-                    spec={spec}
-                    value={value as Uint8Array}
                     error={err}
                     status={status}
                     disabled={disabled}
