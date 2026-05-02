@@ -17,7 +17,13 @@ type Status = { kind: 'idle' } | { kind: 'busy'; msg: string } | { kind: 'ok'; m
 export default function PresetBar() {
   const config = useDashboardStore((s) => s.config);
   const narbisState = useDashboardStore((s) => s.connection.narbis.state);
-  const isConnected = narbisState === 'connected';
+  const edgeState = useDashboardStore((s) => s.connection.edge.state);
+  /* Allow apply/import via the relay path too — same gate logic as
+   * ConfigPanel. narbisDevice.writeConfig falls through to the
+   * edgeDevice 0xC3 forwarder when there's no direct earclip session. */
+  const isConnected =
+    narbisState === 'connected' ||
+    (edgeState === 'connected' && config !== null);
 
   const [userPresets, setUserPresets] = useState<SavedPreset[]>([]);
   const [selectedId, setSelectedId] = useState<string>('builtin-default');

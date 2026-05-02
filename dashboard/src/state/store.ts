@@ -569,6 +569,12 @@ edgeDevice.addEventListener('statusFrame', (e) => {
       edge: { ...s.connection.edge, lastFrameAt: frame.timestamp },
     },
   }));
+  // 0xF7 (relay diag) fires 30-100x per second when POST_FILTER is on
+  // and floods the BLE event log. Drop it from the log entirely — the
+  // data still reaches the Filtered chart via the relayedDiagnostic
+  // listener below. Same for 0xF5 (relay raw_ppg) — it's also high-rate
+  // and the chart is the right place to see that data, not the log.
+  if (frame.type === 0xF7 || frame.type === 0xF5) return;
   // Show the decoded summary directly. For 0xF1 firmware-log frames this
   // is the actual log line; for 0xF0/0xF2 it's a parsed summary; for
   // unknown frame types the summary still includes a hex dump.
@@ -626,6 +632,14 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
     },
   }));
   appendBleLog('edge', 'info', `glasses→earclip relay ${r.connected ? 'LINKED' : 'lost'}`);
+  /* Reset the diagnostic clock anchor whenever the relay link
+   * transitions. Without this, diag samples on the relay path inherit
+   * a stale anchor from a previous direct-earclip session and land at
+   * nonsense timestamps (off-screen on the chart). */
+  if (r.connected) {
+    resetDiagnosticClock();
+    lastRawTs = 0;
+  }
 });
 
 edgeDevice.addEventListener('relayedBattery', (e) => {
