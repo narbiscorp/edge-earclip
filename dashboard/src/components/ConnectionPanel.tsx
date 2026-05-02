@@ -85,6 +85,17 @@ export default function ConnectionPanel() {
             ? `disconnected (paired: ${edgePairedName})`
             : 'disconnected';
 
+  /* Path B: glasses-to-earclip relay status. Only meaningful when the
+   * dashboard is connected to the glasses. null = unknown (still
+   * waiting for first 0xF6 frame after connect, or older firmware that
+   * doesn't emit it). */
+  const relayBadge = (() => {
+    if (edge.state !== 'connected') return null;
+    if (edge.earclipRelay === true)  return { text: '⇄ Earclip linked',    cls: 'bg-emerald-700 text-emerald-100' };
+    if (edge.earclipRelay === false) return { text: '⇢ scanning earclip…', cls: 'bg-amber-700 text-amber-100 animate-pulse' };
+    return                                  { text: '⇢ relay status: …',  cls: 'bg-slate-700 text-slate-300' };
+  })();
+
   const polarLabel =
     polar.state === 'connected'
       ? polar.deviceName ?? 'Polar H10'
@@ -138,6 +149,14 @@ export default function ConnectionPanel() {
 
         {/* Edge glasses */}
         <Pill label={`Edge: ${edgeLabel}`} dot={dotClass[edge.state]} />
+        {relayBadge ? (
+          <span
+            className={`px-2 py-1 rounded text-[11px] font-medium ${relayBadge.cls}`}
+            title="Glasses-to-earclip BLE relay (Path B). Linked = central is connected to earclip and IBI/raw/config flowing."
+          >
+            {relayBadge.text}
+          </span>
+        ) : null}
         {edge.state === 'disconnected' ? (
           <>
             <button

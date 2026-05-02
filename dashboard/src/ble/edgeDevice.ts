@@ -69,7 +69,8 @@ export interface RelayedBattery {
 /* Path B Phase 1/2: binary relay frames on 0xFF03.
  * 0xF4 carries a serialized narbis_runtime_config_t (50 B incl. CRC).
  * 0xF5 carries a raw-PPG batch in the same wire format the direct
- * earclip-PPG characteristic uses. */
+ * earclip-PPG characteristic uses.
+ * 0xF6 carries the glasses-to-earclip relay link state (1 byte: 1=up). */
 export interface RelayedConfig {
   timestamp: number;
   /** payload bytes, 0xF4 type prefix already stripped */
@@ -79,6 +80,11 @@ export interface RelayedRawPpg {
   timestamp: number;
   /** payload bytes, 0xF5 type prefix already stripped */
   bytes: Uint8Array;
+}
+export interface CentralRelayState {
+  timestamp: number;
+  /** true = glasses central is connected to the earclip and subscriptions are in place */
+  connected: boolean;
 }
 
 const EDGE_SVC_UUID    = '000000ff-0000-1000-8000-00805f9b34fb';
@@ -106,7 +112,6 @@ export const CTRL = {
   STROBE_FREQ_HZ:   0xAB,  // 1..50 Hz, strobe flash rate
   STROBE_DUTY_PCT:  0xAC,  // 10..90 % dark fraction per cycle
   FACTORY_RESET:    0xBF,  // 0x00 wipe ALL stored prefs
-  ADC_SCAN_MODE:    0xC0,  // 0=enable internal ADC, 1=disable
   NARBIS_FORGET:    0xC1,  // 0x00 wipe paired earclip + rescan (Path B)
   DETECTOR_RESET:   0xD0,  // 0x00 reset client/dashboard detector state
 } as const;
@@ -310,12 +315,6 @@ export class EdgeDevice extends EventTarget {
     await this.sendCtrlCommand(CTRL.ADAPTIVE_PACER, new Uint8Array([on ? 1 : 0]));
   }
 
-  /** Disable the on-glasses internal ADC (PulseSensor pin) when an
-   * earclip is providing IBI. Matches firmware opcode 0xC0 from v4.12.2+. */
-  async setAdcScanEnabled(enabled: boolean): Promise<void> {
-    await this.sendCtrlCommand(CTRL.ADC_SCAN_MODE, new Uint8Array([enabled ? 0 : 1]));
-  }
-
   /** Wipe ALL stored prefs on the glasses (factory reset). */
   async factoryReset(): Promise<void> {
     await this.sendCtrlCommand(CTRL.FACTORY_RESET, new Uint8Array([0]));
@@ -415,6 +414,11 @@ export class EdgeDevice extends EventTarget {
           timestamp: ts,
           bytes: bytes.slice(1),
         } as RelayedRawPpg);
+      } else if (type === 0xF6 && bytes.length >= 2) {
+        this.dispatch('centralRelayState', {
+          timestamp: ts,
+          connected: bytes[1] !== 0,
+        } as CentralRelayState);
       }
     } catch (err) {
       this.emitError(err, 'status-parse');
@@ -574,6 +578,9 @@ function decodeStatusFrame(
     const sr = dv.getUint16(1, true);
     const n  = dv.getUint16(3, true);
     return { kind: 'unknown', summary: `relay raw_ppg ${n} samples @${sr} Hz (${bytes.length - 1} B)` };
+  }
+  if (type === 0xF6 && bytes.length >= 2) {
+    return { kind: 'unknown', summary: `relay link ${bytes[1] ? 'UP — earclip subscribed' : 'DOWN'}` };
   }
 
   return { kind: 'unknown', summary: `type=0x${type.toString(16).padStart(2, '0')} (${bytes.length} B): ${bytesToHex(bytes)}` };

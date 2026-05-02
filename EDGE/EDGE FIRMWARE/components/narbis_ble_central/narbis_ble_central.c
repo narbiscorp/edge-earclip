@@ -456,13 +456,15 @@ static void cache_handles_after_discover(void) {
             S.hdl_raw_cccd = d.handle;
         }
     }
-    ESP_LOGI(TAG, "handles: ibi=%u/cccd=%u batt=%u/cccd=%u role=%u "
-                  "config=%u/cccd=%u config_write=%u raw=%u/cccd=%u",
-             S.hdl_ibi, S.hdl_ibi_cccd,
-             S.hdl_battery, S.hdl_battery_cccd,
-             S.hdl_peer_role,
-             S.hdl_config, S.hdl_config_cccd, S.hdl_config_write,
-             S.hdl_raw, S.hdl_raw_cccd);
+    /* Bridge to cb_log so the dashboard can see which CCCDs were found.
+     * If CONFIG / RAW CCCDs are 0 here, those subscribe steps will be
+     * silently skipped — this is the only way to see why. */
+    cb_log("handles ibi=%u/%u batt=%u/%u role=%u cfg=%u/%u cfgw=%u raw=%u/%u",
+           S.hdl_ibi, S.hdl_ibi_cccd,
+           S.hdl_battery, S.hdl_battery_cccd,
+           S.hdl_peer_role,
+           S.hdl_config, S.hdl_config_cccd, S.hdl_config_write,
+           S.hdl_raw, S.hdl_raw_cccd);
 }
 
 static void write_peer_role(void) {
@@ -592,7 +594,7 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
 
     case ESP_GATTC_OPEN_EVT:
         if (p->open.status != ESP_GATT_OK) {
-            ESP_LOGW(TAG, "central: open failed status=%d", p->open.status);
+            cb_log("central: open failed status=%d", p->open.status);
             schedule_reconnect_backoff();
         }
         break;

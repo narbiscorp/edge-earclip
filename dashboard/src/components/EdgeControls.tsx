@@ -33,15 +33,19 @@ export default function EdgeControls() {
   const [breathBpm, setBreathBpm]   = useState(6);
   const [inhalePct, setInhalePct]   = useState(40);
   const [adaptive, setAdaptive]     = useState(false);
-  const [adcScanOn, setAdcScanOn]   = useState(true);
-  const [rawRelay, setRawRelay]     = useState(false);
+  /* Raw relay is auto-enabled in store.ts on every glasses connect.
+   * This local state mirrors that so the toggle reflects reality; it
+   * also resets to true on each reconnect so a user who toggled it off
+   * gets a fresh enable on the next session. */
+  const [rawRelay, setRawRelay]     = useState(true);
   const [busy, setBusy]             = useState<string | null>(null);
 
-  // When the glasses connect, the firmware is in some prior persisted
-  // state — without a read-back path we just keep our local defaults
-  // visible. (TODO: add a status frame that exposes these so we can
-  // sync.) For now reset busy so commands work immediately.
-  useEffect(() => { if (connected) setBusy(null); }, [connected]);
+  useEffect(() => {
+    if (connected) {
+      setBusy(null);
+      setRawRelay(true);
+    }
+  }, [connected]);
 
   const guard = (label: string, fn: () => Promise<void>) => async () => {
     setBusy(label);
@@ -248,25 +252,6 @@ export default function EdgeControls() {
           help={
             'When ON, pacer starts at 6 br/min and adapts toward measured ' +
             'respiration each cycle. Doesn\'t affect Programs 1/3.'
-          }
-        />
-      </Section>
-
-      {/* On-glasses ADC scan */}
-      <Section label="Internal ADC sensor (0xC0)">
-        <Toggle
-          checked={adcScanOn}
-          disabled={!connected}
-          onChange={(on) => {
-            setAdcScanOn(on);
-            void edgeDevice.setAdcScanEnabled(on).catch(console.error);
-          }}
-          label={adcScanOn ? 'Internal ADC enabled (uses on-glasses PulseSensor)' : 'Internal ADC disabled (using earclip via BLE)'}
-          help={
-            'Disable when an earclip is providing IBI over BLE. The glasses ' +
-            'will stop sampling their own ADC pin (saves power, avoids ' +
-            'conflicting input). Re-enable to fall back to the on-glasses ' +
-            'sensor.'
           }
         />
       </Section>

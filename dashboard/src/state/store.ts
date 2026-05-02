@@ -27,6 +27,7 @@ import {
   type RelayedBattery,
   type RelayedConfig,
   type RelayedRawPpg,
+  type CentralRelayState,
 } from '../ble/edgeDevice';
 import type {
   NarbisRuntimeConfig,
@@ -72,7 +73,15 @@ export interface DashboardState {
   connection: {
     narbis: { state: NarbisStatus; deviceName: string | null; battery: number | null };
     polar: { state: PolarStatus; deviceName: string | null };
-    edge: { state: EdgeStatus; deviceName: string | null; lastFrameAt: number | null };
+    edge: {
+      state: EdgeStatus;
+      deviceName: string | null;
+      lastFrameAt: number | null;
+      /** Glasses-to-earclip relay link state. null = unknown/glasses
+       * not on Path-B firmware; true = central reached READY (subs in
+       * place); false = central not connected. */
+      earclipRelay: boolean | null;
+    };
   };
   recording: {
     active: boolean;
@@ -138,7 +147,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null },
     polar:  { state: 'disconnected', deviceName: null },
-    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null },
+    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null },
   },
   recording: {
     active: false,
@@ -498,10 +507,22 @@ edgeDevice.addEventListener('connected', (e) => {
   setState((s) => ({
     connection: {
       ...s.connection,
-      edge: { state: 'connected', deviceName: name, lastFrameAt: s.connection.edge.lastFrameAt },
+      edge: {
+        state: 'connected',
+        deviceName: name,
+        lastFrameAt: s.connection.edge.lastFrameAt,
+        earclipRelay: null,  /* unknown until first 0xF6 frame */
+      },
     },
   }));
   appendBleLog('edge', 'info', `connected to ${name}`);
+  /* Default raw-PPG relay to ON on every glasses connect. The glasses
+   * firmware's S.raw_enabled defaults to false on boot, so we have to
+   * tell it on each session. The toggle in EdgeControls still lets the
+   * user turn it off. */
+  void edgeDevice.setRawRelayEnabled(true).catch((err) => {
+    appendBleLog('edge', 'error', `auto-enable raw relay failed: ${(err as Error).message}`);
+  });
 });
 
 edgeDevice.addEventListener('disconnected', (e) => {
@@ -513,6 +534,7 @@ edgeDevice.addEventListener('disconnected', (e) => {
         state: edgeDevice.status,
         deviceName: edgeDevice.status === 'reconnecting' ? s.connection.edge.deviceName : null,
         lastFrameAt: edgeDevice.status === 'reconnecting' ? s.connection.edge.lastFrameAt : null,
+        earclipRelay: edgeDevice.status === 'reconnecting' ? s.connection.edge.earclipRelay : null,
       },
     },
     lastError: reason === 'error' && error ? error.message : s.lastError,
@@ -583,6 +605,20 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
   pending.beats += 1;
   pending.lastBeat = beat;
   scheduleCounterFlush();
+});
+
+/* Path B: glasses-to-earclip relay link state. Fires on connect/disconnect
+ * of the central inside the glasses. The header renders this so users can
+ * see "Earclip relay: linked" without reading the BLE event log. */
+edgeDevice.addEventListener('centralRelayState', (e) => {
+  const r = (e as CustomEvent<CentralRelayState>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: { ...s.connection.edge, earclipRelay: r.connected },
+    },
+  }));
+  appendBleLog('edge', 'info', `glasses→earclip relay ${r.connected ? 'LINKED' : 'lost'}`);
 });
 
 edgeDevice.addEventListener('relayedBattery', (e) => {

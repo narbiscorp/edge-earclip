@@ -2339,12 +2339,6 @@ static void prefs_reset_all(void) {
 
 /* v4.12.2: forward-declare diagnostic state that's referenced by BLE
  * command handlers (which are defined earlier in the file than the PPG
- * module body where these live). Using a tentative definition (no
- * initializer) here; the actual initialized definition lives with the
- * PPG module. Valid C: multiple tentative definitions of the same
- * static are merged into one by the linker. */
-static bool adc_scan_enabled;
-
 /* v4.12.7 forward declaration. ppg_reset_detector is defined with the
  * PPG module later in the file but referenced by process_command (BLE
  * cmd 0xD0 handler). Must be declared before first use. */
@@ -4143,27 +4137,6 @@ static void process_command(uint8_t *data, uint16_t len) {
             ble_log("factory reset");
             break;
 
-        case 0xC0:  /* v4.12.2: ADC scan mode — arg=0 enable, arg=1 disable.
-                     * Scans ADC1 channels every 500ms and logs values via
-                     * ble_log. Lets us find which GPIO the PulseSensor is
-                     * actually wired to without reflashing.
-                     * NOTE: while enabled, the normal PPG ADC read will be
-                     * briefly disturbed (we reconfigure attenuation on each
-                     * channel). Expect detection to drop out during scan.
-                     * Disable when done. */
-            if (arg == 0) {
-                adc_scan_enabled = true;
-                ESP_LOGI(TAG, "ADC scan mode ENABLED");
-                ble_log("ADC scan enabled");
-            } else {
-                adc_scan_enabled = false;
-                /* Restore the normal PPG channel's attenuation */
-                adc1_config_channel_atten(PPG_ADC_CHANNEL, ADC_ATTEN_DB_12);
-                ESP_LOGI(TAG, "ADC scan mode disabled");
-                ble_log("ADC scan disabled");
-            }
-            break;
-
         case CTRL_CMD_NARBIS_FORGET:  /* Path B: forget paired earclip,
                      * trigger a fresh scan/connect cycle. arg ignored.
                      * Visible feedback: 3 fast lens-opacity pulses. Same
@@ -4901,8 +4874,6 @@ static uint32_t ppg_beat_count_total = 0;
  * v4.14.37 (search for "HEALTH TELEMETRY STATE") so ppg_emit_health,
  * which is defined mid-file, can reference them. Leaving this comment
  * here as a breadcrumb for future code navigation. */
-/* adc_scan_enabled is forward-declared earlier in the file near GLOBAL STATE
- * (needed by process_command). Zero-initialized by the tentative definition. */
 
 /* v4.12.6: clear all detector state. Used by the auto-stuck-recovery
  * watchdog AND by the 0xD0 manual reset BLE command.
@@ -5738,31 +5709,6 @@ static inline uint16_t ppg_read_oversampled(void) {
  * timing wrecks IBI accuracy. At 50 Hz this task uses <0.5% CPU so
  * priority is mostly defensive.
  */
-/* v4.12.2: ADC scan mode — cycles through all ADC1 channels and reports
- * their readings to the FW log. Called from ppg_task when
- * adc_scan_enabled is true. Lets us find which pin has the PulseSensor
- * signal without reflashing. Enabled by BLE cmd 0xC0 0x00. */
-static void ppg_emit_adc_scan(void) {
-    /* ADC1 channels map to these GPIOs on ESP32:
-     *   CH0=GPIO36 CH3=GPIO39 CH4=GPIO32 CH5=GPIO33
-     *   CH6=GPIO34 CH7=GPIO35
-     * (CH1/CH2 exist but GPIO37/38 are not broken out on WROOM-32)
-     * We configure attenuation for each channel just-in-time so any
-     * pin can be read without pre-setup. */
-    const adc1_channel_t chans[] = {
-        ADC1_CHANNEL_0, ADC1_CHANNEL_3, ADC1_CHANNEL_4, ADC1_CHANNEL_5,
-        ADC1_CHANNEL_6, ADC1_CHANNEL_7
-    };
-    uint16_t reads[6];
-    for (int i = 0; i < 6; i++) {
-        adc1_config_channel_atten(chans[i], ADC_ATTEN_DB_12);
-        int r = adc1_get_raw(chans[i]);
-        reads[i] = (r < 0) ? 0 : (r > 4095 ? 4095 : r);
-    }
-    ble_log("SCAN 36=%u 39=%u 32=%u 33=%u 34=%u 35=%u",
-            reads[0], reads[1], reads[2], reads[3], reads[4], reads[5]);
-}
-
 static void ppg_task(void *arg) {
     uint16_t sample_idx = 0;
     TickType_t last_wake = xTaskGetTickCount();
@@ -5770,7 +5716,6 @@ static void ppg_task(void *arg) {
     uint32_t last_stats_ms = 0;
     uint32_t last_hb_ms = 0;
     uint32_t last_health_ms = 0;
-    uint32_t last_scan_ms = 0;
     uint32_t last_auto_reset_ms = 0;   /* v4.13.2: periodic detector refresh */
     uint32_t tick_count_local = 0;
     /* v4.14.36: jitter_ticks_over is now a file-scope static so
@@ -5827,11 +5772,6 @@ static void ppg_task(void *arg) {
             ppg_emit_health();   /* v4.14.36: 0xF3 health packet at same cadence */
         }
 
-        /* v4.12.2: ADC scan mode every 500ms when enabled */
-        if (adc_scan_enabled && now_ms - last_scan_ms >= 500) {
-            last_scan_ms = now_ms;
-            ppg_emit_adc_scan();
-        }
 
         /* v4.13.2: periodic detector freshening. Every 30 seconds,
          * reset the adaptive MA buffers so they can't drift into a
@@ -5923,6 +5863,17 @@ static void on_earclip_config(const uint8_t *bytes, uint16_t len) {
  * Off by default; opt-in via 0xC4 ctrl opcode → narbis_central_set_raw_enabled. */
 static void on_earclip_raw(const uint8_t *bytes, uint16_t len) {
     send_status_frame(0xF5, bytes, len);
+}
+
+/* Path B: glasses-to-earclip relay link state. Fires when the central
+ * reaches READY (subscriptions in place) and again on disconnect. The
+ * dashboard renders this as a "Earclip relay: linked / searching"
+ * badge so users don't have to read the BLE event log to know whether
+ * the relay is up. Wire format: pkt[0]=0xF6, pkt[1]=1 connected / 0 not. */
+static void on_central_state(bool connected) {
+    uint8_t pkt = connected ? 1u : 0u;
+    send_status_frame(0xF6, &pkt, 1);
+    ble_log("relay %s", connected ? "linked" : "lost");
 }
 
 /*******************************************************************************
@@ -6044,6 +5995,7 @@ void app_main(void) {
              * ble_log so scan/connect/subscribe activity shows up in the
              * dashboard's BLE event log without needing a USB monitor. */
             narbis_central_set_log_sink(ble_log);
+            narbis_central_set_state_cb(on_central_state);
             narbis_central_set_config_cb(on_earclip_config);
             narbis_central_set_raw_cb(on_earclip_raw);
             (void)narbis_central_start();
