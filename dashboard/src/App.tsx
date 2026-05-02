@@ -10,6 +10,9 @@ import RecordingControls from './components/RecordingControls';
 import ReplayControls from './components/ReplayControls';
 import RecoveryBanner from './components/RecoveryBanner';
 import DebugPanel from './components/DebugPanel';
+import BleEventLog from './components/BleEventLog';
+import PairingAssistant from './components/PairingAssistant';
+import EdgeControls from './components/EdgeControls';
 import { metricsRunner } from './state/metricsRunner';
 import { useRecordingStore } from './state/recording';
 
@@ -43,8 +46,11 @@ export default function App() {
           <MetricsChart />
         </section>
         <aside className="flex flex-col gap-2 p-3 border-l border-slate-800 overflow-auto">
+          <PairingAssistant />
+          <EdgeControls />
           <ConfigPanel />
           <PresetBar />
+          <BleEventLog />
         </aside>
       </main>
 

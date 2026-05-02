@@ -56,6 +56,7 @@ import {
   type NarbisRuntimeConfig,
   type DiagnosticSample,
 } from './parsers';
+import { edgeDevice } from './edgeDevice';
 
 export type NarbisStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -196,9 +197,21 @@ export class NarbisDevice extends EventTarget {
     }
   }
 
+  /** Write a runtime config to the earclip. Prefers the direct path if
+   * the dashboard holds an open earclip session; otherwise falls through
+   * to the glasses' relay (Path B Phase 1: 0xC3 forward). Throws only if
+   * neither path is available. */
   async writeConfig(cfg: NarbisRuntimeConfig): Promise<void> {
-    if (!this.chConfigWrite) throw new Error('not connected');
-    await this.chConfigWrite.writeValueWithResponse(toBufferSource(serializeConfig(cfg)));
+    const blob = serializeConfig(cfg);
+    if (this.chConfigWrite) {
+      await this.chConfigWrite.writeValueWithResponse(toBufferSource(blob));
+      return;
+    }
+    if (edgeDevice.isConnected) {
+      await edgeDevice.forwardEarclipConfigWrite(blob);
+      return;
+    }
+    throw new Error('not connected to earclip (direct or via glasses)');
   }
 
   async writeMode(profile: number, format: number): Promise<void> {

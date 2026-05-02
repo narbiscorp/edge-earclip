@@ -3028,6 +3028,23 @@ static void ble_log(const char *fmt, ...) {
                                 status_char_handle, 1 + n, pkt, false);
 }
 
+/* Path B Phase 1/2: emit a binary status frame on 0xFF03.
+ * Layout: [type u8][payload …]. Used for 0xF4 (relayed earclip config,
+ * NARBIS_CONFIG_WIRE_SIZE bytes) and 0xF5 (relayed raw PPG batch, up to
+ * 4 + 29*8 = 236 bytes). The negotiated MTU on Web Bluetooth is typically
+ * 247, so 240 B payload + 1 B type fits. */
+static void send_status_frame(uint8_t type, const uint8_t *payload, size_t len) {
+    if (!notifications_enabled || !is_connected) return;
+    if (status_char_handle == 0) return;
+    if (len > 240) return;  /* MTU safety cap */
+    uint8_t pkt[241];
+    pkt[0] = type;
+    if (len > 0 && payload) memcpy(pkt + 1, payload, len);
+    esp_ble_gatts_send_indicate(gatts_if_global, conn_id_global,
+                                status_char_handle,
+                                (uint16_t)(1 + len), pkt, false);
+}
+
 /* Ring of recent ADC reads for stats — updated by ppg_task inline,
  * summarized by ppg_emit_adc_stats() below. 25 samples = 500ms at 50Hz. */
 #define ADC_STATS_N         25
@@ -4159,6 +4176,37 @@ static void process_command(uint8_t *data, uint16_t len) {
             (void)narbis_central_start();
             indicator_trigger(3, 0);
             break;
+
+        case 0xC3: {  /* Path B Phase 1: forward serialized config to the
+                       * earclip via GATTC. Dashboard wire format (matches
+                       * the rest of the CTRL opcode family):
+                       *   data[0]    = 0xC3
+                       *   data[1..N] = NARBIS_CONFIG_WIRE_SIZE bytes
+                       * Total 1 + 50 = 51 B; needs MTU >= 54. */
+            const uint16_t need = 1 + NARBIS_CONFIG_WIRE_SIZE;
+            if (len < need) {
+                ble_log("0xC3 short len=%u (need %u)", len, need);
+                break;
+            }
+            esp_err_t err = narbis_central_write_earclip_config(
+                &data[1], NARBIS_CONFIG_WIRE_SIZE);
+            if (err != ESP_OK) {
+                ble_log("0xC3 forward rc=%d (state/handle invalid)", err);
+            }
+            /* On success, narbis_central_write_earclip_config emits its
+             * own "central: config write rc=0" once the GATTC write
+             * completes. The earclip will then notify CONFIG, which the
+             * central forwards via on_earclip_config → 0xF4 frame. */
+            break;
+        }
+
+        case 0xC4: {  /* Path B Phase 2: toggle raw-PPG relay subscription.
+                       * arg = 0 disable, !=0 enable. */
+            bool on = (arg != 0);
+            esp_err_t err = narbis_central_set_raw_enabled(on);
+            ble_log("0xC4 raw=%d rc=%d", on ? 1 : 0, err);
+            break;
+        }
 
         case 0xD0:  /* v4.12.6: Manual detector reset.
                      * Clears all detection state (MA buffers, block state,
@@ -5863,6 +5911,20 @@ static void on_earclip_battery(uint8_t soc_pct, uint16_t mv, uint8_t charging) {
     ble_log("earclip batt soc=%u%% mv=%u chg=%u", soc_pct, mv, charging);
 }
 
+/* Path B Phase 1: forward the earclip's CONFIG payload to the dashboard
+ * as a binary 0xF4 frame on 0xFF03. The payload is the serialized
+ * narbis_runtime_config_t (NARBIS_CONFIG_WIRE_SIZE = 50 B). The dashboard
+ * deserializes via deserializeConfig() and updates ConfigPanel state. */
+static void on_earclip_config(const uint8_t *bytes, uint16_t len) {
+    send_status_frame(0xF4, bytes, len);
+}
+
+/* Path B Phase 2: forward earclip RAW_PPG batches as 0xF5 frames.
+ * Off by default; opt-in via 0xC4 ctrl opcode → narbis_central_set_raw_enabled. */
+static void on_earclip_raw(const uint8_t *bytes, uint16_t len) {
+    send_status_frame(0xF5, bytes, len);
+}
+
 /*******************************************************************************
  * MAIN APPLICATION
  ******************************************************************************/
@@ -5976,6 +6038,14 @@ void app_main(void) {
             ESP_LOGW(TAG, "narbis_central_init failed: %s — continuing without earclip RX",
                      esp_err_to_name(cerr));
         } else {
+            /* Path B Phase 1/2: relay setters. The dashboard receives
+             * config blobs as 0xF4 and raw-PPG batches as 0xF5 on 0xFF03.
+             * Also bridge the central's own diagnostic log lines into
+             * ble_log so scan/connect/subscribe activity shows up in the
+             * dashboard's BLE event log without needing a USB monitor. */
+            narbis_central_set_log_sink(ble_log);
+            narbis_central_set_config_cb(on_earclip_config);
+            narbis_central_set_raw_cb(on_earclip_raw);
             (void)narbis_central_start();
         }
     }

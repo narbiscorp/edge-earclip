@@ -1,9 +1,11 @@
 import { useDashboardStore } from '../state/store';
 import { forgetPairedDevice, getPairedDeviceName } from '../ble/narbisDevice';
+import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevice';
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
+import type { EdgeStatus } from '../ble/edgeDevice';
 
-const dotClass: Record<NarbisStatus | PolarStatus, string> = {
+const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
   disconnected: 'bg-slate-500',
   connecting: 'bg-amber-400 animate-pulse',
   reconnecting: 'bg-amber-400 animate-pulse',
@@ -13,6 +15,7 @@ const dotClass: Record<NarbisStatus | PolarStatus, string> = {
 export default function ConnectionPanel() {
   const narbis = useDashboardStore((s) => s.connection.narbis);
   const polar = useDashboardStore((s) => s.connection.polar);
+  const edge = useDashboardStore((s) => s.connection.edge);
   const recording = useDashboardStore((s) => s.recording);
   const lastError = useDashboardStore((s) => s.lastError);
 
@@ -36,8 +39,30 @@ export default function ConnectionPanel() {
       console.error('disconnect polar failed', err);
     });
   };
+  const onConnectEdge = () => {
+    void useDashboardStore.getState().connectEdge().catch((err) => {
+      console.error('connect edge failed', err);
+    });
+  };
+  const onDisconnectEdge = () => {
+    void useDashboardStore.getState().disconnectEdge().catch((err) => {
+      console.error('disconnect edge failed', err);
+    });
+  };
+  const onRepairEarclip = () => {
+    if (!confirm(
+      'This tells the connected glasses to forget their current earclip and ' +
+      'rescan for a new one. The closest powered-on Narbis Earclip will be ' +
+      'picked. Continue?'
+    )) return;
+    void useDashboardStore.getState().edgeForgetEarclip().catch((err) => {
+      console.error('re-pair earclip failed', err);
+    });
+  };
 
   const pairedName = getPairedDeviceName();
+  const edgePairedName = getEdgePairedDeviceName();
+
   const narbisLabel =
     narbis.state === 'connected'
       ? `${narbis.deviceName ?? 'Narbis'}${narbis.battery !== null ? ` · ${narbis.battery}%` : ''}`
@@ -49,10 +74,16 @@ export default function ConnectionPanel() {
             ? `disconnected (paired: ${pairedName})`
             : 'disconnected';
 
-  const onForget = () => {
-    void useDashboardStore.getState().disconnectNarbis().catch(() => { /* ignore */ });
-    forgetPairedDevice();
-  };
+  const edgeLabel =
+    edge.state === 'connected'
+      ? edge.deviceName ?? 'Edge'
+      : edge.state === 'reconnecting'
+        ? 'reconnecting…'
+        : edge.state === 'connecting'
+          ? 'connecting…'
+          : edgePairedName
+            ? `disconnected (paired: ${edgePairedName})`
+            : 'disconnected';
 
   const polarLabel =
     polar.state === 'connected'
@@ -63,13 +94,20 @@ export default function ConnectionPanel() {
           ? 'connecting…'
           : 'disconnected';
 
+  const onForgetNarbis = () => {
+    void useDashboardStore.getState().disconnectNarbis().catch(() => { /* ignore */ });
+    forgetPairedDevice();
+  };
+  const onForgetEdge = () => {
+    void useDashboardStore.getState().disconnectEdge().catch(() => { /* ignore */ });
+    forgetEdgePairedDevice();
+  };
+
   return (
     <div className="flex flex-col items-end gap-1 text-xs text-slate-200">
-      <div className="flex items-center gap-2">
-        <Pill
-          label={`Narbis: ${narbisLabel}`}
-          dot={dotClass[narbis.state]}
-        />
+      <div className="flex items-center gap-2 flex-wrap justify-end">
+        {/* Earclip */}
+        <Pill label={`Earclip: ${narbisLabel}`} dot={dotClass[narbis.state]} />
         {narbis.state === 'disconnected' ? (
           <>
             <button
@@ -81,7 +119,7 @@ export default function ConnectionPanel() {
             {pairedName ? (
               <button
                 className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
-                onClick={onForget}
+                onClick={onForgetNarbis}
                 title="Clear the saved earclip; next connect will prompt"
               >
                 Forget
@@ -97,10 +135,49 @@ export default function ConnectionPanel() {
             Disconnect
           </button>
         )}
-        <Pill
-          label={`Polar: ${polarLabel}`}
-          dot={dotClass[polar.state]}
-        />
+
+        {/* Edge glasses */}
+        <Pill label={`Edge: ${edgeLabel}`} dot={dotClass[edge.state]} />
+        {edge.state === 'disconnected' ? (
+          <>
+            <button
+              className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"
+              onClick={onConnectEdge}
+            >
+              Connect Glasses
+            </button>
+            {edgePairedName ? (
+              <button
+                className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
+                onClick={onForgetEdge}
+                title="Clear the saved glasses; next connect will prompt"
+              >
+                Forget
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <button
+              className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
+              onClick={onDisconnectEdge}
+              disabled={edge.state === 'connecting'}
+            >
+              Disconnect
+            </button>
+            <button
+              className="rounded bg-indigo-600 hover:bg-indigo-500 px-2 py-1 text-xs font-medium disabled:opacity-50"
+              onClick={onRepairEarclip}
+              disabled={edge.state !== 'connected'}
+              title="Tell the glasses to drop their current earclip and rescan"
+            >
+              Re-pair earclip
+            </button>
+          </>
+        )}
+
+        {/* Polar reference */}
+        <Pill label={`Polar: ${polarLabel}`} dot={dotClass[polar.state]} />
         {polar.state === 'disconnected' ? (
           <button
             className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"

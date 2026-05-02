@@ -17,17 +17,43 @@ import {
   type PolarDisconnectedDetail,
   type PolarErrorDetail,
 } from '../ble/polarH10';
+import {
+  edgeDevice,
+  type EdgeStatus,
+  type EdgeStatusFrame,
+  type EdgeDisconnectedDetail,
+  type EdgeErrorDetail,
+  type RelayedIbi,
+  type RelayedBattery,
+  type RelayedConfig,
+  type RelayedRawPpg,
+} from '../ble/edgeDevice';
 import type {
   NarbisRuntimeConfig,
   NarbisRawSample,
   NarbisSqiPayload,
   DiagnosticSample,
 } from '../ble/parsers';
-import { resetDiagnosticClock } from '../ble/parsers';
+import { resetDiagnosticClock, deserializeConfig } from '../ble/parsers';
 import { StreamBuffer } from './streamBuffer';
 
-export type ConnectionState = NarbisStatus | PolarStatus;
+export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
 export type DataSource = 'live' | 'replay';
+
+/* BLE event log entry. Captures connect/disconnect, notifications, control
+ * writes - everything user-visible across both devices. Stored as a fixed-
+ * size ring (newest last) so the UI can show a tail without unbounded
+ * memory growth. */
+export type BleLogSource = 'earclip' | 'edge' | 'system';
+export type BleLogLevel = 'info' | 'warn' | 'error' | 'rx' | 'tx';
+export interface BleLogEntry {
+  id: number;
+  timestamp: number;
+  source: BleLogSource;
+  level: BleLogLevel;
+  message: string;
+}
+const BLE_LOG_MAX = 500;
 
 export interface PolarBeatRecord {
   bpm: number;
@@ -46,6 +72,7 @@ export interface DashboardState {
   connection: {
     narbis: { state: NarbisStatus; deviceName: string | null; battery: number | null };
     polar: { state: PolarStatus; deviceName: string | null };
+    edge: { state: EdgeStatus; deviceName: string | null; lastFrameAt: number | null };
   };
   recording: {
     active: boolean;
@@ -70,10 +97,25 @@ export interface DashboardState {
    * styling preferences specific to each signal type. */
   windowSec: number;
 
+  bleLog: BleLogEntry[];
+
+  /** PC jitter smoothing: buffer 150 ms of incoming raw-PPG packets and
+   * replay them at uniform 20 ms intervals. Mirrors the v13.27 dashboard
+   * "PC Jitter Smoothing" toggle. Defaults ON; turn off on tablets where
+   * the wire is already uniform. Adds 150 ms of latency to the chart. */
+  pcJitterSmoothing: boolean;
+
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
   connectPolar: () => Promise<void>;
   disconnectPolar: () => Promise<void>;
+  connectEdge: () => Promise<void>;
+  disconnectEdge: () => Promise<void>;
+  /** Tell the connected glasses to forget their current earclip and rescan.
+   *  Throws if the dashboard is not connected to the glasses. */
+  edgeForgetEarclip: () => Promise<void>;
+  clearBleLog: () => void;
+  setPcJitterSmoothing: (enabled: boolean) => void;
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
   setWindowSec: (seconds: number) => void;
@@ -95,7 +137,8 @@ const replayBuffers = makeBuffers();
 export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null },
-    polar: { state: 'disconnected', deviceName: null },
+    polar:  { state: 'disconnected', deviceName: null },
+    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null },
   },
   recording: {
     active: false,
@@ -110,6 +153,8 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   dataSource: 'live',
   lastError: null,
   windowSec: 30,
+  bleLog: [],
+  pcJitterSmoothing: true,
 
   connectNarbis: async () => {
     set({ lastError: null });
@@ -135,10 +180,54 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   disconnectPolar: async () => {
     await polarH10.disconnect();
   },
+  connectEdge: async () => {
+    set({ lastError: null });
+    try {
+      await edgeDevice.connect();
+    } catch (err) {
+      set({ lastError: errorMessage(err) });
+      throw err;
+    }
+  },
+  disconnectEdge: async () => {
+    await edgeDevice.disconnect();
+  },
+  edgeForgetEarclip: async () => {
+    if (!edgeDevice.isConnected) {
+      throw new Error('connect to glasses first');
+    }
+    await edgeDevice.forgetEarclipPairing();
+  },
+  clearBleLog: () => set({ bleLog: [] }),
+  setPcJitterSmoothing: (enabled) => {
+    set({ pcJitterSmoothing: enabled });
+    // If disabling, drain whatever is buffered immediately so we don't
+    // drop samples (also stops the drain timer). If enabling, the next
+    // arriving packet kicks off the drain loop.
+    if (!enabled) flushJitterQueue();
+  },
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
   setWindowSec: (seconds) => set({ windowSec: seconds }),
 }));
+
+let bleLogIdCounter = 0;
+function appendBleLog(source: BleLogSource, level: BleLogLevel, message: string): void {
+  bleLogIdCounter += 1;
+  const entry: BleLogEntry = {
+    id: bleLogIdCounter,
+    timestamp: Date.now(),
+    source,
+    level,
+    message,
+  };
+  setState((s) => {
+    const next = s.bleLog.length >= BLE_LOG_MAX
+      ? [...s.bleLog.slice(s.bleLog.length - BLE_LOG_MAX + 1), entry]
+      : [...s.bleLog, entry];
+    return { bleLog: next };
+  });
+}
 
 export function getActiveBuffers(): BufferSet {
   const s = useDashboardStore.getState();
@@ -167,6 +256,7 @@ narbisDevice.addEventListener('connected', (e) => {
       narbis: { ...s.connection.narbis, state: 'connected', deviceName: name },
     },
   }));
+  appendBleLog('earclip', 'info', `connected to ${name}`);
 });
 
 narbisDevice.addEventListener('disconnected', (e) => {
@@ -179,6 +269,7 @@ narbisDevice.addEventListener('disconnected', (e) => {
   if (narbisDevice.status !== 'reconnecting') {
     resetDiagnosticClock();
     lastRawTs = 0;
+    flushJitterQueue();
   }
   setState((s) => ({
     connection: {
@@ -192,11 +283,19 @@ narbisDevice.addEventListener('disconnected', (e) => {
     },
     lastError: reason === 'error' && error ? error.message : s.lastError,
   }));
+  appendBleLog(
+    'earclip',
+    reason === 'error' ? 'error' : 'info',
+    narbisDevice.status === 'reconnecting'
+      ? `disconnected (${reason}) - reconnecting`
+      : `disconnected (${reason})`,
+  );
 });
 
 narbisDevice.addEventListener('error', (e) => {
   const { error, phase } = (e as CustomEvent<NarbisErrorDetail>).detail;
   setState({ lastError: `${phase}: ${error.message}` });
+  appendBleLog('earclip', 'error', `${phase}: ${error.message}`);
 });
 
 // Coalesce zustand updates from BLE event handlers into one setState per
@@ -255,23 +354,29 @@ narbisDevice.addEventListener('sqiReceived', (e) => {
   scheduleCounterFlush();
 });
 
-narbisDevice.addEventListener('rawSampleReceived', (e) => {
-  const raw = (e as CustomEvent<NarbisRawSampleEvent>).detail;
+// PC jitter smoothing — Windows BLE delivers notifications in bursts
+// ("4 packets, then silence for 80 ms, then 3 more"). Buffer arriving
+// raw-PPG batches and drain them at a uniform 20 ms cadence so the
+// downstream pipeline (and chart) sees evenly-spaced data. Buffer depth
+// 150 ms = 7-8 packets at 50 Hz, plenty to absorb one burst-silence cycle
+// without underruning. v13.27 dashboard parity.
+const SMOOTH_BUFFER_MS = 150;
+const SMOOTH_TICK_MS   = 20;
+const SMOOTH_TARGET_PKTS = Math.ceil(SMOOTH_BUFFER_MS / SMOOTH_TICK_MS);
+let jitterQueue: NarbisRawSampleEvent[] = [];
+let jitterTimer: number | null = null;
+let jitterFilled = false;
+
+function processRawBatch(raw: NarbisRawSampleEvent): void {
   const arrivalMs = raw.timestamp;
   const periodMs = raw.sample_rate_hz > 0 ? 1000 / raw.sample_rate_hz : 0;
   const n = raw.samples.length;
   if (periodMs === 0 || n === 0) return;
 
-  // Where this batch's first sample WOULD land if anchored to arrival time.
   const arrivalFirst = arrivalMs - (n - 1) * periodMs;
-  // Where it lands continuing the previous batch.
   const continueFirst = lastRawTs > 0 ? lastRawTs + periodMs : arrivalFirst;
-  // Pick the later of the two (monotonic). If we've fallen far behind
-  // wall-clock (> N samples worth), resync to arrival to avoid drift.
   let firstTs = Math.max(continueFirst, arrivalFirst);
-  if (continueFirst < arrivalFirst - 2 * n * periodMs) {
-    firstTs = arrivalFirst;
-  }
+  if (continueFirst < arrivalFirst - 2 * n * periodMs) firstTs = arrivalFirst;
 
   for (let i = 0; i < n; i++) {
     liveBuffers.rawPpg.push(firstTs + i * periodMs, raw.samples[i]);
@@ -280,6 +385,51 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
 
   pending.rawSamples += n;
   scheduleCounterFlush();
+}
+
+function drainJitterQueue(): void {
+  if (jitterQueue.length === 0) return;
+  // Initial fill — wait until we have buffer depth before starting
+  if (!jitterFilled) {
+    if (jitterQueue.length < SMOOTH_TARGET_PKTS) return;
+    jitterFilled = true;
+  }
+  // Catch-up pacing: if we fell behind (browser hiccup), process up to
+  // 3 packets per tick. Cap is intentional — doing all the work in one
+  // render frame causes its own jitter.
+  const backlog = jitterQueue.length - SMOOTH_TARGET_PKTS;
+  const toProcess = Math.min(3, Math.max(1, backlog + 1));
+  for (let i = 0; i < toProcess && jitterQueue.length > 0; i++) {
+    const next = jitterQueue.shift();
+    if (next) processRawBatch(next);
+  }
+}
+
+function flushJitterQueue(): void {
+  while (jitterQueue.length > 0) {
+    const next = jitterQueue.shift();
+    if (next) processRawBatch(next);
+  }
+  if (jitterTimer !== null) {
+    window.clearInterval(jitterTimer);
+    jitterTimer = null;
+  }
+  jitterFilled = false;
+}
+
+narbisDevice.addEventListener('rawSampleReceived', (e) => {
+  const raw = (e as CustomEvent<NarbisRawSampleEvent>).detail;
+  const smoothing = useDashboardStore.getState().pcJitterSmoothing;
+
+  if (!smoothing) {
+    processRawBatch(raw);
+    return;
+  }
+
+  jitterQueue.push(raw);
+  if (jitterTimer === null) {
+    jitterTimer = window.setInterval(drainJitterQueue, SMOOTH_TICK_MS);
+  }
 });
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
@@ -295,6 +445,7 @@ narbisDevice.addEventListener('batteryReceived', (e) => {
 narbisDevice.addEventListener('configChanged', (e) => {
   const cfg = (e as CustomEvent<NarbisRuntimeConfig>).detail;
   setState({ config: cfg });
+  appendBleLog('earclip', 'rx', `config v${cfg.config_version} (sample_rate=${cfg.sample_rate_hz} Hz)`);
 });
 
 narbisDevice.addEventListener('diagnosticReceived', (e) => {
@@ -338,6 +489,172 @@ polarH10.addEventListener('beatReceived', (e) => {
   liveBuffers.polarBeats.push(beat.timestamp, { bpm: beat.bpm, rr: beat.rrIntervals_ms });
   pending.polarBeats += 1;
   scheduleCounterFlush();
+});
+
+// ---------- Edge glasses ----------
+
+edgeDevice.addEventListener('connected', (e) => {
+  const { name } = (e as CustomEvent<{ name: string }>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: { state: 'connected', deviceName: name, lastFrameAt: s.connection.edge.lastFrameAt },
+    },
+  }));
+  appendBleLog('edge', 'info', `connected to ${name}`);
+});
+
+edgeDevice.addEventListener('disconnected', (e) => {
+  const { reason, error } = (e as CustomEvent<EdgeDisconnectedDetail>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: {
+        state: edgeDevice.status,
+        deviceName: edgeDevice.status === 'reconnecting' ? s.connection.edge.deviceName : null,
+        lastFrameAt: edgeDevice.status === 'reconnecting' ? s.connection.edge.lastFrameAt : null,
+      },
+    },
+    lastError: reason === 'error' && error ? error.message : s.lastError,
+  }));
+  appendBleLog(
+    'edge',
+    reason === 'error' ? 'error' : 'info',
+    edgeDevice.status === 'reconnecting'
+      ? `disconnected (${reason}) - reconnecting`
+      : `disconnected (${reason})`,
+  );
+});
+
+edgeDevice.addEventListener('error', (e) => {
+  const { error, phase } = (e as CustomEvent<EdgeErrorDetail>).detail;
+  setState({ lastError: `edge/${phase}: ${error.message}` });
+  appendBleLog('edge', 'error', `${phase}: ${error.message}`);
+});
+
+edgeDevice.addEventListener('statusFrame', (e) => {
+  const frame = (e as CustomEvent<EdgeStatusFrame>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: { ...s.connection.edge, lastFrameAt: frame.timestamp },
+    },
+  }));
+  // Show the decoded summary directly. For 0xF1 firmware-log frames this
+  // is the actual log line; for 0xF0/0xF2 it's a parsed summary; for
+  // unknown frame types the summary still includes a hex dump.
+  appendBleLog('edge', 'rx', frame.summary);
+});
+
+edgeDevice.addEventListener('ctrlSent', (e) => {
+  const { opcode, length } = (e as CustomEvent<{ opcode: number; length: number }>).detail;
+  appendBleLog(
+    'edge',
+    'tx',
+    `ctrl opcode=0x${opcode.toString(16).padStart(2, '0').toUpperCase()} (${length} B)`,
+  );
+});
+
+/* Relayed earclip data through the glasses. The glasses' main.c forwards
+ * IBI / battery via ble_log() text frames; edgeDevice parses them and
+ * fires these events. We feed them into the same buffers the direct-
+ * earclip-connection path uses, so the BPM / IBI / battery UI works
+ * regardless of which BLE path delivered the data.
+ *
+ * Suppressed when the dashboard is also directly connected to the
+ * earclip — that path already feeds the same buffers and doubling up
+ * would corrupt the IBI tachogram. */
+function isEarclipDirect(): boolean {
+  return useDashboardStore.getState().connection.narbis.state === 'connected';
+}
+
+edgeDevice.addEventListener('relayedIbi', (e) => {
+  if (isEarclipDirect()) return;  // direct path already covers this
+  const r = (e as CustomEvent<RelayedIbi>).detail;
+  const beat: NarbisBeatEvent = {
+    bpm: r.ibi_ms > 0 ? Math.round(60000 / r.ibi_ms) : 0,
+    ibi_ms: r.ibi_ms,
+    confidence: r.confidence_x100,
+    flags: r.flags,
+    sqi: null,
+    timestamp: r.timestamp,
+  };
+  liveBuffers.narbisBeats.push(beat.timestamp, beat);
+  pending.beats += 1;
+  pending.lastBeat = beat;
+  scheduleCounterFlush();
+});
+
+edgeDevice.addEventListener('relayedBattery', (e) => {
+  if (isEarclipDirect()) return;
+  const b = (e as CustomEvent<RelayedBattery>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      narbis: { ...s.connection.narbis, battery: b.soc_pct },
+    },
+  }));
+});
+
+/* Path B Phase 1: relayed CONFIG. The glasses central does a one-shot
+ * GATTC read on connect (the earclip only notifies CONFIG on changes),
+ * then mirrors any subsequent change-notifies. Either way we land here
+ * with the serialized 50-byte blob. Deserialize and feed into the same
+ * `config` slot the direct-earclip path uses; ConfigPanel renders from
+ * it regardless of which path delivered it. */
+edgeDevice.addEventListener('relayedConfig', (e) => {
+  if (isEarclipDirect()) return;
+  const r = (e as CustomEvent<RelayedConfig>).detail;
+  try {
+    const cfg = deserializeConfig(r.bytes);
+    setState({ config: cfg });
+    appendBleLog(
+      'earclip',
+      'rx',
+      `config v${cfg.config_version} (relay; sample_rate=${cfg.sample_rate_hz} Hz)`,
+    );
+  } catch (err) {
+    appendBleLog('earclip', 'error', `relay config parse: ${(err as Error).message}`);
+  }
+});
+
+/* Path B Phase 2: relayed RAW_PPG batches. Wire format matches the
+ * direct path — u16 sample_rate_hz, u16 n_samples, n × (u32 red, u32 ir).
+ * We rebuild a NarbisRawSampleEvent and feed the existing processRawBatch
+ * so the chart, jitter smoother, and counters all keep working. */
+edgeDevice.addEventListener('relayedRawPpg', (e) => {
+  if (isEarclipDirect()) return;
+  const r = (e as CustomEvent<RelayedRawPpg>).detail;
+  try {
+    if (r.bytes.byteLength < 4) return;
+    const dv = new DataView(r.bytes.buffer, r.bytes.byteOffset, r.bytes.byteLength);
+    const sample_rate_hz = dv.getUint16(0, true);
+    const n_samples = dv.getUint16(2, true);
+    const expected = 4 + n_samples * 8;
+    if (r.bytes.byteLength < expected) {
+      appendBleLog(
+        'earclip',
+        'error',
+        `relay raw_ppg truncated: have ${r.bytes.byteLength}, need ${expected}`,
+      );
+      return;
+    }
+    const samples: NarbisRawSample[] = new Array(n_samples);
+    let off = 4;
+    for (let i = 0; i < n_samples; i++) {
+      const red = dv.getUint32(off, true); off += 4;
+      const ir  = dv.getUint32(off, true); off += 4;
+      samples[i] = { red, ir };
+    }
+    processRawBatch({
+      sample_rate_hz,
+      n_samples,
+      samples,
+      timestamp: r.timestamp,
+    });
+  } catch (err) {
+    appendBleLog('earclip', 'error', `relay raw_ppg parse: ${(err as Error).message}`);
+  }
 });
 
 export function setRecordingState(active: boolean, startedAt: number | null): void {

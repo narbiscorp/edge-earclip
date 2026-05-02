@@ -7,7 +7,14 @@ import { BUILT_IN_DEFAULT } from './config/presetStore';
 
 export default function ConfigPanel() {
   const narbisState = useDashboardStore((s) => s.connection.narbis.state);
-  const isConnected = narbisState === 'connected';
+  const edgeState   = useDashboardStore((s) => s.connection.edge.state);
+  const config      = useDashboardStore((s) => s.config);
+  /* Path B Phase 1: editable when either the dashboard is directly on the
+   * earclip OR the glasses are connected and the relay has populated a
+   * config (writes fall through narbisDevice.writeConfig → edgeDevice). */
+  const isConnected =
+    narbisState === 'connected' ||
+    (edgeState === 'connected' && config !== null);
   const writer = useDebouncedConfigWrite(isConnected);
   const { expanded, toggle } = useExpandState();
 
