@@ -87,6 +87,16 @@ export interface CentralRelayState {
   connected: boolean;
 }
 
+/* Path B: relayed diagnostics frame (0xF7). Wire format matches the
+ * direct earclip diagnostics char: [seq u16][n u8] then n records of
+ * {stream_id u8, len u8, payload}. The dashboard's existing
+ * parseDiagnostic() handles it. */
+export interface RelayedDiagnostic {
+  timestamp: number;
+  /** payload bytes, 0xF7 type prefix already stripped */
+  bytes: Uint8Array;
+}
+
 const EDGE_SVC_UUID    = '000000ff-0000-1000-8000-00805f9b34fb';
 const EDGE_CTRL_UUID   = '0000ff01-0000-1000-8000-00805f9b34fb';
 const EDGE_STATUS_UUID = '0000ff03-0000-1000-8000-00805f9b34fb';
@@ -419,6 +429,11 @@ export class EdgeDevice extends EventTarget {
           timestamp: ts,
           connected: bytes[1] !== 0,
         } as CentralRelayState);
+      } else if (type === 0xF7 && bytes.length > 1) {
+        this.dispatch('relayedDiagnostic', {
+          timestamp: ts,
+          bytes: bytes.slice(1),
+        } as RelayedDiagnostic);
       }
     } catch (err) {
       this.emitError(err, 'status-parse');
@@ -581,6 +596,11 @@ function decodeStatusFrame(
   }
   if (type === 0xF6 && bytes.length >= 2) {
     return { kind: 'unknown', summary: `relay link ${bytes[1] ? 'UP — earclip subscribed' : 'DOWN'}` };
+  }
+  if (type === 0xF7 && bytes.length >= 4) {
+    /* [type][seq u16][n u8][records...] */
+    const n = bytes[3];
+    return { kind: 'unknown', summary: `relay diag seq=${dv.getUint16(1, true)} n=${n} (${bytes.length - 1} B)` };
   }
 
   return { kind: 'unknown', summary: `type=0x${type.toString(16).padStart(2, '0')} (${bytes.length} B): ${bytesToHex(bytes)}` };

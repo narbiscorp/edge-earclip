@@ -27,6 +27,7 @@ import {
   type RelayedBattery,
   type RelayedConfig,
   type RelayedRawPpg,
+  type RelayedDiagnostic,
   type CentralRelayState,
 } from '../ble/edgeDevice';
 import type {
@@ -35,7 +36,7 @@ import type {
   NarbisSqiPayload,
   DiagnosticSample,
 } from '../ble/parsers';
-import { resetDiagnosticClock, deserializeConfig } from '../ble/parsers';
+import { resetDiagnosticClock, deserializeConfig, parseDiagnostic } from '../ble/parsers';
 import { StreamBuffer } from './streamBuffer';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
@@ -696,6 +697,26 @@ edgeDevice.addEventListener('relayedRawPpg', (e) => {
     });
   } catch (err) {
     appendBleLog('earclip', 'error', `relay raw_ppg parse: ${(err as Error).message}`);
+  }
+});
+
+/* Path B: relayed diagnostic frames (0xF7). Same wire format as the
+ * direct earclip diagnostic char, so we run the existing parseDiagnostic
+ * and push samples to the filtered buffer. Earclip only emits these
+ * when its diagnostics_enabled=1 AND diagnostics_mask has POST_FILTER
+ * set — both edited via ConfigPanel. */
+edgeDevice.addEventListener('relayedDiagnostic', (e) => {
+  if (isEarclipDirect()) return;
+  const r = (e as CustomEvent<RelayedDiagnostic>).detail;
+  try {
+    const dv = new DataView(r.bytes.buffer, r.bytes.byteOffset, r.bytes.byteLength);
+    const samples = parseDiagnostic(dv, r.timestamp);
+    if (samples.length === 0) return;
+    for (const s of samples) {
+      liveBuffers.filtered.push(s.timestamp, s);
+    }
+  } catch (err) {
+    appendBleLog('earclip', 'error', `relay diag parse: ${(err as Error).message}`);
   }
 });
 
