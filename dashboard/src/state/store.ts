@@ -426,19 +426,25 @@ function flushJitterQueue(): void {
   jitterFilled = false;
 }
 
-narbisDevice.addEventListener('rawSampleReceived', (e) => {
-  const raw = (e as CustomEvent<NarbisRawSampleEvent>).detail;
+/* Shared raw-batch entry point for both the direct (narbisDevice) and
+ * relay (edgeDevice 0xF5) paths. Routes through the PC-jitter buffer
+ * when smoothing is enabled, otherwise straight to processRawBatch.
+ * Without this helper, the relay path silently bypassed the smoother
+ * and got bursty playback on Windows BLE. */
+function feedRawBatch(raw: NarbisRawSampleEvent): void {
   const smoothing = useDashboardStore.getState().pcJitterSmoothing;
-
   if (!smoothing) {
     processRawBatch(raw);
     return;
   }
-
   jitterQueue.push(raw);
   if (jitterTimer === null) {
     jitterTimer = window.setInterval(drainJitterQueue, SMOOTH_TICK_MS);
   }
+}
+
+narbisDevice.addEventListener('rawSampleReceived', (e) => {
+  feedRawBatch((e as CustomEvent<NarbisRawSampleEvent>).detail);
 });
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
@@ -682,7 +688,7 @@ edgeDevice.addEventListener('relayedRawPpg', (e) => {
       const ir  = dv.getUint32(off, true); off += 4;
       samples[i] = { red, ir };
     }
-    processRawBatch({
+    feedRawBatch({
       sample_rate_hz,
       n_samples,
       samples,
