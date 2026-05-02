@@ -32,7 +32,7 @@ export default function App() {
         <h1 className="text-lg font-semibold tracking-tight">
           Narbis Earclip Dashboard
           <span className="ml-2 text-[10px] font-mono text-emerald-400 align-middle">
-            perf-v1 · {__BUILD_ID__}
+            relay-v2 · {__BUILD_ID__}
           </span>
         </h1>
         <ConnectionPanel />
