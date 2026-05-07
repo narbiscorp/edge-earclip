@@ -30,6 +30,7 @@
 #include "power_mgmt.h"
 #include "transport_ble.h"
 
+#include "adaptive_detector.h"
 #include "beat_validator.h"
 #include "elgendi.h"
 #include "ppg_channel.h"
@@ -51,7 +52,7 @@ static SemaphoreHandle_t       g_config_mutex;
 static void load_default_config(narbis_runtime_config_t *c)
 {
     memset(c, 0, sizeof(*c));
-    c->config_version        = 3;
+    c->config_version        = 4;
     c->sample_rate_hz        = 200;
     c->led_red_ma_x10        = 70;
     c->led_ir_ma_x10         = 70;
@@ -76,6 +77,25 @@ static void load_default_config(narbis_runtime_config_t *c)
     c->light_sleep_enabled   = 1;
     c->diagnostics_mask      = 0;
     c->battery_low_mv        = 3300;
+    /* Adaptive detector defaults match the dashboard reference (index v13.27).
+     * Default mode is FIXED so behavior is unchanged after upgrading firmware
+     * — operator must explicitly opt in via config write. */
+    c->detector_mode              = NARBIS_DETECTOR_FIXED;
+    c->template_max_beats         = 10;
+    c->template_warmup_beats      = 4;
+    c->kalman_warmup_beats        = 5;
+    c->template_window_ms         = 200;
+    c->ncc_min_x1000              = 500;
+    c->ncc_learn_min_x1000        = 750;
+    c->kalman_q_ms2               = 400;
+    c->kalman_r_ms2               = 2500;
+    c->kalman_sigma_x10           = 30;
+    c->watchdog_max_consec_rejects = 5;
+    c->watchdog_silence_ms        = 4000;
+    c->alpha_min_x1000            = 10;
+    c->alpha_max_x1000            = 500;
+    c->agc_adaptive_step          = 0;
+    c->refractory_ibi_pct         = 60;
 }
 
 /* ============================================================================
@@ -96,6 +116,23 @@ static bool validate_config(const narbis_runtime_config_t *c)
     if (c->ble_profile > NARBIS_BLE_LOW_LATENCY)               return false;
     if (c->data_format > NARBIS_DATA_IBI_PLUS_RAW)             return false;
     if (c->battery_low_mv < 2800 || c->battery_low_mv > 4200)  return false;
+    /* Adaptive detector ranges. Tight enough to reject corrupt blobs, loose
+     * enough to let the dashboard explore tuning without re-validation. */
+    if (c->detector_mode > NARBIS_DETECTOR_ADAPTIVE)           return false;
+    /* Caps must agree with adaptive_detector.c's static buffers. */
+    if (c->template_max_beats == 0 || c->template_max_beats > 16) return false;
+    if (c->template_window_ms < 80 || c->template_window_ms > 1000) return false;
+    if (c->ncc_min_x1000 > 1000 || c->ncc_learn_min_x1000 > 1000)  return false;
+    if (c->ncc_learn_min_x1000 < c->ncc_min_x1000)             return false;
+    if (c->kalman_q_ms2 == 0)                                  return false;
+    if (c->kalman_r_ms2 == 0)                                  return false;
+    if (c->kalman_sigma_x10 < 5 || c->kalman_sigma_x10 > 100)  return false;
+    if (c->alpha_min_x1000 == 0 || c->alpha_max_x1000 > 1000)  return false;
+    if (c->alpha_max_x1000 <= c->alpha_min_x1000)              return false;
+    if (c->watchdog_max_consec_rejects == 0)                   return false;
+    if (c->watchdog_silence_ms < 500 || c->watchdog_silence_ms > 60000) return false;
+    if (c->refractory_ibi_pct > 100)                           return false;
+    if (c->agc_adaptive_step > 1)                              return false;
     return true;
 }
 
@@ -108,6 +145,8 @@ static esp_err_t apply_dsp(const narbis_runtime_config_t *c)
 {
     esp_err_t err;
     err = ppg_channel_apply_config(c);
+    if (err != ESP_OK) return err;
+    err = adaptive_detector_apply_config(c);
     if (err != ESP_OK) return err;
     err = elgendi_apply_config(c);
     if (err != ESP_OK) return err;
@@ -190,6 +229,22 @@ static esp_err_t apply_diff(const narbis_runtime_config_t *new_cfg,
         new_cfg->agc_target_dc_min     != prev->agc_target_dc_min     ||
         new_cfg->agc_target_dc_max     != prev->agc_target_dc_max     ||
         new_cfg->agc_step_ma_x10       != prev->agc_step_ma_x10       ||
+        new_cfg->agc_adaptive_step     != prev->agc_adaptive_step     ||
+        new_cfg->refractory_ibi_pct    != prev->refractory_ibi_pct    ||
+        new_cfg->detector_mode         != prev->detector_mode         ||
+        new_cfg->template_max_beats    != prev->template_max_beats    ||
+        new_cfg->template_warmup_beats != prev->template_warmup_beats ||
+        new_cfg->kalman_warmup_beats   != prev->kalman_warmup_beats   ||
+        new_cfg->template_window_ms    != prev->template_window_ms    ||
+        new_cfg->ncc_min_x1000         != prev->ncc_min_x1000         ||
+        new_cfg->ncc_learn_min_x1000   != prev->ncc_learn_min_x1000   ||
+        new_cfg->kalman_q_ms2          != prev->kalman_q_ms2          ||
+        new_cfg->kalman_r_ms2          != prev->kalman_r_ms2          ||
+        new_cfg->kalman_sigma_x10      != prev->kalman_sigma_x10      ||
+        new_cfg->watchdog_max_consec_rejects != prev->watchdog_max_consec_rejects ||
+        new_cfg->watchdog_silence_ms   != prev->watchdog_silence_ms   ||
+        new_cfg->alpha_min_x1000       != prev->alpha_min_x1000       ||
+        new_cfg->alpha_max_x1000       != prev->alpha_max_x1000       ||
         new_cfg->sample_rate_hz        != prev->sample_rate_hz;
     if (dsp_changed) {
         if ((err = apply_dsp(new_cfg)) != ESP_OK) return err;
@@ -257,7 +312,7 @@ esp_err_t config_manager_init(void)
 
     narbis_runtime_config_t loaded;
     esp_err_t err = load_blob(&loaded);
-    if (err == ESP_OK && loaded.config_version >= 3 && validate_config(&loaded)) {
+    if (err == ESP_OK && loaded.config_version >= 4 && validate_config(&loaded)) {
         g_config = loaded;
         ESP_LOGI(TAG, "loaded persisted config (version=%u)", loaded.config_version);
     } else {
@@ -304,7 +359,7 @@ esp_err_t config_apply(const narbis_runtime_config_t *new_cfg)
     narbis_runtime_config_t prev = g_config;
     g_config = *new_cfg;
     /* config_version is owned by the firmware; ignore whatever the writer sent. */
-    g_config.config_version = 3;
+    g_config.config_version = 4;
 
     esp_err_t err = apply_diff(&g_config, &prev);
     if (err != ESP_OK) {

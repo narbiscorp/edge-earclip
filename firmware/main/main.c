@@ -11,6 +11,7 @@
 #include "narbis_protocol.h"
 #include "ppg_driver_max3010x.h"
 
+#include "adaptive_detector.h"
 #include "app_state.h"
 #include "beat_validator.h"
 #include "ble_ota.h"
@@ -56,18 +57,61 @@ static void boot_log_macs(void)
              ble_mac[3], ble_mac[4], ble_mac[5]);
 }
 
+/* Hand a candidate peak to the adaptive detector first. In FIXED mode it
+ * passes through immediately; in ADAPTIVE mode it queues for HALF samples
+ * of look-ahead before deciding accept/reject. Accepted peaks come back
+ * via on_accepted_peak below. */
 static void on_peak(const elgendi_peak_t *p, void *ctx)
 {
     (void)ctx;
-    beat_validator_feed(p);
+    adaptive_detector_propose_peak(p);
 
-    /* Diagnostics: peak candidate. Mask-gated inside diagnostics_push so
-     * this is a single load + branch when the stream is off. */
+    /* Diagnostics records every CANDIDATE (pre-NCC/Kalman) so the dashboard
+     * can show what elgendi proposed vs what the adaptive layer accepted. */
     struct __attribute__((packed)) {
         uint32_t timestamp_ms;
         int32_t  amplitude;
     } rec = { .timestamp_ms = p->timestamp_ms, .amplitude = p->amplitude };
     diagnostics_push(NARBIS_DIAG_STREAM_PEAK_CAND, &rec, sizeof(rec));
+}
+
+static void on_accepted_peak(const elgendi_peak_t *p, void *ctx)
+{
+    (void)ctx;
+    beat_validator_feed(p);
+
+    /* Push a detector-stats snapshot for the dashboard's "Detector (Adaptive)"
+     * sidebar tiles. One record per accepted beat ≈ 1 Hz — well under the
+     * diagnostics drain budget. The mask gate inside diagnostics_push makes
+     * this a single load + branch when the stream is off. */
+    adaptive_detector_stats_t st;
+    adaptive_detector_get_stats(&st);
+    struct __attribute__((packed)) {
+        uint32_t timestamp_ms;
+        int16_t  ncc_x1000;
+        uint16_t alpha_x1000;
+        uint16_t kalman_x_ms;
+        uint16_t kalman_r_ms2;
+        uint32_t beats_learned;
+        uint16_t ncc_rejects;
+        uint16_t kalman_rejects;
+        uint16_t watchdog_resets;
+        uint8_t  beats_in_template;
+        uint8_t  mode;
+    } rec = {
+        .timestamp_ms      = p->timestamp_ms,
+        .ncc_x1000         = st.ncc_x1000,
+        .alpha_x1000       = st.alpha_x1000,
+        .kalman_x_ms       = st.kalman_x_ms,
+        .kalman_r_ms2      = st.kalman_r_ms2,
+        .beats_learned     = st.beats_learned,
+        .ncc_rejects       = (uint16_t)(st.ncc_rejects & 0xFFFFu),
+        .kalman_rejects    = (uint16_t)(st.kalman_rejects & 0xFFFFu),
+        .watchdog_resets   = (uint16_t)(st.watchdog_resets & 0xFFFFu),
+        .beats_in_template = st.beats_in_template,
+        .mode              = st.mode,
+    };
+    diagnostics_push(NARBIS_DIAG_STREAM_DETECTOR_STATS, &rec, sizeof(rec));
 }
 
 static void on_processed(const ppg_processed_sample_t *s, void *ctx)
@@ -87,6 +131,11 @@ static void on_processed(const ppg_processed_sample_t *s, void *ctx)
 static void on_filtered(const elgendi_filtered_sample_t *f, void *ctx)
 {
     (void)ctx;
+    /* Adaptive detector needs every bandpass sample for its ring buffer
+     * and per-sample watchdog tick. Cheap (one int32 store + a couple of
+     * compares) when no candidate is pending. */
+    adaptive_detector_feed_sample(f->timestamp_ms, f->filtered);
+
     /* Diagnostics: post-bandpass (Elgendi filter output). Drives the
      * dashboard's "Filtered signal + peaks" chart. */
     struct __attribute__((packed)) {
@@ -152,10 +201,12 @@ void app_main(void)
 
     ESP_ERROR_CHECK(ppg_channel_init());
     ESP_ERROR_CHECK(elgendi_init());
+    ESP_ERROR_CHECK(adaptive_detector_init());
     ESP_ERROR_CHECK(beat_validator_init());
     ESP_ERROR_CHECK(ppg_channel_register_output_cb(on_processed, NULL));
     ESP_ERROR_CHECK(elgendi_register_peak_cb(on_peak, NULL));
     ESP_ERROR_CHECK(elgendi_register_filtered_cb(on_filtered, NULL));
+    ESP_ERROR_CHECK(adaptive_detector_register_peak_cb(on_accepted_peak, NULL));
     ESP_ERROR_CHECK(beat_validator_register_event_cb(on_beat, NULL));
 
 #ifdef CONFIG_NARBIS_TEST_INJECT

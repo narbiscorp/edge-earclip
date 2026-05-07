@@ -66,7 +66,10 @@ typedef struct {
     uint16_t w1_samples;
     uint16_t w2_samples;
     uint16_t beta_x1000;
-    uint16_t refractory_ms;
+    uint16_t refractory_ms;          /* base floor from ibi_min_ms */
+    uint8_t  refractory_ibi_pct;     /* dynamic: refractory = max(floor, pct·last_IBI/100) */
+    uint32_t override_refractory_ms; /* if non-zero, supersedes both above */
+    uint32_t last_ibi_ms;            /* delta between the two most recent emitted peaks */
 
     /* Biquad coeffs (Q28) — single 2nd-order section, DF-II Transposed,
      * a0 normalized to 1 so only b0/b1/b2/a1/a2 are stored. */
@@ -176,6 +179,7 @@ static void reset_dsp(void)
     s.block_max_idx = 0;
     s.has_last_peak = false;
     s.last_peak_ts_ms = 0;
+    s.last_ibi_ms = 0;
 }
 
 static void load_defaults(void)
@@ -189,6 +193,9 @@ static void load_defaults(void)
                                      ELGENDI_W2_MAX_SAMPLES);
     s.beta_x1000     = ELGENDI_DEFAULT_BETA_X1000;
     s.refractory_ms  = ELGENDI_DEFAULT_REFRACTORY_MS;
+    s.refractory_ibi_pct    = 60;
+    s.override_refractory_ms = 0;
+    s.last_ibi_ms    = 0;
     compute_bp_coeffs(s.sample_rate_hz, s.bp_low_x100, s.bp_high_x100,
                       &s.b0, &s.b1, &s.b2, &s.a1, &s.a2);
 }
@@ -269,6 +276,7 @@ esp_err_t elgendi_apply_config(const narbis_runtime_config_t *cfg)
     s.beta_x1000     = cfg->elgendi_beta_x1000;
     s.refractory_ms  = (cfg->ibi_min_ms > 0) ? cfg->ibi_min_ms
                                              : ELGENDI_DEFAULT_REFRACTORY_MS;
+    s.refractory_ibi_pct = (cfg->refractory_ibi_pct <= 100) ? cfg->refractory_ibi_pct : 60;
 
     int32_t nb0, nb1, nb2, na1, na2;
     compute_bp_coeffs(s.sample_rate_hz, s.bp_low_x100, s.bp_high_x100,
@@ -400,15 +408,54 @@ void elgendi_feed(const ppg_processed_sample_t *ps)
     } else if (!above && s.in_block) {
         s.in_block = false;
 
-        /* 7) Refractory check using ibi_min_ms. */
+        /* 7) Refractory check. Three sources, in priority order:
+         *      a) override_refractory_ms (set by adaptive_detector via setter)
+         *      b) refractory_ibi_pct × last_IBI / 100, floor at refractory_ms
+         *      c) bare refractory_ms (= ibi_min_ms)
+         * (a) lets the Kalman-tracked IBI in adaptive mode dominate; (b) is
+         * the Tier-1 auto-knob that adapts to slow HRs without any adaptive
+         * detector running. */
+        uint32_t refr = s.refractory_ms;
+        if (s.override_refractory_ms > 0) {
+            refr = s.override_refractory_ms;
+        } else if (s.refractory_ibi_pct > 0 &&
+                   s.last_ibi_ms > 0 && s.last_ibi_ms < 60000u) {
+            /* Cap on last_ibi_ms guards the multiply against pathological
+             * values from a bad block-end timestamp. 60 s = 1 BPM floor,
+             * well below physiology. */
+            uint32_t scaled = (s.last_ibi_ms * (uint32_t)s.refractory_ibi_pct) / 100u;
+            if (scaled > refr) refr = scaled;
+        }
+
         bool refractory_ok = !s.has_last_peak ||
             (s.block_max_ts_ms >= s.last_peak_ts_ms &&
-             (s.block_max_ts_ms - s.last_peak_ts_ms) >= s.refractory_ms);
+             (s.block_max_ts_ms - s.last_peak_ts_ms) >= refr);
 
         if (refractory_ok && s.block_max_amp > 0) {
+            if (s.has_last_peak && s.block_max_ts_ms >= s.last_peak_ts_ms) {
+                s.last_ibi_ms = s.block_max_ts_ms - s.last_peak_ts_ms;
+            }
             emit_peak(s.block_max_ts_ms, s.block_max_idx, s.block_max_amp);
             s.last_peak_ts_ms = s.block_max_ts_ms;
             s.has_last_peak = true;
         }
     }
+}
+
+void elgendi_set_beta_x1000(uint16_t v)
+{
+    /* Single-word write — atomic on RV32 with respect to per-sample reads.
+     * The threshold formula reads beta_x1000 once per sample inside feed(),
+     * which runs on the same task context, so there's no preemption window
+     * here in practice. We still take the cb_lock to be explicit. */
+    portENTER_CRITICAL(&s.cb_lock);
+    s.beta_x1000 = v;
+    portEXIT_CRITICAL(&s.cb_lock);
+}
+
+void elgendi_set_dynamic_refractory_ms(uint32_t ms)
+{
+    portENTER_CRITICAL(&s.cb_lock);
+    s.override_refractory_ms = ms;
+    portEXIT_CRITICAL(&s.cb_lock);
 }

@@ -60,6 +60,24 @@ esp_err_t elgendi_apply_config(const narbis_runtime_config_t *cfg);
 /* Drop biquad state, MA sums, block tracking, last-peak time. */
 void elgendi_reset_state(void);
 
+/* Live-tune the threshold offset (β / α). Used by the adaptive detector to
+ * bump α up on rejection and decay it back on success. Clamped to the
+ * config-supplied [alpha_min_x1000, alpha_max_x1000] window inside the
+ * adaptive component before this is called, so this just stores the value
+ * atomically into the per-sample threshold computation. */
+void elgendi_set_beta_x1000(uint16_t v);
+
+/* Override the refractory floor with an externally-computed value (ms).
+ * When non-zero, this takes precedence over ibi_min_ms and the internal
+ * refractory_ibi_pct × last_ibi computation — used by the adaptive detector
+ * to drive refractory off the Kalman IBI estimate (which is smoother than
+ * elgendi's per-block last_ibi). Pass 0 to fall back to the internal logic.
+ *
+ * In FIXED mode the adaptive_detector never calls this, so elgendi's local
+ * refractory_ibi_pct tracking still applies and the new Tier-1 auto-knob
+ * works without the adaptive layer.  */
+void elgendi_set_dynamic_refractory_ms(uint32_t ms);
+
 #ifdef __cplusplus
 }
 #endif

@@ -38,6 +38,10 @@ typedef struct {
     uint16_t ibi_max_ms;
     uint8_t  ibi_max_delta_pct;
     uint16_t sqi_threshold_x100;
+    bool     kalman_active;          /* adaptive_detector already gates IBIs;
+                                      * skip our IBI bounds + delta% checks
+                                      * but keep the running median for the
+                                      * dashboard's clean/ectopic tiles. */
 
     bool     have_prev;
     uint32_t prev_ts_ms;
@@ -116,6 +120,7 @@ esp_err_t beat_validator_apply_config(const narbis_runtime_config_t *cfg)
     s.ibi_max_delta_pct  = (cfg->ibi_max_delta_pct > 0) ? cfg->ibi_max_delta_pct
                                                         : BV_DEFAULT_IBI_MAX_DELTA_PCT;
     s.sqi_threshold_x100 = cfg->sqi_threshold_x100;
+    s.kalman_active      = (cfg->detector_mode == NARBIS_DETECTOR_ADAPTIVE);
     return ESP_OK;
 }
 
@@ -172,22 +177,28 @@ void beat_validator_feed(const elgendi_peak_t *p)
     int confidence = 100;
     uint8_t flags = 0;
 
-    bool plausibility_ok = (ibi >= s.ibi_min_ms) && (ibi <= s.ibi_max_ms);
-    if (!plausibility_ok) {
-        flags |= NARBIS_BEAT_FLAG_ARTIFACT;
-        confidence = 0;
-    }
+    /* In adaptive-detector mode, the upstream NCC + Kalman has already run
+     * a stricter IBI gate. Skip the bounds + delta% checks (they only fire
+     * here on beats Kalman would also have rejected) but still update the
+     * running median below for the dashboard's clean/ectopic telemetry. */
+    if (!s.kalman_active) {
+        bool plausibility_ok = (ibi >= s.ibi_min_ms) && (ibi <= s.ibi_max_ms);
+        if (!plausibility_ok) {
+            flags |= NARBIS_BEAT_FLAG_ARTIFACT;
+            confidence = 0;
+        }
 
-    if (s.ring_filled > 0) {
-        uint16_t median = running_median();
-        if (median > 0) {
-            int32_t diff = (int32_t)ibi - (int32_t)median;
-            if (diff < 0) diff = -diff;
-            int32_t threshold = ((int32_t)median * (int32_t)s.ibi_max_delta_pct) / 100;
-            if (diff > threshold) {
-                flags |= NARBIS_BEAT_FLAG_ARTIFACT;
-                confidence -= 50;
-                if (confidence < 0) confidence = 0;
+        if (s.ring_filled > 0) {
+            uint16_t median = running_median();
+            if (median > 0) {
+                int32_t diff = (int32_t)ibi - (int32_t)median;
+                if (diff < 0) diff = -diff;
+                int32_t threshold = ((int32_t)median * (int32_t)s.ibi_max_delta_pct) / 100;
+                if (diff > threshold) {
+                    flags |= NARBIS_BEAT_FLAG_ARTIFACT;
+                    confidence -= 50;
+                    if (confidence < 0) confidence = 0;
+                }
             }
         }
     }

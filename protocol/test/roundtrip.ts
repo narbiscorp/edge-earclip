@@ -18,6 +18,7 @@ import {
   NarbisPeerRole,
   NarbisBleProfile,
   NarbisDataFormat,
+  NarbisDetectorMode,
   NarbisConfigAckStatus,
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
   NARBIS_DIAG_STREAM_PRE_FILTER,
@@ -207,7 +208,7 @@ function checkConfigAck(g: GoldenLine): void {
 
 function checkConfig(g: GoldenLine): void {
   const cfg = deserializeConfig(g.bytes);
-  eq("CONFIG config_version", cfg.config_version, 3);
+  eq("CONFIG config_version", cfg.config_version, 4);
   eq("CONFIG sample_rate_hz", cfg.sample_rate_hz, 200);
   eq("CONFIG led_red_ma_x10", cfg.led_red_ma_x10, 70);
   eq("CONFIG led_ir_ma_x10", cfg.led_ir_ma_x10, 70);
@@ -236,6 +237,23 @@ function checkConfig(g: GoldenLine): void {
     NARBIS_DIAG_STREAM_PRE_FILTER | NARBIS_DIAG_STREAM_POST_FILTER,
   );
   eq("CONFIG battery_low_mv", cfg.battery_low_mv, 3300);
+  // Adaptive-detector fields (config_version 4).
+  eq("CONFIG detector_mode", cfg.detector_mode, NarbisDetectorMode.ADAPTIVE);
+  eq("CONFIG template_max_beats", cfg.template_max_beats, 10);
+  eq("CONFIG template_warmup_beats", cfg.template_warmup_beats, 4);
+  eq("CONFIG kalman_warmup_beats", cfg.kalman_warmup_beats, 5);
+  eq("CONFIG template_window_ms", cfg.template_window_ms, 200);
+  eq("CONFIG ncc_min_x1000", cfg.ncc_min_x1000, 500);
+  eq("CONFIG ncc_learn_min_x1000", cfg.ncc_learn_min_x1000, 750);
+  eq("CONFIG kalman_q_ms2", cfg.kalman_q_ms2, 400);
+  eq("CONFIG kalman_r_ms2", cfg.kalman_r_ms2, 2500);
+  eq("CONFIG kalman_sigma_x10", cfg.kalman_sigma_x10, 30);
+  eq("CONFIG watchdog_max_consec_rejects", cfg.watchdog_max_consec_rejects, 5);
+  eq("CONFIG watchdog_silence_ms", cfg.watchdog_silence_ms, 4000);
+  eq("CONFIG alpha_min_x1000", cfg.alpha_min_x1000, 10);
+  eq("CONFIG alpha_max_x1000", cfg.alpha_max_x1000, 500);
+  eq("CONFIG agc_adaptive_step", cfg.agc_adaptive_step, 1);
+  eq("CONFIG refractory_ibi_pct", cfg.refractory_ibi_pct, 60);
   assertReencodeConfig("CONFIG", g.hex, cfg);
 }
 

@@ -16,6 +16,7 @@ export {
   NarbisPeerRole,
   NarbisBleProfile,
   NarbisDataFormat,
+  NarbisDetectorMode,
   NARBIS_BEAT_FLAG_ARTIFACT,
   NARBIS_BEAT_FLAG_LOW_SQI,
   NARBIS_BEAT_FLAG_INTERPOLATED,
@@ -130,13 +131,30 @@ export function parseConfig(dv: DataView): NarbisRuntimeConfig {
 //   PEAK_CAND   (0x04): u32 timestamp_ms, i32 amplitude            ( 8 B)
 //   AGC_EVENT   (0x08): not yet decoded (firmware doesn't emit)
 //   FIFO_OCCUP  (0x10): not yet decoded
-export const DIAG_STREAM_PRE_FILTER  = 0x01;
-export const DIAG_STREAM_POST_FILTER = 0x02;
-export const DIAG_STREAM_PEAK_CAND   = 0x04;
+export const DIAG_STREAM_PRE_FILTER     = 0x01;
+export const DIAG_STREAM_POST_FILTER    = 0x02;
+export const DIAG_STREAM_PEAK_CAND      = 0x04;
+export const DIAG_STREAM_DETECTOR_STATS = 0x20;
+
+export interface DetectorStatsSample {
+  kind: 'detector_stats';
+  timestamp: number;
+  ncc: number;            // [-1, 1]
+  alpha: number;          // [0.001, 1.000]
+  kalman_x_ms: number;    // current Kalman-tracked IBI estimate
+  kalman_r_ms2: number;   // current measurement-noise variance (adaptive)
+  beats_learned: number;
+  ncc_rejects: number;
+  kalman_rejects: number;
+  watchdog_resets: number;
+  beats_in_template: number;
+  mode: number;           // NarbisDetectorMode (0=FIXED, 1=ADAPTIVE)
+}
 
 export type DiagnosticSample =
   | { kind: 'filtered'; value: number; timestamp: number }
-  | { kind: 'peak'; amplitude: number; rejected: boolean; timestamp: number };
+  | { kind: 'peak'; amplitude: number; rejected: boolean; timestamp: number }
+  | DetectorStatsSample;
 
 interface RawRecord {
   fwTs: number;
@@ -181,6 +199,37 @@ export function parseDiagnostic(dv: DataView, baseTimestamp: number): Diagnostic
       const fwTs = dv.getUint32(off, true);
       const amplitude = dv.getInt32(off + 4, true);
       raw.push({ fwTs, sample: { kind: 'peak', amplitude, rejected: false, timestamp: 0 } });
+      if (fwTs > latestFwTs) latestFwTs = fwTs;
+    } else if (streamId === DIAG_STREAM_DETECTOR_STATS && len >= 24) {
+      // Layout matches firmware/main/main.c on_accepted_peak struct.
+      const fwTs              = dv.getUint32(off, true);
+      const ncc_x1000         = dv.getInt16 (off + 4, true);
+      const alpha_x1000       = dv.getUint16(off + 6, true);
+      const kalman_x_ms       = dv.getUint16(off + 8, true);
+      const kalman_r_ms2      = dv.getUint16(off + 10, true);
+      const beats_learned     = dv.getUint32(off + 12, true);
+      const ncc_rejects       = dv.getUint16(off + 16, true);
+      const kalman_rejects    = dv.getUint16(off + 18, true);
+      const watchdog_resets   = dv.getUint16(off + 20, true);
+      const beats_in_template = dv.getUint8 (off + 22);
+      const mode              = dv.getUint8 (off + 23);
+      raw.push({
+        fwTs,
+        sample: {
+          kind: 'detector_stats',
+          ncc: ncc_x1000 / 1000,
+          alpha: alpha_x1000 / 1000,
+          kalman_x_ms,
+          kalman_r_ms2,
+          beats_learned,
+          ncc_rejects,
+          kalman_rejects,
+          watchdog_resets,
+          beats_in_template,
+          mode,
+          timestamp: 0,
+        },
+      });
       if (fwTs > latestFwTs) latestFwTs = fwTs;
     }
     // PRE_FILTER and other streams parsed but not displayed yet — skip.

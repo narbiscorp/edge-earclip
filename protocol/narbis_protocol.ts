@@ -99,6 +99,14 @@ export enum NarbisDataFormat {
   IBI_PLUS_RAW = 2,
 }
 
+// Detector mode (config_version 4). FIXED is the existing rule-based Elgendi
+// pipeline; ADAPTIVE wraps it with online template matching, a Kalman filter
+// on IBI, self-tuning alpha, and a watchdog.
+export enum NarbisDetectorMode {
+  FIXED = 0,
+  ADAPTIVE = 1,
+}
+
 export enum NarbisConfigAckStatus {
   OK = 0,
   RANGE_ERROR = 1,
@@ -266,14 +274,31 @@ export interface NarbisRuntimeConfig {
   light_sleep_enabled: number;
   diagnostics_mask: number;
   battery_low_mv: number;
+  detector_mode: number;
+  template_max_beats: number;
+  template_warmup_beats: number;
+  kalman_warmup_beats: number;
+  template_window_ms: number;
+  ncc_min_x1000: number;
+  ncc_learn_min_x1000: number;
+  kalman_q_ms2: number;
+  kalman_r_ms2: number;
+  kalman_sigma_x10: number;
+  watchdog_max_consec_rejects: number;
+  watchdog_silence_ms: number;
+  alpha_min_x1000: number;
+  alpha_max_x1000: number;
+  agc_adaptive_step: number;
+  refractory_ibi_pct: number;
 }
 
 // Diagnostics stream IDs — bit positions in NarbisRuntimeConfig.diagnostics_mask.
-export const NARBIS_DIAG_STREAM_PRE_FILTER  = 1 << 0;
-export const NARBIS_DIAG_STREAM_POST_FILTER = 1 << 1;
-export const NARBIS_DIAG_STREAM_PEAK_CAND   = 1 << 2;
-export const NARBIS_DIAG_STREAM_AGC_EVENT   = 1 << 3;
-export const NARBIS_DIAG_STREAM_FIFO_OCCUP  = 1 << 4;
+export const NARBIS_DIAG_STREAM_PRE_FILTER     = 1 << 0;
+export const NARBIS_DIAG_STREAM_POST_FILTER    = 1 << 1;
+export const NARBIS_DIAG_STREAM_PEAK_CAND      = 1 << 2;
+export const NARBIS_DIAG_STREAM_AGC_EVENT      = 1 << 3;
+export const NARBIS_DIAG_STREAM_FIFO_OCCUP     = 1 << 4;
+export const NARBIS_DIAG_STREAM_DETECTOR_STATS = 1 << 5;
 
 // =============================================================
 // CRC-16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflect, no xor-out)
@@ -581,7 +606,9 @@ export function deserializePacket(buf: Uint8Array): NarbisPacket {
 
 // Sum of field sizes; verified by C-side test. Path B (config_version 3)
 // dropped 8 bytes: transport_mode (1) + partner_mac (6) + espnow_channel (1).
-export const NARBIS_CONFIG_STRUCT_SIZE = 48;
+// Path C (config_version 4) added 24 bytes for the adaptive detector +
+// Layer-E auxiliary knobs (16 fields, see NarbisRuntimeConfig).
+export const NARBIS_CONFIG_STRUCT_SIZE = 72;
 export const NARBIS_CONFIG_WIRE_SIZE = NARBIS_CONFIG_STRUCT_SIZE + NARBIS_CRC_SIZE;
 
 export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
@@ -614,6 +641,22 @@ export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
   view.setUint8(o, cfg.light_sleep_enabled); o += 1;
   view.setUint8(o, cfg.diagnostics_mask); o += 1;
   view.setUint16(o, cfg.battery_low_mv, true); o += 2;
+  view.setUint8(o, cfg.detector_mode); o += 1;
+  view.setUint8(o, cfg.template_max_beats); o += 1;
+  view.setUint8(o, cfg.template_warmup_beats); o += 1;
+  view.setUint8(o, cfg.kalman_warmup_beats); o += 1;
+  view.setUint16(o, cfg.template_window_ms, true); o += 2;
+  view.setUint16(o, cfg.ncc_min_x1000, true); o += 2;
+  view.setUint16(o, cfg.ncc_learn_min_x1000, true); o += 2;
+  view.setUint16(o, cfg.kalman_q_ms2, true); o += 2;
+  view.setUint16(o, cfg.kalman_r_ms2, true); o += 2;
+  view.setUint8(o, cfg.kalman_sigma_x10); o += 1;
+  view.setUint8(o, cfg.watchdog_max_consec_rejects); o += 1;
+  view.setUint16(o, cfg.watchdog_silence_ms, true); o += 2;
+  view.setUint16(o, cfg.alpha_min_x1000, true); o += 2;
+  view.setUint16(o, cfg.alpha_max_x1000, true); o += 2;
+  view.setUint8(o, cfg.agc_adaptive_step); o += 1;
+  view.setUint8(o, cfg.refractory_ibi_pct); o += 1;
 
   if (o !== NARBIS_CONFIG_STRUCT_SIZE) {
     throw new Error(`config size mismatch: wrote ${o}, expected ${NARBIS_CONFIG_STRUCT_SIZE}`);
@@ -660,6 +703,22 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
   const light_sleep_enabled = view.getUint8(o); o += 1;
   const diagnostics_mask = view.getUint8(o); o += 1;
   const battery_low_mv = view.getUint16(o, true); o += 2;
+  const detector_mode = view.getUint8(o); o += 1;
+  const template_max_beats = view.getUint8(o); o += 1;
+  const template_warmup_beats = view.getUint8(o); o += 1;
+  const kalman_warmup_beats = view.getUint8(o); o += 1;
+  const template_window_ms = view.getUint16(o, true); o += 2;
+  const ncc_min_x1000 = view.getUint16(o, true); o += 2;
+  const ncc_learn_min_x1000 = view.getUint16(o, true); o += 2;
+  const kalman_q_ms2 = view.getUint16(o, true); o += 2;
+  const kalman_r_ms2 = view.getUint16(o, true); o += 2;
+  const kalman_sigma_x10 = view.getUint8(o); o += 1;
+  const watchdog_max_consec_rejects = view.getUint8(o); o += 1;
+  const watchdog_silence_ms = view.getUint16(o, true); o += 2;
+  const alpha_min_x1000 = view.getUint16(o, true); o += 2;
+  const alpha_max_x1000 = view.getUint16(o, true); o += 2;
+  const agc_adaptive_step = view.getUint8(o); o += 1;
+  const refractory_ibi_pct = view.getUint8(o); o += 1;
 
   return {
     config_version, sample_rate_hz, led_red_ma_x10, led_ir_ma_x10,
@@ -670,5 +729,11 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
     sqi_threshold_x100, ibi_min_ms, ibi_max_ms, ibi_max_delta_pct,
     ble_profile, data_format, ble_batch_period_ms,
     diagnostics_enabled, light_sleep_enabled, diagnostics_mask, battery_low_mv,
+    detector_mode, template_max_beats, template_warmup_beats, kalman_warmup_beats,
+    template_window_ms, ncc_min_x1000, ncc_learn_min_x1000,
+    kalman_q_ms2, kalman_r_ms2, kalman_sigma_x10,
+    watchdog_max_consec_rejects, watchdog_silence_ms,
+    alpha_min_x1000, alpha_max_x1000,
+    agc_adaptive_step, refractory_ibi_pct,
   };
 }

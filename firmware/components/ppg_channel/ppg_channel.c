@@ -52,6 +52,7 @@ typedef struct {
 
     /* AGC state */
     bool     agc_enabled;
+    bool     agc_adaptive_step;     /* Layer E Tier 1 #2 — scale step by DC error */
     uint16_t agc_update_period_ms;
     uint32_t agc_target_dc_min;
     uint32_t agc_target_dc_max;
@@ -146,6 +147,7 @@ esp_err_t ppg_channel_apply_config(const narbis_runtime_config_t *cfg)
     if (cfg == NULL)     return ESP_ERR_INVALID_ARG;
 
     s_state.agc_enabled          = (cfg->agc_enabled != 0);
+    s_state.agc_adaptive_step    = (cfg->agc_adaptive_step != 0);
     s_state.agc_update_period_ms = (cfg->agc_update_period_ms > 0)
                                        ? cfg->agc_update_period_ms : 200;
     s_state.agc_target_dc_min    = cfg->agc_target_dc_min;
@@ -172,6 +174,27 @@ void ppg_channel_reset_dsp_state(void)
     s_state.agc_last_step_us   = 0;
 }
 
+/* Layer E Tier 1 #2 — scale the AGC step by how far DC is from the target
+ * band center. Big DC excursions (post-motion) converge in 1–2 update
+ * periods instead of 5–10; small drift gets the normal small step so we
+ * don't oscillate. Result is in tenths-of-mA, clamped to [1, 4×base]. */
+static int compute_agc_step_x10(uint32_t dc)
+{
+    int base = (int)s_state.agc_step_ma_x10;
+    if (!s_state.agc_adaptive_step) return base;
+
+    uint32_t center = (s_state.agc_target_dc_min + s_state.agc_target_dc_max) / 2u;
+    if (center == 0) return base;
+    uint32_t err = (dc > center) ? (dc - center) : (center - dc);
+    /* factor_q8: 256 = 1.0×, 1024 = 4.0×. Mapping: full-center error → 4×. */
+    uint32_t factor_q8 = (err * 1024u) / center;
+    if (factor_q8 < 256u)  factor_q8 = 256u;
+    if (factor_q8 > 1024u) factor_q8 = 1024u;
+    int scaled = (int)(((uint32_t)base * factor_q8) / 256u);
+    if (scaled < 1) scaled = 1;
+    return scaled;
+}
+
 static void agc_update(uint32_t dc, bool saturated)
 {
     if (!s_state.agc_enabled) return;
@@ -180,16 +203,18 @@ static void agc_update(uint32_t dc, bool saturated)
     bool rate_ok = (now - s_state.agc_last_step_us) >=
                    (int64_t)s_state.agc_update_period_ms * 1000;
 
+    int step_x10 = compute_agc_step_x10(dc);
     int delta_x10 = 0;
     if (saturated) {
-        /* Saturation bypasses the rate limit — recovery is urgent. */
-        delta_x10 = -(int)s_state.agc_step_ma_x10;
+        /* Saturation bypasses the rate limit — recovery is urgent. Use the
+         * adaptive step here too so a heavy clip recovers in one update. */
+        delta_x10 = -step_x10;
     } else if (!rate_ok) {
         return;
     } else if (dc < s_state.agc_target_dc_min) {
-        delta_x10 = +(int)s_state.agc_step_ma_x10;
+        delta_x10 = +step_x10;
     } else if (dc > s_state.agc_target_dc_max) {
-        delta_x10 = -(int)s_state.agc_step_ma_x10;
+        delta_x10 = -step_x10;
     } else {
         return;
     }

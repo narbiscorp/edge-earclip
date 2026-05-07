@@ -204,7 +204,7 @@ static void test_config(FILE *gold)
 {
     narbis_runtime_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.config_version       = 3;
+    cfg.config_version       = 4;
     cfg.sample_rate_hz       = 200;
     cfg.led_red_ma_x10       = 70;
     cfg.led_ir_ma_x10        = 70;
@@ -229,6 +229,23 @@ static void test_config(FILE *gold)
     cfg.light_sleep_enabled  = 1;
     cfg.diagnostics_mask     = NARBIS_DIAG_STREAM_PRE_FILTER | NARBIS_DIAG_STREAM_POST_FILTER;
     cfg.battery_low_mv       = 3300;
+    /* Adaptive-detector fields (config_version 4). */
+    cfg.detector_mode              = NARBIS_DETECTOR_ADAPTIVE;
+    cfg.template_max_beats         = 10;
+    cfg.template_warmup_beats      = 4;
+    cfg.kalman_warmup_beats        = 5;
+    cfg.template_window_ms         = 200;
+    cfg.ncc_min_x1000              = 500;
+    cfg.ncc_learn_min_x1000        = 750;
+    cfg.kalman_q_ms2               = 400;
+    cfg.kalman_r_ms2               = 2500;
+    cfg.kalman_sigma_x10           = 30;
+    cfg.watchdog_max_consec_rejects = 5;
+    cfg.watchdog_silence_ms        = 4000;
+    cfg.alpha_min_x1000            = 10;
+    cfg.alpha_max_x1000            = 500;
+    cfg.agc_adaptive_step          = 1;
+    cfg.refractory_ibi_pct         = 60;
 
     uint8_t buf[256];
     size_t n = 0;

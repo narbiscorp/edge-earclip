@@ -1,6 +1,7 @@
 import {
   NarbisBleProfile,
   NarbisDataFormat,
+  NarbisDetectorMode,
 } from '../../ble/parsers';
 import type { NarbisRuntimeConfig } from '../../ble/parsers';
 
@@ -11,6 +12,7 @@ export type SectionId =
   | 'elgendi'
   | 'ibi'
   | 'sqi'
+  | 'detector'
   | 'transport'
   | 'diagnostics';
 
@@ -27,6 +29,7 @@ export const SECTIONS: SectionDef[] = [
   { id: 'elgendi',     label: 'Elgendi Peak Detection', defaultExpanded: false },
   { id: 'ibi',         label: 'IBI Validation',        defaultExpanded: false },
   { id: 'sqi',         label: 'Signal Quality',        defaultExpanded: false },
+  { id: 'detector',    label: 'Adaptive Detector',     defaultExpanded: true  },
   { id: 'transport',   label: 'Transport & Mode',      defaultExpanded: false },
   { id: 'diagnostics', label: 'Diagnostics',           defaultExpanded: false },
 ];
@@ -179,6 +182,12 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
     scale: 0.1, unit: 'mA',
     help: 'LED current increment per AGC update.',
   }),
+  agc_adaptive_step: toggle({
+    key: 'agc_adaptive_step',
+    section: 'dcAgc',
+    label: 'Adaptive step size',
+    help: 'Scale AGC step by DC error magnitude (1×–4×). Faster recovery from motion artifacts.',
+  }),
 
   // --- Bandpass ---
   bandpass_low_hz_x100: numeric({
@@ -267,6 +276,134 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
     help: 'Beats below this SQI are flagged low_sqi.',
   }),
 
+  // --- Adaptive Detector (config_version 4) ---
+  detector_mode: enumField({
+    key: 'detector_mode',
+    section: 'detector',
+    label: 'Detector mode',
+    help: 'FIXED keeps the proven Elgendi rule-based detector. ADAPTIVE adds online template matching, Kalman gating, and self-tuning α — set OFF to revert without reflashing.',
+    options: [
+      { value: NarbisDetectorMode.FIXED,    label: 'OFF — Fixed Elgendi' },
+      { value: NarbisDetectorMode.ADAPTIVE, label: 'ON — Adaptive (NCC + Kalman)' },
+    ],
+  }),
+  template_window_ms: numeric({
+    key: 'template_window_ms',
+    section: 'detector',
+    label: 'Template window',
+    min: 80, max: 1000, step: 10,
+    unit: 'ms',
+    help: 'Matched-filter window length. Half this is added to detection latency (look-ahead). 200 ms ≈ 100 ms latency at 200 Hz.',
+  }),
+  template_max_beats: numeric({
+    key: 'template_max_beats',
+    section: 'detector',
+    label: 'Template depth',
+    min: 1, max: 16, step: 1,
+    help: 'Number of recent accepted beats averaged into the matched-filter template.',
+  }),
+  template_warmup_beats: numeric({
+    key: 'template_warmup_beats',
+    section: 'detector',
+    label: 'Template warmup',
+    min: 0, max: 32, step: 1,
+    help: 'Beats accepted before NCC gating activates.',
+  }),
+  ncc_min_x1000: numeric({
+    key: 'ncc_min_x1000',
+    section: 'detector',
+    label: 'NCC admit threshold',
+    min: 0, max: 1000, step: 10,
+    scale: 0.001,
+    help: 'Minimum normalized cross-correlation against template to accept a candidate.',
+    validate: (v, c) =>
+      v > c.ncc_learn_min_x1000 ? 'must be ≤ NCC learn threshold' : null,
+  }),
+  ncc_learn_min_x1000: numeric({
+    key: 'ncc_learn_min_x1000',
+    section: 'detector',
+    label: 'NCC learn threshold',
+    min: 0, max: 1000, step: 10,
+    scale: 0.001,
+    help: 'Minimum NCC for a beat to update the template — prevents corruption during artifact bursts.',
+    validate: (v, c) =>
+      v < c.ncc_min_x1000 ? 'must be ≥ NCC admit threshold' : null,
+  }),
+  kalman_q_ms2: numeric({
+    key: 'kalman_q_ms2',
+    section: 'detector',
+    label: 'Kalman Q (process noise)',
+    min: 1, max: 10000, step: 50,
+    unit: 'ms²',
+    help: 'Per-beat IBI drift variance. Higher = more responsive, lower = smoother.',
+  }),
+  kalman_r_ms2: numeric({
+    key: 'kalman_r_ms2',
+    section: 'detector',
+    label: 'Kalman R (measurement noise)',
+    min: 1, max: 50000, step: 100,
+    unit: 'ms²',
+    help: 'Baseline measurement-noise variance; auto-bumped during artifact bursts.',
+  }),
+  kalman_sigma_x10: numeric({
+    key: 'kalman_sigma_x10',
+    section: 'detector',
+    label: 'Kalman gate width',
+    min: 5, max: 100, step: 1,
+    scale: 0.1, unit: 'σ',
+    help: 'Reject IBIs more than this many σ from the predicted value.',
+  }),
+  kalman_warmup_beats: numeric({
+    key: 'kalman_warmup_beats',
+    section: 'detector',
+    label: 'Kalman warmup',
+    min: 0, max: 32, step: 1,
+    help: 'Beats accepted before the σ-gate activates.',
+  }),
+  alpha_min_x1000: numeric({
+    key: 'alpha_min_x1000',
+    section: 'detector',
+    label: 'α floor',
+    min: 1, max: 999, step: 1,
+    scale: 0.001,
+    help: 'Lower bound of the self-tuning Elgendi β/α offset.',
+    validate: (v, c) =>
+      v >= c.alpha_max_x1000 ? 'must be < α ceiling' : null,
+  }),
+  alpha_max_x1000: numeric({
+    key: 'alpha_max_x1000',
+    section: 'detector',
+    label: 'α ceiling',
+    min: 2, max: 1000, step: 1,
+    scale: 0.001,
+    help: 'Upper bound of the self-tuning Elgendi β/α offset.',
+    validate: (v, c) =>
+      v <= c.alpha_min_x1000 ? 'must be > α floor' : null,
+  }),
+  watchdog_max_consec_rejects: numeric({
+    key: 'watchdog_max_consec_rejects',
+    section: 'detector',
+    label: 'Watchdog: consecutive rejects',
+    min: 1, max: 100, step: 1,
+    help: 'Reset learned state after this many rejections in a row.',
+  }),
+  watchdog_silence_ms: numeric({
+    key: 'watchdog_silence_ms',
+    section: 'detector',
+    label: 'Watchdog: silence',
+    min: 500, max: 60000, step: 100,
+    unit: 'ms',
+    help: 'Reset learned state after this long without an accepted beat.',
+  }),
+  refractory_ibi_pct: numeric({
+    key: 'refractory_ibi_pct',
+    section: 'detector',
+    label: 'Refractory factor',
+    min: 0, max: 100, step: 1,
+    unit: '%',
+    help: 'Refractory floor = max(IBI min, this% × current IBI). 0 disables — works in FIXED mode too.',
+  }),
+
   // --- Transport & Mode ---
   ble_profile: enumField({
     key: 'ble_profile',
@@ -325,6 +462,7 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
       { bit: 2, label: 'Peak candidates',       help: 'Elgendi candidates pre-validator' },
       { bit: 3, label: 'AGC events',            help: 'LED current adjustments' },
       { bit: 4, label: 'FIFO occupancy',        help: 'MAX3010x FIFO depth at drain' },
+      { bit: 5, label: 'Detector stats',        help: 'Adaptive detector NCC / α / Kalman snapshot per beat' },
     ],
   }),
 };
@@ -332,7 +470,7 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
 export const VISIBLE_KEYS_BY_SECTION: Record<SectionId, ConfigKey[]> = (() => {
   const map: Record<SectionId, ConfigKey[]> = {
     sensorLed: [], dcAgc: [], bandpass: [], elgendi: [],
-    ibi: [], sqi: [], transport: [], diagnostics: [],
+    ibi: [], sqi: [], detector: [], transport: [], diagnostics: [],
   };
   for (const key of Object.keys(FIELD_SCHEMA) as ConfigKey[]) {
     const spec = FIELD_SCHEMA[key];

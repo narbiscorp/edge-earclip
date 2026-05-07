@@ -28,5 +28,6 @@ idf_component_register(
         ppg_driver_max3010x
         ppg_channel
         elgendi
+        adaptive_detector
         beat_validator
 )
