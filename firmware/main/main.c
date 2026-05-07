@@ -23,6 +23,7 @@
 #include "elgendi.h"
 #include "power_mgmt.h"
 #include "ppg_channel.h"
+#include "sleep_button.h"
 #include "transport_ble.h"
 
 #ifdef CONFIG_NARBIS_TEST_INJECT
@@ -173,6 +174,11 @@ void app_main(void)
      * (or derives one from the loaded config on first boot). */
     ESP_ERROR_CHECK(app_state_init());
     (void)app_state_resume_last_mode();
+
+    /* User-initiated sleep: hold the BOOT button (GPIO9) for 2 s to
+     * enter deep sleep. Same button wakes (chip resets out of deep
+     * sleep, app_main runs again). */
+    ESP_ERROR_CHECK(sleep_button_init());
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

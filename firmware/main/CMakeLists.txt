@@ -12,6 +12,7 @@ idf_component_register(
         "power_mgmt.c"
         "diagnostics.c"
         "test_inject.c"
+        "sleep_button.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash

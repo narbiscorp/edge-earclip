@@ -4,9 +4,23 @@
 >
 > **Scope.** Scanning, connecting, GATT discovery, command writes, notification parsing, OTA firmware update, troubleshooting. Includes Swift snippets you can paste into a project.
 >
-> **Out of scope.** ESP-NOW (the low-latency Wi-Fi link between the two Narbis devices — not reachable from iOS), HRV math (compute on the client), pairing/bonding (neither device requires encryption today; that's a v2 item).
+> **Out of scope.** HRV math (compute on the client), pairing/bonding (neither device requires encryption today; that's a v2 item).
 >
-> **Related.** [`docs/protocol.md`](./protocol.md) covers the ESP-NOW wire format and is useful background for the earclip's "3-axis mode" model.
+> **Related.** [`docs/protocol.md`](./protocol.md) is historical background; [`docs/path-b-implementation-brief.md`](./path-b-implementation-brief.md) and [`docs/path-b-relay-handoff.md`](./path-b-relay-handoff.md) document the current relay architecture in detail.
+
+> ### 🆕 Path B (config_version 3) — read this first
+>
+> The architecture changed substantially in 2025. Important consequences for iOS:
+>
+> - **ESP-NOW is gone.** The earclip is BLE-only. Wi-Fi is no longer brought up.
+> - **The Edge is now dual-role.** It is still a BLE peripheral (talks to your iOS app on `0x00FF`) **and** is now also a BLE central that connects to the earclip and **relays** earclip data through to you on the same `0x00FF` service via four new frame types (`0xF4`–`0xF7`). See [§4.6](#46-the-edge-as-relay-path-b).
+> - **The earclip is multi-central.** Your iOS app and the Edge can be connected to it simultaneously. Each central writes its role on connect to a new **PEER_ROLE characteristic** (see [§3.7](#37-peer_role--e987719a)) so the earclip knows which conn-update profile to apply.
+> - **Mode is now 2-axis.** The old `transport_mode` field is gone — only `ble_profile` and `data_format` remain. `narbis_runtime_config_t` shrank from 56 to **48 bytes** (50 B on the wire including CRC).
+> - **New Edge opcodes** `0xC1` (forget earclip), `0xC3` (relay config write to earclip), `0xC4` (toggle raw-PPG relay) — see [§4.3](#43-control-characteristic-0xff01--command-opcodes).
+>
+> **Two valid integration patterns** for an iOS app:
+> 1. **Direct, two-connection** — connect to both the earclip and the Edge separately. Best if you want raw earclip data with no extra hop.
+> 2. **Single-connection via Edge** — connect only to the Edge; receive relayed earclip IBI/config/raw/diagnostics on `0xFF03` frames `0xF4`–`0xF7`. Simpler from a CoreBluetooth state-management standpoint.
 
 ---
 
@@ -14,8 +28,8 @@
 
 1. [The two devices at a glance](#1-the-two-devices-at-a-glance)
 2. [Scanning & connecting](#2-scanning--connecting)
-3. [Earclip BLE — full reference](#3-earclip-ble--full-reference)
-4. [Edge glasses BLE — full reference](#4-edge-glasses-ble--full-reference)
+3. [Earclip BLE — full reference](#3-earclip-ble--full-reference) (incl. 🆕 [§3.7 PEER_ROLE](#37-peer_role--e987719a))
+4. [Edge glasses BLE — full reference](#4-edge-glasses-ble--full-reference) (incl. 🆕 [§4.6 The Edge as relay](#46-the-edge-as-relay-path-b))
 5. [Configuring the earclip from iOS](#5-configuring-the-earclip-from-ios)
 6. [OTA — shared between both devices](#6-ota--shared-between-both-devices)
 7. [iOS / Core Bluetooth gotchas](#7-ios--core-bluetooth-gotchas)
@@ -31,12 +45,14 @@
 | Advertised name | `Narbis_Edge` (exact match) | `Narbis Earclip <mac>` (prefix match) |
 | MCU | ESP32 classic | ESP32-C6 |
 | BLE stack | Bluedroid | NimBLE |
+| BLE roles | **peripheral + central** (Path B: connects to earclip itself) | peripheral, **multi-central** (up to 3 simultaneous) |
 | Custom primary service | none advertised | `a24080b2-8857-4785-b3ba-a43b66af4f28` (128-bit) |
 | Standard SIG services | none | HRS `0x180D`, Battery `0x180F`, DIS `0x180A` |
 | OTA service UUID | `0x00FF` (chars `0xFF01`–`0xFF04`) | `0x00FF` (chars `0xFF01`–`0xFF03`) |
 | Encryption / bonding | none | none |
 | Negotiated MTU | requests 517 | requests 247 |
-| Connection interval (typical) | 20–30 ms, slave latency 1, 20 s timeout | 15–30 ms (LOW_LATENCY) or 50–100 ms (BATCHED), 2–4 s timeout |
+| Connection interval (typical) | 20–30 ms, slave latency 1, 20 s timeout | per-central, picked from the role byte: DASHBOARD → LOW_LATENCY (15–30 ms), GLASSES → BATCHED (50–100 ms) |
+| Earclip ↔ Edge link | **BLE central role** (Edge is the central; earclip is peripheral). ESP-NOW removed in Path B. | Same — earclip is the peripheral |
 
 > ### ⚠️ Critical gotcha — UUID collision
 >
@@ -154,9 +170,10 @@ The single best filter for "this is an earclip" is the presence of this 128-bit 
 | SQI | `2b614c61-bcdf-4a3f-a7e8-3b5a860c0347` | notify | 12 B | Signal-quality summary |
 | RAW_PPG | `6bacca91-7017-40fa-bb91-4ebf28a65a99` | notify | 4 + 8·N B (N ≤ 29) | Sample batch |
 | BATTERY | `b59d3ba1-78d1-4260-93c2-7e9e02329777` | notify | 4 B | Richer than `0x2A19` |
-| CONFIG | `553abc98-6406-4e37-b9fd-34df85b2b6c1` | read + notify | 58 B | Config + 16-bit CRC |
-| CONFIG_WRITE | `129fbe56-cbd6-4f52-957b-d80834d6abf3` | write | 58 B | Config + 16-bit CRC |
-| MODE | `71db6de8-5bff-480f-8db1-0d01c90d17d0` | write | 3 B | Quick mode swap |
+| CONFIG | `553abc98-6406-4e37-b9fd-34df85b2b6c1` | read + notify | **50 B** | Config + 16-bit CRC (Path B: was 58 B) |
+| CONFIG_WRITE | `129fbe56-cbd6-4f52-957b-d80834d6abf3` | write | **50 B** | Config + 16-bit CRC |
+| MODE | `71db6de8-5bff-480f-8db1-0d01c90d17d0` | write | **2 B** | Quick mode swap (legacy 3-B form still accepted, first byte ignored) |
+| **PEER_ROLE** | `e987719a-26a6-48d4-b8e9-128994e62e6c` | write | 1 B | **🆕 Path B.** Central announces its role; earclip picks the conn-update profile. See [§3.7](#37-peer_role--e987719a) |
 | DIAGNOSTICS | `31d99572-bf8a-4658-828e-4f7c138ca722` | notify | variable | Optional debug stream |
 
 #### 3.1.1 IBI — `78ef492f-…`
@@ -262,7 +279,9 @@ Use this rather than the standard `0x2A19` if you want the millivolts and chargi
 
 #### 3.1.5 CONFIG — `553abc98-…`
 
-Read or subscribe to this to get the full live `narbis_runtime_config_t`. Wire layout is the 56-byte packed struct followed by a 2-byte CRC-16-CCITT-FALSE (poly `0x1021`, init `0xFFFF`, no reflect, no xor-out) for a total of **58 B**.
+Read or subscribe to this to get the full live `narbis_runtime_config_t`. Wire layout is the **48-byte** packed struct followed by a 2-byte CRC-16-CCITT-FALSE (poly `0x1021`, init `0xFFFF`, no reflect, no xor-out) for a total of **50 B** (`NARBIS_CONFIG_WIRE_SIZE`).
+
+> **Path B note:** the struct shrank from 56 B to 48 B in `config_version 3` because `transport_mode`, `partner_mac[6]`, and `espnow_channel` were removed when ESP-NOW was deleted.
 
 The struct field-by-field is in [§3.6](#36-the-runtime-config-struct).
 
@@ -270,7 +289,7 @@ The earclip notifies on this characteristic **after every successful CONFIG_WRIT
 
 #### 3.1.6 CONFIG_WRITE — `129fbe56-…`
 
-Write 58 B (full config + CRC) to apply settings. The firmware validates ranges, applies in place, persists to NVS, then notifies on the CONFIG characteristic.
+Write 50 B (full 48-B config + 2-B CRC) to apply settings. The firmware validates ranges, applies in place, persists to NVS, then notifies on the CONFIG characteristic.
 
 If the CRC is bad or any field is out of range the firmware returns a BLE ATT error code on the write — your `peripheral(_:didWriteValueFor:error:)` callback will receive a non-nil `error`.
 
@@ -278,20 +297,21 @@ End-to-end Swift example is in [§5](#5-configuring-the-earclip-from-ios).
 
 #### 3.1.7 MODE — `71db6de8-…`
 
-Cheap 3-byte write to swap the three mode axes without touching the rest of the config.
+Cheap 2-byte write to swap the two mode axes without touching the rest of the config.
 
 | Offset | Size | Field | Type |
 |---|---|---|---|
-| 0 | 1 | `transport_mode` | `0` EDGE_ONLY, `1` HYBRID |
-| 1 | 1 | `ble_profile` | `0` BATCHED, `1` LOW_LATENCY |
-| 2 | 1 | `data_format` | `0` IBI_ONLY, `1` RAW_PPG, `2` IBI_PLUS_RAW |
+| 0 | 1 | `ble_profile` | `0` BATCHED, `1` LOW_LATENCY |
+| 1 | 1 | `data_format` | `0` IBI_ONLY, `1` RAW_PPG, `2` IBI_PLUS_RAW |
 
 ```swift
 func setLiveLowLatencyIBI(on p: CBPeripheral, mode chr: CBCharacteristic) {
-    let bytes: [UInt8] = [/*HYBRID*/ 1, /*LOW_LATENCY*/ 1, /*IBI_ONLY*/ 0]
+    let bytes: [UInt8] = [/*LOW_LATENCY*/ 1, /*IBI_ONLY*/ 0]
     p.writeValue(Data(bytes), for: chr, type: .withResponse)
 }
 ```
+
+> **Legacy compatibility.** The earclip still accepts a 3-byte write (the old `[transport_mode, ble_profile, data_format]` form) but ignores the first byte. New clients should write 2 bytes.
 
 #### 3.1.8 DIAGNOSTICS — `31d99572-…`
 
@@ -312,6 +332,26 @@ Stream IDs:
 ```
 
 Skip this characteristic unless you're building a tuning UI.
+
+### 3.7 PEER_ROLE — `e987719a-26a6-48d4-b8e9-128994e62e6c`
+
+🆕 **New in Path B.** A 1-byte write characteristic. Each connecting central writes its role on connect, and the earclip uses that single byte to pick the BLE conn-update profile for *that specific connection*.
+
+| Value | Symbol | Profile applied |
+|---|---|---|
+| `0` | UNKNOWN | (no change — earclip uses its compiled default) |
+| `1` | DASHBOARD | `LOW_LATENCY` — 15–30 ms interval, latency 0, notify every beat. **Use this from your iOS / watchOS app.** |
+| `2` | GLASSES | `BATCHED` — 50–100 ms interval, latency 4, batched notifies. The Edge uses this when it connects as a central. |
+
+The role write is **not persisted** by the earclip — every central must re-announce on every connect.
+
+```swift
+// Right after services are discovered, write your role *first*.
+let role: UInt8 = 1   // DASHBOARD
+peripheral.writeValue(Data([role]), for: chPeerRole, type: .withResponse)
+```
+
+> Why it matters: on a multi-central earclip (you + the Edge), you want one set of conn parameters tuned for live UI updates and a different set tuned for power-efficient relay. PEER_ROLE lets each peer get its own profile rather than fighting over a single global setting.
 
 ### 3.2 Heart Rate Service — `0x180D`
 
@@ -398,37 +438,40 @@ All read-only strings.
 
 Read the firmware revision before doing OTA so you can decide whether the user is already up-to-date.
 
-### 3.5 The 3-axis mode model
+### 3.5 The 2-axis mode model (post Path B)
 
-Three orthogonal config axes determine what the earclip emits:
+Two orthogonal config axes determine what the earclip emits. The old `transport_mode` axis was removed when ESP-NOW was deleted.
 
 ```
-transport_mode  EDGE_ONLY (0) | HYBRID (1)
-                Whether ESP-NOW to Edge is active. HYBRID also sends to BLE.
-
 ble_profile     BATCHED (0)   | LOW_LATENCY (1)
                 Notify cadence on IBI / HRM characteristics.
+                NOTE: this is the global default; PEER_ROLE overrides
+                it on a per-connection basis (see §3.7).
 
 data_format     IBI_ONLY (0)  | RAW_PPG (1) | IBI_PLUS_RAW (2)
                 Whether RAW_PPG notifications fire.
 ```
 
-Common iOS profiles:
+Common iOS pairings (write `[ble_profile, data_format]` to MODE):
 
-| Use case | Mode triplet |
+| Use case | Mode pair |
 |---|---|
-| Live BPM display | `HYBRID, LOW_LATENCY, IBI_ONLY` |
-| Background HRV recording | `HYBRID, BATCHED, IBI_ONLY` |
-| Raw waveform view (tuning) | `HYBRID, BATCHED, RAW_PPG` |
-| Both at once | `HYBRID, LOW_LATENCY, IBI_PLUS_RAW` |
+| Live BPM display | `LOW_LATENCY, IBI_ONLY` |
+| Background HRV recording | `BATCHED, IBI_ONLY` |
+| Raw waveform view (tuning) | `BATCHED, RAW_PPG` |
+| Both at once | `LOW_LATENCY, IBI_PLUS_RAW` |
+
+> In practice you usually leave the global `ble_profile` alone and let PEER_ROLE pick the right one for your connection. The MODE write is mainly useful for swapping `data_format` on the fly.
 
 ### 3.6 The runtime config struct
 
-The full `narbis_runtime_config_t` is **56 bytes packed**, followed by 2 bytes of CRC = **58 bytes on the wire**. Field offsets are exact (`__attribute__((packed))`, no padding except the explicit `reserved_agc` byte).
+The full `narbis_runtime_config_t` is **48 bytes packed** (Path B / `config_version 3`), followed by 2 bytes of CRC = **50 bytes on the wire** (`NARBIS_CONFIG_WIRE_SIZE`). Field offsets are exact (`__attribute__((packed))`, no padding except the explicit `reserved_agc` byte).
+
+> **Migration note.** Pre-Path-B firmware emitted a 58-byte payload with `transport_mode`, `partner_mac[6]`, and `espnow_channel` fields. If you have to support both, branch on the `config_version` field (offset 0): `1` or `2` = legacy 58-B layout, `3` = current 50-B layout.
 
 | Offset | Size | Field | Default | Range / values | Notes |
 |---|---|---|---|---|---|
-| 0 | 2 | `config_version` | (firmware-set) | u16 LE | Increments when NVS layout changes; echoed back |
+| 0 | 2 | `config_version` | 3 | u16 LE | `3` for current Path B firmware |
 | 2 | 2 | `sample_rate_hz` | 200 | 50, 100, 200, 400 | **Reboot to apply** |
 | 4 | 2 | `led_red_ma_x10` | 70 | 0–510 (×10 mA) | Default 7.0 mA |
 | 6 | 2 | `led_ir_ma_x10` | 70 | 0–510 (×10 mA) | Default 7.0 mA |
@@ -447,23 +490,22 @@ The full `narbis_runtime_config_t` is **56 bytes packed**, followed by 2 bytes o
 | 34 | 2 | `ibi_min_ms` | 300 | u16 LE | Validator floor (~200 BPM) |
 | 36 | 2 | `ibi_max_ms` | 2000 | u16 LE | Validator ceiling (~30 BPM) |
 | 38 | 1 | `ibi_max_delta_pct` | 30 | 0–100 | Continuity threshold |
-| 39 | 1 | `transport_mode` | 1 (HYBRID) | 0, 1 | See §3.5 |
-| 40 | 1 | `ble_profile` | 0 (BATCHED) | 0, 1 | See §3.5 |
-| 41 | 1 | `data_format` | 0 (IBI_ONLY) | 0, 1, 2 | See §3.5 |
-| 42 | 2 | `ble_batch_period_ms` | 500 | u16 LE | BATCHED-mode flush interval |
-| 44 | 6 | `partner_mac[6]` | 00 00 00 00 00 00 | bytes | All-zero = use Kconfig fallback |
-| 50 | 1 | `espnow_channel` | (firmware) | 1–13 | |
-| 51 | 1 | `diagnostics_enabled` | 1 | 0 / 1 | Master gate for DIAGNOSTICS char |
-| 52 | 1 | `light_sleep_enabled` | 1 | 0 / 1 | |
-| 53 | 1 | `diagnostics_mask` | 0 | bitmask | See §3.1.8 |
-| 54 | 2 | `battery_low_mv` | 3300 | u16 LE | Below this → low-battery indication |
-| **56** | 2 | **CRC16** | — | u16 LE | CRC-16-CCITT-FALSE over bytes 0..55 |
+| 39 | 1 | `ble_profile` | 0 (BATCHED) | 0, 1 | Global default; PEER_ROLE overrides per-connection |
+| 40 | 1 | `data_format` | 0 (IBI_ONLY) | 0, 1, 2 | See §3.5 |
+| 41 | 2 | `ble_batch_period_ms` | 500 | u16 LE | BATCHED-mode flush interval |
+| 43 | 1 | `diagnostics_enabled` | 1 | 0 / 1 | Master gate for DIAGNOSTICS char |
+| 44 | 1 | `light_sleep_enabled` | 1 | 0 / 1 | |
+| 45 | 1 | `diagnostics_mask` | 0 | bitmask | See §3.1.8 |
+| 46 | 2 | `battery_low_mv` | 3300 | u16 LE | Below this → low-battery indication |
+| **48** | 2 | **CRC16** | — | u16 LE | CRC-16-CCITT-FALSE over bytes 0..47 |
 
-Swift mirror:
+> **Removed in Path B (do not look for them):** `transport_mode` (offset 39 in old layout), `partner_mac[6]` (offset 44), `espnow_channel` (offset 50). All ESP-NOW state is gone — the earclip-Edge link is now BLE only.
+
+Swift mirror (Path B / `config_version 3`):
 
 ```swift
 struct NarbisRuntimeConfig: Equatable {
-    var configVersion: UInt16 = 0
+    var configVersion: UInt16 = 3
     var sampleRateHz: UInt16 = 200
     var ledRedMaX10: UInt16 = 70
     var ledIrMaX10:  UInt16 = 70
@@ -481,12 +523,9 @@ struct NarbisRuntimeConfig: Equatable {
     var ibiMinMs: UInt16 = 300
     var ibiMaxMs: UInt16 = 2000
     var ibiMaxDeltaPct: UInt8 = 30
-    var transportMode: UInt8 = 1   // HYBRID
     var bleProfile:    UInt8 = 0   // BATCHED
     var dataFormat:    UInt8 = 0   // IBI_ONLY
     var bleBatchPeriodMs: UInt16 = 500
-    var partnerMac: [UInt8] = Array(repeating: 0, count: 6)
-    var espnowChannel: UInt8 = 1
     var diagnosticsEnabled: UInt8 = 1
     var lightSleepEnabled:  UInt8 = 1
     var diagnosticsMask: UInt8 = 0
@@ -580,6 +619,9 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xB9` | Adaptive pacer | 0/1 | yes | |
 | `0xBF` | Factory reset | any | n/a | wipes the `narbis_prefs` NVS namespace |
 | `0xC0` | ADC scan diagnostic | 0/1 | no | dumps all ADC channels via log packets |
+| **`0xC1`** | **Forget earclip** 🆕 | any (ignored) | no | Path B. Wipes the `narbis_pair` NVS entry, drops the central connection to the earclip, starts a fresh general scan. Visual feedback: 3 fast lens-opacity pulses. Same effect as 5 short magnet taps. |
+| **`0xC3`** | **Relay config write** 🆕 | 50 B payload | no | Path B. Bytes after the opcode are forwarded verbatim as a CONFIG_WRITE to the paired earclip via the Edge's central role. The 50-byte payload is the same `narbis_runtime_config_t` + CRC16 layout the earclip expects on its own CONFIG_WRITE characteristic ([§3.6](#36-the-runtime-config-struct)). The earclip replies via CONFIG notify, which the Edge re-emits as a `0xF4` frame ([§4.4.5](#445-relayed-earclip-config-0xf4--50-b)). |
+| **`0xC4`** | **Toggle raw-PPG relay** 🆕 | `0` disable / non-zero enable | no | Path B. Subscribes/unsubscribes the Edge's central from the earclip's RAW_PPG characteristic. While enabled, raw earclip samples are forwarded as `0xF5` frames on `0xFF03` ([§4.4.6](#446-relayed-earclip-raw-ppg-0xf5--variable)). Default: enabled at boot. |
 | `0xD0` | Manual detector reset | any | no | clears beat detection state |
 
 ```swift
@@ -604,9 +646,13 @@ The Edge multiplexes several packet types onto the same characteristic, distingu
 | `0xF1` | on demand | 1 + N B (N ≤ 48) | Firmware log strings (printf output) |
 | `0xF2` | every 1000 ms | 18 B | Coherence packet (HRV bands + score) |
 | `0xF3` | every 500 ms | 20 B | Health telemetry (uptime, heap, jitter, errors) |
+| **`0xF4`** 🆕 | event-driven | 1 + 50 B | Relayed earclip CONFIG payload — see §4.4.5 |
+| **`0xF5`** 🆕 | event-driven | 1 + variable | Relayed earclip RAW_PPG batch — see §4.4.6 |
+| **`0xF6`** 🆕 | on connect / disconnect / 30 s | 2 B | Earclip relay link state — see §4.4.7 |
+| **`0xF7`** 🆕 | event-driven | 1 + variable | Relayed earclip diagnostics — see §4.4.8 |
 | `0x01`–`0x08` | event-driven | 3–7 B | OTA status — see §6 |
 
-Always subscribe to `0xFF03` before sending any OTA opcode, otherwise you'll miss the READY / PAGE_CRC / ERROR responses you need to drive the protocol.
+Always subscribe to `0xFF03` before sending any OTA opcode, otherwise you'll miss the READY / PAGE_CRC / ERROR responses you need to drive the protocol. The relay frames `0xF4`–`0xF7` are also delivered on this same characteristic, so a single subscription covers everything.
 
 #### 4.4.1 ADC stats (`0xF0`) — 11 B
 
@@ -663,6 +709,60 @@ The Edge derives this from earclip beats it received over ESP-NOW, so this packe
 | 19 | 1 | `jitter_ticks_over` | u8; reset every 5 s |
 
 A spike in `ble_send_errors` means the iOS side is overwhelming the device — slow your writes.
+
+#### 4.4.5 Relayed earclip CONFIG (`0xF4`) — 51 B
+
+🆕 **Path B.** Forwarded verbatim from the earclip's CONFIG characteristic when its value changes (or in response to a `0xC3` write you sent).
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | `0xF4` | Type byte |
+| 1 | 48 | `narbis_runtime_config_t` | Earclip config struct ([§3.6](#36-the-runtime-config-struct)) |
+| 49 | 2 | `crc16` | CRC-16-CCITT-FALSE over bytes 1..48 |
+
+The 50-byte tail is **identical** to what you'd read directly from the earclip's CONFIG characteristic — same struct layout, same CRC. Reuse your earclip CONFIG parser.
+
+#### 4.4.6 Relayed earclip RAW_PPG (`0xF5`) — variable
+
+🆕 **Path B.** Forwarded from the earclip's RAW_PPG characteristic. Only emitted when raw-PPG relay is enabled (see opcode `0xC4`; default is enabled at boot).
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | `0xF5` | Type byte |
+| 1 | 2 | `sample_rate_hz` | u16 LE |
+| 3 | 2 | `n_samples` | u16 LE, ≤ 29 |
+| 5 | 8·N | samples | Each `[red:u32 LE, ir:u32 LE]` |
+
+Maximum payload: 1 + 4 + 29·8 = **237 B**. The 1-byte type prefix is the only difference vs. the earclip's direct RAW_PPG notification ([§3.1.3](#313-raw_ppg--6bacca91)).
+
+#### 4.4.7 Relay link state (`0xF6`) — 2 B
+
+🆕 **Path B.** Tells you whether the Edge's central role currently has a healthy connection to the earclip. Emitted:
+- once when an iOS client connects to the Edge (so you know the current state immediately),
+- on every earclip connect / disconnect transition,
+- every 30 s as a heartbeat.
+
+| Offset | Size | Field | Values |
+|---|---|---|---|
+| 0 | 1 | `0xF6` | Type byte |
+| 1 | 1 | `linked` | `0` = relay lost (Edge is searching for / has lost the earclip), `1` = relay linked (earclip data is flowing) |
+
+```swift
+// In peripheral(_:didUpdateValueFor:error:) for the Edge's 0xFF03:
+if data.count == 2 && data[0] == 0xF6 {
+    let earclipReachable = data[1] == 1
+    UI.setEarclipBadge(connected: earclipReachable)
+}
+```
+
+#### 4.4.8 Relayed earclip diagnostics (`0xF7`) — variable
+
+🆕 **Path B.** Forwarded earclip DIAGNOSTICS frames (see [§3.1.8](#318-diagnostics--31d99572)). Only fires when the user has enabled diagnostic streams in the earclip config — usually a no-op.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | `0xF7` |
+| 1..N | variable | The full earclip diagnostic frame (`[seq:u16, n:u8] then n × [stream_id:u8, len:u8, payload]`) |
 
 ### 4.5 PPG stream characteristic `0xFF04`
 
@@ -732,28 +832,112 @@ struct EdgePPGBatch {
 
 Detect by reading the type byte; both share characteristic `0xFF04`.
 
+### 4.6 The Edge as relay (Path B)
+
+🆕 **New architecture.** The Edge is no longer just a peripheral — it also runs a Bluedroid **central** that scans for, pairs with, and persistently reconnects to the earclip. Once linked, the Edge transparently forwards earclip notifications to whichever phone is connected to it.
+
+```
+                                  ┌─────────────────┐
+                                  │  iOS / watchOS  │
+                                  └────────┬────────┘
+                                           │ BLE (peripheral role on Edge)
+                                           │   • 0xFF01 commands (incl. 0xC1/C3/C4)
+                                           │   • 0xFF03 status + relayed 0xF4/F5/F6/F7
+                                           │   • 0xFF04 native PPG stream
+                                           │
+                                  ┌────────▼────────┐
+                                  │  Narbis Edge    │
+                                  │  ESP32 dual-role│
+                                  └────────┬────────┘
+                                           │ BLE (central role on Edge,
+                                           │      writes PEER_ROLE = GLASSES = 2)
+                                           │
+                                  ┌────────▼────────┐
+                                  │ Narbis Earclip  │
+                                  │  ESP32-C6       │
+                                  │  (multi-central)│
+                                  └─────────────────┘
+```
+
+**Pairing.** First boot or after a `0xC1` (or 5 magnet-taps), the Edge scans generally for the earclip's NARBIS service UUID, picks the strongest hit, and stores the MAC in NVS. Subsequent boots do a fast directed scan for that MAC (5 s), falling back to general scan after two misses.
+
+**What the Edge subscribes to.** When linked, the Edge keeps live subscriptions to the earclip's IBI, BATTERY, CONFIG, RAW_PPG (if the iOS side enabled it via `0xC4`), and DIAGNOSTICS characteristics. Every notification is relayed to the iOS-facing `0xFF03` with the appropriate type byte (`0xF4`–`0xF7`).
+
+**What stays unrelayed.** The Edge's own coherence pipeline (used to drive the lens animation) consumes the earclip IBI internally — it does **not** forward bare per-beat IBI to iOS. If you want raw IBI, either (a) connect to the earclip directly, or (b) enable raw-PPG relay (`0xC4`) and run your own beat detector on the relayed samples.
+
+#### iOS integration choice
+
+| Pattern | When to use it | Trade-offs |
+|---|---|---|
+| **A. Direct (two connections)** — connect to both the earclip and the Edge separately. | You want lowest-latency raw IBI for your own HRV pipeline; you want full control of earclip config. | More CoreBluetooth state to manage; user sees two devices in the system Bluetooth picker if they ever pair. |
+| **B. Single connection via Edge** — connect only to the Edge; consume `0xF4`/`0xF5`/`0xF6`/`0xF7` from `0xFF03`. | You're building a companion app that mainly drives Edge sessions; raw earclip-side data is enough via the relay. | One fewer connection to manage. Slight extra latency on relayed frames (one BLE hop). Earclip config writes go through the Edge via `0xC3` (still landing as a CONFIG_WRITE on the earclip end). |
+
+```swift
+// Pattern B: read the relay state and decide whether to expect earclip data.
+func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
+    guard c.uuid == CBUUID(string: "FF03"), let data = c.value, !data.isEmpty else { return }
+    switch data[0] {
+    case 0xF6:  // relay state
+        let linked = data.count >= 2 && data[1] == 1
+        appState.earclipReachable = linked
+    case 0xF4:  // relayed earclip CONFIG (50 B after the type byte)
+        let payload = data.subdata(in: 1..<data.count)
+        appState.earclipConfig = parseEarclipConfig(payload)
+    case 0xF5:  // relayed RAW_PPG
+        let payload = data.subdata(in: 1..<data.count)
+        appState.appendRawPPG(parseRawPPG(payload))
+    case 0xF7:  // relayed diagnostics
+        break   // ignore unless you're tuning
+    default:
+        // 0xF0/F1/F2/F3 are the Edge's own packets; 0x01-0x08 are OTA.
+        break
+    }
+}
+
+// Forward an earclip config write via the Edge:
+func writeEarclipConfigViaEdge(_ payload50B: Data) {
+    var msg = Data([0xC3])
+    msg.append(payload50B)             // 50 B = 48 struct + 2 CRC, same as earclip's CONFIG_WRITE
+    edgePeripheral.writeValue(msg, for: edgeControl, type: .withResponse)
+}
+
+// Toggle raw-PPG relay on demand:
+func setRawRelay(_ on: Bool) {
+    edgePeripheral.writeValue(Data([0xC4, on ? 1 : 0]), for: edgeControl, type: .withResponse)
+}
+
+// Ask the Edge to forget its earclip pairing:
+func forgetEarclip() {
+    edgePeripheral.writeValue(Data([0xC1, 0]), for: edgeControl, type: .withResponse)
+}
+```
+
 ---
 
 ## 5. Configuring the earclip from iOS
 
-End-to-end example: read CONFIG, change one field, write CONFIG_WRITE.
+End-to-end example: write PEER_ROLE first, then read CONFIG, change one field, write CONFIG_WRITE.
 
 ```swift
 // Assume you have already discovered:
+//   chPeerRole:    CBCharacteristic for e987719a-… (write)
 //   chConfig:      CBCharacteristic for 553abc98-… (read + notify)
 //   chConfigWrite: CBCharacteristic for 129fbe56-… (write)
 
-// 1. Read current config (58 B = 56 B struct + 2 B CRC).
+// 0. ALWAYS write your role first (Path B). 1 = DASHBOARD → LOW_LATENCY profile.
+peripheral.writeValue(Data([1]), for: chPeerRole, type: .withResponse)
+
+// 1. Read current config (50 B = 48 B struct + 2 B CRC).
 peripheral.readValue(for: chConfig)
 
 // 2. In peripheral(_:didUpdateValueFor:error:), parse and modify:
 func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
     guard c.uuid == CBUUID(string: "553abc98-6406-4e37-b9fd-34df85b2b6c1"),
-          let data = c.value, data.count == 58 else { return }
+          let data = c.value, data.count == 50 else { return }
 
-    // Verify CRC (last 2 bytes are CRC over first 56).
-    let body = data.subdata(in: 0..<56)
-    let receivedCRC = UInt16(data[56]) | (UInt16(data[57]) << 8)
+    // Verify CRC (last 2 bytes are CRC over first 48).
+    let body = data.subdata(in: 0..<48)
+    let receivedCRC = UInt16(data[48]) | (UInt16(data[49]) << 8)
     guard narbisCRC16(body) == receivedCRC else {
         print("CONFIG CRC mismatch")
         return
@@ -763,7 +947,7 @@ func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error:
     cfg.dataFormat = 2                       // IBI_PLUS_RAW
     cfg.bleProfile = 1                       // LOW_LATENCY
 
-    let newBody = encodeConfig(cfg)          // your byte-by-byte encoder, 56 B
+    let newBody = encodeConfig(cfg)          // your byte-by-byte encoder, 48 B
     let newCRC  = narbisCRC16(newBody)
     var payload = Data(newBody)
     payload.append(UInt8(newCRC & 0xFF))
@@ -773,17 +957,16 @@ func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error:
 }
 ```
 
-For just changing the mode triplet, the 3-byte MODE write is much cheaper:
+For just changing the data format / profile, the 2-byte MODE write is much cheaper:
 
 ```swift
-peripheral.writeValue(Data([1, 1, 2]), for: chMode, type: .withResponse)
-//                          ^  ^  ^
-//                          |  |  data_format = IBI_PLUS_RAW
-//                          |  ble_profile   = LOW_LATENCY
-//                          transport_mode   = HYBRID
+peripheral.writeValue(Data([1, 2]), for: chMode, type: .withResponse)
+//                          ^  ^
+//                          |  data_format = IBI_PLUS_RAW
+//                          ble_profile   = LOW_LATENCY
 ```
 
-The earclip will notify on the CONFIG characteristic with the updated 58-byte payload after either write succeeds — subscribe to it once at startup so your view layer stays in sync.
+The earclip will notify on the CONFIG characteristic with the updated 50-byte payload after either write succeeds — subscribe to it once at startup so your view layer stays in sync.
 
 ---
 
@@ -966,7 +1149,11 @@ The Edge's `0xFF03` uses **indicate** internally (every notification is ACKed by
 
 ### 7.4 CCCD subscription order matters for Edge OTA
 
-You must subscribe to `0xFF03` **before** sending an OTA opcode, otherwise you'll miss `READY`, all `PAGE_CRC` notifications, and the final `SUCCESS`/`ERROR`. There's no way to recover the protocol from the middle.
+You must subscribe to `0xFF03` **before** sending an OTA opcode, otherwise you'll miss `READY`, all `PAGE_CRC` notifications, and the final `SUCCESS`/`ERROR`. There's no way to recover the protocol from the middle. The same characteristic also carries the new relay frames (`0xF4`–`0xF7`) so subscribing once covers both flows.
+
+### 7.4a Always write PEER_ROLE early on the earclip
+
+🆕 **Path B.** When connecting to the earclip, write `0x01` (DASHBOARD) to PEER_ROLE **before** you enable any notifications, otherwise you'll start receiving notifications under the global default `BATCHED` profile (slow, 50–100 ms intervals) and the conn-update from your role write will arrive a few hundred ms later. Doing it first means your very first IBI lands at LOW_LATENCY pacing.
 
 ### 7.5 No NACKs from either device
 
@@ -1002,7 +1189,10 @@ watchOS 6+ supports Core Bluetooth identically (you'll need the `bluetooth-centr
 | MODE write succeeds but format unchanged | Wrote to the wrong characteristic UUID | Verify you're using `71db6de8-…` (earclip-only) — not `0xFF01` |
 | Notifications stop after a few seconds | Forgot to enable the CCCD | `peripheral.setNotifyValue(true, for: chr)` for every notify char |
 | Garbled CONFIG read | Skipped CRC verification | Validate the last 2 B with CRC-16-CCITT-FALSE; it should match a CRC over the first 56 B |
-| Coherence packets always show `n_ibis_used = 0` | No earclip paired with the Edge | Pair an earclip via ESP-NOW (separate process — see `docs/protocol.md`) |
+| Coherence packets always show `n_ibis_used = 0` | Edge isn't linked to the earclip | Check the latest `0xF6` relay-state frame on `0xFF03`; if `linked=0`, send `0xC1` and let the Edge re-pair, or get the earclip into range |
+| `0xF4`/`0xF5` frames never arrive even with `0xF6 linked=1` | Earclip has no skin contact / no signal | Confirm with earclip BATTERY notify or SQI; raw stream needs `0xC4 1` to be enabled |
+| New iOS app gets stuck at BATCHED cadence even after writing PEER_ROLE | Wrote PEER_ROLE *after* enabling notifies | Re-order: write `[0x01]` to PEER_ROLE first, then `setNotifyValue(true, …)` on IBI |
+| Earclip CONFIG read returns 50 B but parser expects 58 B | Pre-Path-B parser, post-Path-B firmware | Branch on `config_version` (offset 0): `≤2` legacy 56-B layout, `3` current 48-B layout |
 | Health telemetry `ble_send_errors` climbing | Client overflowing the device's send queue | Slow down command writes; check for tight write loops |
 | `firmware_revision` reads as empty string | Read before discovery completed | Read inside `didDiscoverCharacteristicsFor:` callback, not on `didConnect` |
 | RAW_PPG never fires | `data_format` is `IBI_ONLY` | Write MODE to set `data_format = 1` or `2` |
@@ -1020,9 +1210,10 @@ EARCLIP — Custom Narbis service
   SQI            2b614c61-bcdf-4a3f-a7e8-3b5a860c0347   notify
   RAW_PPG        6bacca91-7017-40fa-bb91-4ebf28a65a99   notify
   BATTERY        b59d3ba1-78d1-4260-93c2-7e9e02329777   notify
-  CONFIG         553abc98-6406-4e37-b9fd-34df85b2b6c1   read + notify
-  CONFIG_WRITE   129fbe56-cbd6-4f52-957b-d80834d6abf3   write
-  MODE           71db6de8-5bff-480f-8db1-0d01c90d17d0   write
+  CONFIG         553abc98-6406-4e37-b9fd-34df85b2b6c1   read + notify   (50 B in Path B)
+  CONFIG_WRITE   129fbe56-cbd6-4f52-957b-d80834d6abf3   write           (50 B in Path B)
+  MODE           71db6de8-5bff-480f-8db1-0d01c90d17d0   write           (2 B in Path B)
+  PEER_ROLE      e987719a-26a6-48d4-b8e9-128994e62e6c   write           🆕 Path B (1 B)
   DIAGNOSTICS    31d99572-bf8a-4658-828e-4f7c138ca722   notify
 
 EARCLIP — Standard SIG services
@@ -1038,11 +1229,16 @@ EARCLIP — Standard SIG services
     Firmware Revision                 0x2A26   read
     Serial Number                     0x2A25   read
 
-EDGE — Single custom service
+EDGE — Single custom service (Path B)
   Service                             0x00FF
     Control                           0xFF01   read + write
+                                               opcodes 0xA2..0xD0 inc.
+                                               🆕 0xC1/0xC3/0xC4 (relay control)
     OTA Data                          0xFF02   write + write-no-response
     Status (multiplexed)              0xFF03   read + notify (indicate)
+                                               own packets 0xF0..0xF3
+                                               🆕 relay packets 0xF4..0xF7
+                                               OTA codes 0x01..0x08
     PPG Stream                        0xFF04   read + notify
 
 OTA — Shared between Edge and Earclip (same UUIDs)
@@ -1061,31 +1257,42 @@ OTA — Shared between Edge and Earclip (same UUIDs)
 - CRC for config and ESP-NOW frames: **CRC-16-CCITT-FALSE** (poly `0x1021`, init `0xFFFF`, no reflect, no xor-out).
 - CRC for OTA pages: **CRC-32** little-endian.
 
-### 9.3 Authoritative sources in this repo
+### 9.3 Authoritative sources
 
 | What | Where |
 |---|---|
 | Earclip UUIDs (TS) | [`protocol/uuids.ts`](../protocol/uuids.ts) |
-| Earclip UUIDs (C) + all wire structs + opcodes | [`protocol/narbis_protocol.h`](../protocol/narbis_protocol.h) |
+| Earclip UUIDs (C) + all wire structs + opcodes + PEER_ROLE enum | [`protocol/narbis_protocol.h`](../protocol/narbis_protocol.h) |
 | CRC-16 reference implementation | [`protocol/narbis_protocol.c`](../protocol/narbis_protocol.c) lines 23–37 |
-| Earclip GATT registration | [`firmware/main/ble_service_narbis.c`](../firmware/main/ble_service_narbis.c) |
+| Earclip GATT registration (incl. PEER_ROLE handler) | [`firmware/main/ble_service_narbis.c`](../firmware/main/ble_service_narbis.c) |
 | Earclip OTA state machine + safety gates | [`firmware/main/ble_ota.c`](../firmware/main/ble_ota.c) |
-| Earclip transport / advertising / MTU / conn params | [`firmware/main/transport_ble.c`](../firmware/main/transport_ble.c) |
+| Earclip multi-central transport / per-slot role / conn-update profiles | [`firmware/main/transport_ble.c`](../firmware/main/transport_ble.c) |
 | Battle-tested payload parsers (TS) | [`dashboard/src/ble/parsers.ts`](../dashboard/src/ble/parsers.ts) |
-| Edge firmware (sole source for everything Edge-side) | [`EDGE/EDGE FIRMWARE/main_v4_14_38 (1).c`](../EDGE/EDGE%20FIRMWARE/main_v4_14_38%20(1).c) |
+| Path B architecture overview | [`docs/path-b-implementation-brief.md`](./path-b-implementation-brief.md) |
+| Path B relay handoff details | [`docs/path-b-relay-handoff.md`](./path-b-relay-handoff.md) |
+| **Edge firmware (current, Path B, multi-file project)** | `C:\NARBIS APP\Oct_4_25\Clone\edge-firmware\v4\Code-Glasses\` — `main/main.c` plus components `narbis_ble_central` and `narbis_protocol` |
+| Edge firmware (legacy monolith, kept for reference only) | [`EDGE/EDGE FIRMWARE/main_v4_14_38 (1).c`](../EDGE/EDGE%20FIRMWARE/main_v4_14_38%20(1).c) |
 | Firmware image header validator (JS reference) | [`ota-additions/firmware_validator.js`](../ota-additions/firmware_validator.js) |
-| ESP-NOW protocol (background, not iOS-relevant) | [`docs/protocol.md`](./protocol.md) |
+| ESP-NOW protocol (historical only — Path B removed it) | [`docs/protocol.md`](./protocol.md) |
 
-### 9.4 Edge firmware line-number index
+### 9.4 Edge firmware line-number index (current Path B build)
 
-For anyone diving into the Edge monolith:
+In `C:\NARBIS APP\Oct_4_25\Clone\edge-firmware\v4\Code-Glasses\main\main.c`:
 
 | Topic | Lines |
 |---|---|
-| Service / characteristic UUIDs | 1575–1580 |
-| Advertising parameters | 4185–4399 |
-| Characteristic definitions | 4435–4532 |
-| Connection parameter request | 4568–4575 |
-| Command opcode dispatch | 3807–4114 |
-| OTA state machine | 3684–4114 |
-| Notification packet builders | 3029–3150, 5381–5582 |
+| Service / characteristic UUIDs | 1563–1567 |
+| Advertising parameters | 4263–4310 |
+| 5-tap "forget earclip" gesture | 3670–3686 |
+| Command opcode dispatch (incl. 0xC1/C3/C4) | 3862–4198 |
+| OTA state machine | 3684–4258 |
+| `0xF0`/`0xF1`/`0xF2`/`0xF3` builders | 3012–3151, 5473–5523 |
+| `0xF4`/`0xF5`/`0xF6`/`0xF7` relay frame emission | 5816–5860, 4700–4709, 5775–5783 |
+
+In `components/narbis_ble_central/`:
+
+| Topic | Where |
+|---|---|
+| Central state machine + scan/pair/discover/subscribe | `narbis_ble_central.c` |
+| Public callback registration API | `include/narbis_ble_central.h` lines 32–105 |
+| Earclip-side characteristic UUIDs the central discovers | mirrored in `components/narbis_protocol/narbis_protocol.h` |
