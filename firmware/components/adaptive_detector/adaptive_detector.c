@@ -63,6 +63,7 @@ typedef struct {
     uint8_t  kalman_sigma_x10;
     uint8_t  watchdog_max_consec_rejects;
     uint8_t  refractory_ibi_pct;
+    bool     loose_mode;          /* halve effective ncc_min for motion tolerance */
     uint16_t template_window_samples;
     uint16_t template_half_samples;
     uint16_t ncc_min_x1000;
@@ -429,7 +430,11 @@ static void process_pending(void)
     if (ncc_active) {
         ncc_v = ncc_floats(window, s.template, n);
         s.last_ncc_x1000 = (int16_t)lrintf(ncc_v * 1000.0f);
-        float ncc_min = (float)s.ncc_min_x1000 / 1000.0f;
+        /* Loose mode halves the effective admit threshold (e.g. 0.500 → 0.250)
+         * so beats that drift slightly from the learned template still pass.
+         * Pairs with the elgendi β-halving from the same flag so motion that
+         * dips amplitude doesn't double-reject (Elgendi miss + NCC miss). */
+        float ncc_min = (float)s.ncc_min_x1000 / (s.loose_mode ? 2000.0f : 1000.0f);
         if (ncc_v < ncc_min || win_std < 1.0f) {
             accept = false;
             s.ncc_rejects++;
@@ -570,6 +575,7 @@ esp_err_t adaptive_detector_apply_config(const narbis_runtime_config_t *cfg)
     s.kalman_sigma_x10            = cfg->kalman_sigma_x10;
     s.watchdog_max_consec_rejects = cfg->watchdog_max_consec_rejects;
     s.refractory_ibi_pct          = cfg->refractory_ibi_pct;
+    s.loose_mode                  = (cfg->elgendi_loose_mode != 0);
     s.ncc_min_x1000               = cfg->ncc_min_x1000;
     s.ncc_learn_min_x1000         = cfg->ncc_learn_min_x1000;
     s.kalman_q_ms2                = cfg->kalman_q_ms2;

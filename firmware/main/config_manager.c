@@ -94,7 +94,7 @@ static void load_default_config(narbis_runtime_config_t *c)
     c->watchdog_silence_ms        = 4000;
     c->alpha_min_x1000            = 10;
     c->alpha_max_x1000            = 500;
-    c->agc_adaptive_step          = 0;
+    c->elgendi_loose_mode         = 0;
     c->refractory_ibi_pct         = 60;
 }
 
@@ -132,7 +132,7 @@ static bool validate_config(const narbis_runtime_config_t *c)
     if (c->watchdog_max_consec_rejects == 0)                   return false;
     if (c->watchdog_silence_ms < 500 || c->watchdog_silence_ms > 60000) return false;
     if (c->refractory_ibi_pct > 100)                           return false;
-    if (c->agc_adaptive_step > 1)                              return false;
+    if (c->elgendi_loose_mode > 1)                             return false;
     return true;
 }
 
@@ -229,7 +229,7 @@ static esp_err_t apply_diff(const narbis_runtime_config_t *new_cfg,
         new_cfg->agc_target_dc_min     != prev->agc_target_dc_min     ||
         new_cfg->agc_target_dc_max     != prev->agc_target_dc_max     ||
         new_cfg->agc_step_ma_x10       != prev->agc_step_ma_x10       ||
-        new_cfg->agc_adaptive_step     != prev->agc_adaptive_step     ||
+        new_cfg->elgendi_loose_mode    != prev->elgendi_loose_mode    ||
         new_cfg->refractory_ibi_pct    != prev->refractory_ibi_pct    ||
         new_cfg->detector_mode         != prev->detector_mode         ||
         new_cfg->template_max_beats    != prev->template_max_beats    ||

@@ -182,11 +182,11 @@ export const FIELD_SCHEMA: Record<ConfigKey, FieldSpec> = {
     scale: 0.1, unit: 'mA',
     help: 'LED current increment per AGC update.',
   }),
-  agc_adaptive_step: toggle({
-    key: 'agc_adaptive_step',
-    section: 'dcAgc',
-    label: 'Adaptive step size',
-    help: 'Scale AGC step by DC error magnitude (1×–4×). Faster recovery from motion artifacts.',
+  elgendi_loose_mode: toggle({
+    key: 'elgendi_loose_mode',
+    section: 'elgendi',
+    label: 'Loose detection mode',
+    help: 'Halve the Elgendi β (block-trigger threshold) and the adaptive NCC admit threshold. Catches more beats during light motion at the cost of slightly more false starts (downstream W1-width gate filters those). Recommended ON if real beats are visible in the filtered chart but not getting peak triangles.',
   }),
 
   // --- Bandpass ---

@@ -66,6 +66,7 @@ typedef struct {
     uint16_t w1_samples;
     uint16_t w2_samples;
     uint16_t beta_x1000;
+    bool     loose_mode;             /* halve effective beta for motion tolerance */
     uint16_t refractory_ms;          /* base floor from ibi_min_ms */
     uint8_t  refractory_ibi_pct;     /* dynamic: refractory = max(floor, pct·last_IBI/100) */
     uint32_t override_refractory_ms; /* if non-zero, supersedes both above */
@@ -274,6 +275,7 @@ esp_err_t elgendi_apply_config(const narbis_runtime_config_t *cfg)
                                      s.sample_rate_hz, ELGENDI_W2_MAX_SAMPLES);
     if (s.w2_samples <= s.w1_samples) s.w2_samples = (uint16_t)(s.w1_samples + 1);
     s.beta_x1000     = cfg->elgendi_beta_x1000;
+    s.loose_mode     = (cfg->elgendi_loose_mode != 0);
     s.refractory_ms  = (cfg->ibi_min_ms > 0) ? cfg->ibi_min_ms
                                              : ELGENDI_DEFAULT_REFRACTORY_MS;
     s.refractory_ibi_pct = (cfg->refractory_ibi_pct <= 100) ? cfg->refractory_ibi_pct : 60;
@@ -388,9 +390,17 @@ void elgendi_feed(const ppg_processed_sample_t *ps)
      *
      * All operands are non-negative; LHS/RHS easily fit int64 because
      * the squared signal has been averaged across W1/W2 already. */
+    /* Loose mode halves the effective β so the threshold sits closer to
+     * MA2 — block triggers fire earlier and on shallower peaks, which the
+     * user wants for motion-tolerant detection (light hand movement that
+     * dips amplitude transiently was eating real beats with the default
+     * β=0.020). Trade-off: more dicrotic-notch false starts, which the
+     * W1-width gate downstream still throws out. */
+    uint16_t effective_beta = s.loose_mode ? (uint16_t)(s.beta_x1000 / 2u)
+                                           : s.beta_x1000;
     int64_t lhs = s.w1_sum * (int64_t)s.w2_samples * 1000;
     int64_t rhs = s.w2_sum * (int64_t)s.w1_samples *
-                  (int64_t)(1000 + (int32_t)s.beta_x1000);
+                  (int64_t)(1000 + (int32_t)effective_beta);
     bool above = (lhs > rhs);
 
     /* 6) Block tracking + local-max within the block. */

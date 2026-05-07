@@ -45,7 +45,7 @@
       "watchdog_silence_ms": 4000,
       "alpha_min_x1000": 10,
       "alpha_max_x1000": 500,
-      "agc_adaptive_step": 0,
+      "elgendi_loose_mode": 0,
       "refractory_ibi_pct": 60
     }
   },
@@ -95,7 +95,7 @@
       "watchdog_silence_ms": 4000,
       "alpha_min_x1000": 10,
       "alpha_max_x1000": 500,
-      "agc_adaptive_step": 0,
+      "elgendi_loose_mode": 0,
       "refractory_ibi_pct": 60
     }
   },
@@ -145,7 +145,7 @@
       "watchdog_silence_ms": 4000,
       "alpha_min_x1000": 10,
       "alpha_max_x1000": 500,
-      "agc_adaptive_step": 1,
+      "elgendi_loose_mode": 1,
       "refractory_ibi_pct": 60
     }
   },
@@ -195,7 +195,7 @@
       "watchdog_silence_ms": 4000,
       "alpha_min_x1000": 10,
       "alpha_max_x1000": 500,
-      "agc_adaptive_step": 0,
+      "elgendi_loose_mode": 0,
       "refractory_ibi_pct": 60
     }
   },
@@ -245,7 +245,7 @@
       "watchdog_silence_ms": 4000,
       "alpha_min_x1000": 10,
       "alpha_max_x1000": 500,
-      "agc_adaptive_step": 0,
+      "elgendi_loose_mode": 0,
       "refractory_ibi_pct": 60
     }
   }

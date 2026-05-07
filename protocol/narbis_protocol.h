@@ -434,10 +434,10 @@ typedef struct __attribute__((packed)) {
     uint16_t alpha_min_x1000;            /* α floor ×1000 (default 10 = 0.010) */
     uint16_t alpha_max_x1000;            /* α ceiling ×1000 (default 500 = 0.500) */
 
-    /* ---- adaptive auxiliary (Layer E, Tier 1) ----
-     * Independent on/off and tuning fields for the auto-adjusting knobs that
-     * live outside the detector itself. */
-    uint8_t  agc_adaptive_step;          /* 0/1 — scale agc_step_ma_x10 by DC error magnitude */
+    /* ---- adaptive auxiliary (Layer E, Tier 1) ---- */
+    uint8_t  elgendi_loose_mode;         /* 0/1 — relax Elgendi β and NCC admit by 50% for
+                                          * motion tolerance. Repurposed from former
+                                          * agc_adaptive_step (same wire byte, same range). */
     uint8_t  refractory_ibi_pct;         /* refractory = ibi_min_ms .. (pct/100)·IBI (default 60) */
 } narbis_runtime_config_t;
 

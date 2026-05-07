@@ -252,7 +252,7 @@ function checkConfig(g: GoldenLine): void {
   eq("CONFIG watchdog_silence_ms", cfg.watchdog_silence_ms, 4000);
   eq("CONFIG alpha_min_x1000", cfg.alpha_min_x1000, 10);
   eq("CONFIG alpha_max_x1000", cfg.alpha_max_x1000, 500);
-  eq("CONFIG agc_adaptive_step", cfg.agc_adaptive_step, 1);
+  eq("CONFIG elgendi_loose_mode", cfg.elgendi_loose_mode, 1);
   eq("CONFIG refractory_ibi_pct", cfg.refractory_ibi_pct, 60);
   assertReencodeConfig("CONFIG", g.hex, cfg);
 }

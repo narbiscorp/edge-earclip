@@ -288,7 +288,7 @@ export interface NarbisRuntimeConfig {
   watchdog_silence_ms: number;
   alpha_min_x1000: number;
   alpha_max_x1000: number;
-  agc_adaptive_step: number;
+  elgendi_loose_mode: number;
   refractory_ibi_pct: number;
 }
 
@@ -655,7 +655,7 @@ export function serializeConfig(cfg: NarbisRuntimeConfig): Uint8Array {
   view.setUint16(o, cfg.watchdog_silence_ms, true); o += 2;
   view.setUint16(o, cfg.alpha_min_x1000, true); o += 2;
   view.setUint16(o, cfg.alpha_max_x1000, true); o += 2;
-  view.setUint8(o, cfg.agc_adaptive_step); o += 1;
+  view.setUint8(o, cfg.elgendi_loose_mode); o += 1;
   view.setUint8(o, cfg.refractory_ibi_pct); o += 1;
 
   if (o !== NARBIS_CONFIG_STRUCT_SIZE) {
@@ -717,7 +717,7 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
   const watchdog_silence_ms = view.getUint16(o, true); o += 2;
   const alpha_min_x1000 = view.getUint16(o, true); o += 2;
   const alpha_max_x1000 = view.getUint16(o, true); o += 2;
-  const agc_adaptive_step = view.getUint8(o); o += 1;
+  const elgendi_loose_mode = view.getUint8(o); o += 1;
   const refractory_ibi_pct = view.getUint8(o); o += 1;
 
   return {
@@ -734,6 +734,6 @@ export function deserializeConfig(buf: Uint8Array): NarbisRuntimeConfig {
     kalman_q_ms2, kalman_r_ms2, kalman_sigma_x10,
     watchdog_max_consec_rejects, watchdog_silence_ms,
     alpha_min_x1000, alpha_max_x1000,
-    agc_adaptive_step, refractory_ibi_pct,
+    elgendi_loose_mode, refractory_ibi_pct,
   };
 }

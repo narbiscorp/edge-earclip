@@ -244,7 +244,7 @@ static void test_config(FILE *gold)
     cfg.watchdog_silence_ms        = 4000;
     cfg.alpha_min_x1000            = 10;
     cfg.alpha_max_x1000            = 500;
-    cfg.agc_adaptive_step          = 1;
+    cfg.elgendi_loose_mode         = 1;
     cfg.refractory_ibi_pct         = 60;
 
     uint8_t buf[256];
