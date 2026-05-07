@@ -112,8 +112,8 @@ export default function ChartControls({
   onWindowChange,
   smoothN,
   onSmoothChange,
-  rescaleSec,
-  onRescaleChange,
+  rescaleSec: _rescaleSec,
+  onRescaleChange: _onRescaleChange,
   shape,
   onShapeChange,
   children,
@@ -144,14 +144,11 @@ export default function ChartControls({
           onChange={onShapeChange}
         />
       ) : null}
-      {rescaleSec !== undefined && onRescaleChange ? (
-        <ButtonGroup<number>
-          label="rescale"
-          value={rescaleSec}
-          options={RESCALE_OPTIONS}
-          onChange={onRescaleChange}
-        />
-      ) : null}
+      {/* Manual rescale picker removed — all charts now use Plotly's
+          auto-range. The rescaleSec/onRescaleChange props remain in the
+          interface for source compatibility but no UI is rendered, so
+          rescaleSec stays at its default 0 ("live") and the per-chart
+          pull() never enters the manual-range branch. */}
       {children}
     </div>
   );

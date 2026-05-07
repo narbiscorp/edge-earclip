@@ -62,10 +62,10 @@ export default function BeatChart() {
         linecolor: '#475569',
         type: 'date',
       },
-      // Default Y range used only when rescale = 'live' — matches the
-      // physiological resting band and avoids a single artifact peak
-      // re-scaling the whole axis.
-      yaxis: { ...yaxisStyle, range: [400, 1400] },
+      // Y autoranges to whatever IBIs Plotly sees in the window. Lets a
+      // 1500–2000 ms IBI from a Kalman lock-on or missed beat actually be
+      // visible instead of off-screen above the old 400–1400 cap.
+      yaxis: { ...yaxisStyle, autorange: true },
       showlegend: true,
     }),
     pull: () => {

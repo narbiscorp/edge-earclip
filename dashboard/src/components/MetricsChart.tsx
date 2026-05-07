@@ -149,6 +149,10 @@ export default function MetricsChart() {
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.hr, width: 1.5, shape: lineShape },
           yaxis: 'y',
+          // HR dwarfs HRV-band traces (60–80 bpm vs 10–60 ms) and forces
+          // a Y-axis split that hides rMSSD detail. Off by default; click
+          // the legend to bring it back when you want a side-by-side.
+          visible: 'legendonly',
         },
         {
           x: rmssd.x, y: rmssdY, name: 'rMSSD',
