@@ -217,6 +217,86 @@ for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?(0xEDB88320^(c>>>1)):
 function crc32(data){let crc=0xFFFFFFFF;for(let i=0;i<data.length;i++)crc=crcTable[(crc^data[i])&0xFF]^(crc>>>8);return(crc^0xFFFFFFFF)>>>0;}
 
 // ═══════════════════════════════════════════════════════════════════
+// FIRMWARE VALIDATOR (inlined from ota-additions/firmware_validator.js)
+// Parses the first 512 bytes of an uploaded .bin and refuses images
+// whose chip_id or project_name don't match the selected device.
+// Mirrors the firmware-side guard (NARBIS_OTA_ERR_CHIP_MISMATCH=0x07)
+// but catches it before any bytes hit the BLE link.
+// ═══════════════════════════════════════════════════════════════════
+const ESP_IMAGE_MAGIC=0xe9, APP_DESC_MAGIC=0xabcd5432;
+const HEADER_BYTES_NEEDED=0x80, FILE_SLICE_BYTES=512;
+const OFF_IMAGE_MAGIC=0x00, OFF_CHIP_ID=0x0c, OFF_APP_DESC_MAGIC=0x20;
+const OFF_APP_DESC_VERSION=0x30, OFF_APP_DESC_NAME=0x50, APP_DESC_STR_LEN=32;
+
+function readCString(view,offset,maxLen){
+  const bytes=[];
+  for(let i=0;i<maxLen;i++){const b=view.getUint8(offset+i);if(b===0)break;bytes.push(b);}
+  return new TextDecoder("utf-8",{fatal:false}).decode(new Uint8Array(bytes));
+}
+
+async function validateFirmware(file,deviceKey){
+  const result={ok:false,chipId:null,chipLabel:null,projectName:null,version:null,errors:[]};
+  const cfg=deviceConfig(deviceKey);
+  if(!file||typeof file.slice!=="function"){result.errors.push("no file provided");return result;}
+  if(file.size<HEADER_BYTES_NEEDED){result.errors.push(`file too small (${file.size} bytes); not an ESP32 firmware image`);return result;}
+  let buf;
+  try{buf=await file.slice(0,FILE_SLICE_BYTES).arrayBuffer();}
+  catch(e){result.errors.push(`could not read file: ${e.message??e}`);return result;}
+  const view=new DataView(buf);
+  const magic=view.getUint8(OFF_IMAGE_MAGIC);
+  if(magic!==ESP_IMAGE_MAGIC){result.errors.push(`not an ESP32 firmware image (first byte 0x${magic.toString(16).padStart(2,"0")}, expected 0xE9)`);return result;}
+  const chipId=view.getUint16(OFF_CHIP_ID,true);
+  result.chipId=chipId;result.chipLabel=chipIdName(chipId);
+  if(chipId!==cfg.chipId){
+    result.errors.push(`chip mismatch: image targets ${chipIdName(chipId)} (0x${chipId.toString(16).padStart(4,"0")}), but ${cfg.label} requires ${cfg.chipLabel} (0x${cfg.chipId.toString(16).padStart(4,"0")}).`);
+  }
+  const appMagic=view.getUint32(OFF_APP_DESC_MAGIC,true);
+  if(appMagic!==APP_DESC_MAGIC){result.errors.push(`no ESP-IDF app descriptor at offset 0x20 (magic 0x${appMagic.toString(16).padStart(8,"0")}, expected 0xABCD5432); cannot verify project name`);return result;}
+  result.version=readCString(view,OFF_APP_DESC_VERSION,APP_DESC_STR_LEN);
+  result.projectName=readCString(view,OFF_APP_DESC_NAME,APP_DESC_STR_LEN);
+  if(!result.projectName.startsWith(cfg.projectNamePrefix)){
+    result.errors.push(`project name "${result.projectName}" does not start with "${cfg.projectNamePrefix}" — image is not built for ${cfg.label}`);
+  }
+  result.ok=result.errors.length===0;
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// VERSION DISPLAY (inlined from ota-additions/version_display.js)
+// Reads Firmware Revision String from DIS (0x180A / 0x2A26) on the
+// connected device, surfaces a "current → new" row, warns on downgrade.
+// ═══════════════════════════════════════════════════════════════════
+const DIS_SERVICE_UUID=0x180a, FIRMWARE_REVISION_CHAR_UUID=0x2a26;
+
+async function readDeviceVersion(server){
+  try{
+    const svc=await server.getPrimaryService(DIS_SERVICE_UUID);
+    const chr=await svc.getCharacteristic(FIRMWARE_REVISION_CHAR_UUID);
+    const dv=await chr.readValue();
+    return new TextDecoder("utf-8").decode(dv).replace(/\0+$/,"").trim();
+  }catch{return null;}
+}
+
+function compareSemver(a,b){
+  const parse=s=>{const m=/^v?(\d+)\.(\d+)\.(\d+)/.exec(String(s??"").trim());if(!m)return null;return [Number(m[1]),Number(m[2]),Number(m[3])];};
+  const pa=parse(a),pb=parse(b);
+  if(!pa||!pb)return null;
+  for(let i=0;i<3;i++)if(pa[i]!==pb[i])return pa[i]<pb[i]?-1:1;
+  return 0;
+}
+
+function renderVersions(){
+  const slot=$('version-slot');
+  if(!currentVersion && !pendingVersion){slot.innerHTML='';return;}
+  const cur=currentVersion??'unknown';
+  const inc=pendingVersion??'—';
+  let html=`<div class="ver-row"><span class="ver-cur">Current: ${esc(cur)}</span><span class="ver-arrow">&rarr;</span><span class="ver-new">New: ${esc(inc)}</span></div>`;
+  const cmp=compareSemver(currentVersion,pendingVersion);
+  if(cmp===1){html+=`<div class="ver-warn">&#x26A0; ${esc(pendingVersion)} is older than the version on the device (${esc(currentVersion)}). This is a downgrade. Proceed only if you mean to.</div>`;}
+  slot.innerHTML=html;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════════
 let dev=null,srv=null,svc_=null,cC=null,cD=null,cS=null;
@@ -224,6 +304,7 @@ let fw=null,fwN='',fwSrc='',flashing=false,cancelled=false,t0=0,logV=false;
 let oRes=null,oRej=null;       // For OTA ready/success promises
 let pageRes=null,pageRej=null; // For page CRC/confirm promises
 let pageRetries=0, totalRetries=0;
+let currentVersion=null, pendingVersion=null;  // device DIS / uploaded .bin app_desc
 
 if(!navigator.bluetooth){$('bw-slot').innerHTML='<div class="bw">&#x26A0; Web Bluetooth not available. Use <b>Chrome</b> or <b>Edge</b> on desktop/Android. On iOS try <a href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055">Bluefy</a>.</div>';$('b-conn').disabled=true;}
 function $(id){return document.getElementById(id)}
@@ -232,7 +313,7 @@ function $(id){return document.getElementById(id)}
 // GITHUB RELEASES
 // ═══════════════════════════════════════════════════════════════════
 let allReleases=[];         // sorted array of {rel, asset} — newest first
-const INITIAL_SHOW=5;       // how many to show initially
+const INITIAL_SHOW=1;       // how many to show initially (was 5; one latest by default + load-more for older)
 let shownCount=0;
 
 // Relative-time formatter: "2d 4h ago", "3m 20s ago", "just now"
@@ -255,12 +336,21 @@ function relTime(iso){
 async function fetchReleases(){
   const el=$('rel-list');el.innerHTML='<div class="rel-msg">Loading releases&hellip;</div>';
   $('rel-more-slot').innerHTML='';
+  allReleases=[];shownCount=0;
+
+  const key=selectedDeviceKey();
+  const cfg=deviceConfig(key);
+  if(!cfg.releaseRepo.repo){
+    el.innerHTML=`<div class="rel-msg warn">&#x26A0; ${esc(cfg.label)} release repo not configured yet. Set <code>DEVICE_CONFIG.${esc(key)}.releaseRepo.repo</code> once the firmware release workflow is installed.</div>`;
+    log(`No release repo configured for ${cfg.label}`,'w');
+    return;
+  }
   try{
-    const r=await fetch(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/releases`);
+    const r=await fetch(`https://api.github.com/repos/${cfg.releaseRepo.owner}/${cfg.releaseRepo.repo}/releases`);
     if(!r.ok)throw new Error(`GitHub ${r.status}`);
     const releases=await r.json();
-    const valid=releases.filter(x=>x.assets.some(a=>a.name===BIN_NAME));
-    if(!valid.length){el.innerHTML='<div class="rel-msg">No firmware releases yet.</div>';log('No releases','w');return;}
+    const valid=releases.filter(x=>x.assets.some(a=>a.name===cfg.binName));
+    if(!valid.length){el.innerHTML=`<div class="rel-msg">No ${esc(cfg.label)} releases yet (looking for asset &ldquo;${esc(cfg.binName)}&rdquo;).</div>`;log(`No ${cfg.label} releases`,'w');return;}
 
     // Sort by published_at DESC (newest first). Falls back to created_at,
     // then tag_name. GitHub's default order is not reliable for "latest".
@@ -271,12 +361,24 @@ async function fetchReleases(){
       return (b.tag_name||'').localeCompare(a.tag_name||'',undefined,{numeric:true});
     });
 
-    allReleases=valid.map(rel=>({rel, asset:rel.assets.find(a=>a.name===BIN_NAME)}));
-    shownCount=0;
+    allReleases=valid.map(rel=>({rel, asset:rel.assets.find(a=>a.name===cfg.binName)}));
     el.innerHTML='';
     renderMoreReleases(INITIAL_SHOW);
-    log(`Loaded ${valid.length} release(s)`,'s');
+    log(`Loaded ${valid.length} ${cfg.label} release(s)`,'s');
   }catch(e){el.innerHTML=`<div class="rel-msg warn">&#x26A0; ${esc(e.message)}</div>`;log(`Releases: ${e.message}`,'e');}
+}
+
+function onDeviceChange(){
+  // User switched device. Clear any selected firmware and per-connection
+  // version state, then re-fetch the release list for the new device.
+  // (currentVersion is still tied to the previously connected device, if any.)
+  clearFW();
+  pendingVersion=null;
+  renderVersions();
+  const cfg=deviceConfig(selectedDeviceKey());
+  $('dz-sub').textContent=`${cfg.binName} · Max 1.5 MB`;
+  $('connect-title').textContent=`Connect to ${cfg.label}`;
+  fetchReleases();
 }
 
 function renderMoreReleases(n){
@@ -322,14 +424,27 @@ const dz=$('dz');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('over')});
 dz.addEventListener('dragleave',()=>dz.classList.remove('over'));
 dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('over');if(e.dataTransfer.files.length)pickFile(e.dataTransfer.files[0])});
-function pickFile(f){
+async function pickFile(f){
   if(!f)return;if(!f.name.endsWith('.bin')){log('Not a .bin','w');return;}
   if(f.size>1536*1024){log('Too large','e');showBanner('Exceeds 1.5 MB slot','err');return;}
+
+  // Validate against the selected device before loading bytes into memory.
+  const key=selectedDeviceKey();
+  const validation=await validateFirmware(f,key);
+  if(!validation.ok){
+    $('validator-slot').innerHTML=`<div class="val-err">${esc(validation.errors.join('\n'))}</div>`;
+    log(`Validation failed: ${validation.errors[0]}`,'e');
+    return;
+  }
+  $('validator-slot').innerHTML='';
+  pendingVersion=validation.version;
+  renderVersions();
+
   const rd=new FileReader();
-  rd.onload=()=>{fw=new Uint8Array(rd.result);fwN=f.name;fwSrc='local';showFI(f.name,f.size,'Local');dz.style.display='none';$('drop-prompt').innerHTML='';$('s1').className='sn ok';log(`Loaded ${f.name} — ${fw.length.toLocaleString()} bytes`,'s');syncBtn();};
+  rd.onload=()=>{fw=new Uint8Array(rd.result);fwN=f.name;fwSrc='local';showFI(f.name,f.size,'Local');dz.style.display='none';$('drop-prompt').innerHTML='';$('s1').className='sn ok';log(`Loaded ${f.name} — ${fw.length.toLocaleString()} bytes (validated, ${validation.chipLabel}, ${validation.projectName||'?'})`,'s');syncBtn();};
   rd.readAsArrayBuffer(f);
 }
-function clearFW(){fw=null;fwN='';fwSrc='';$('fi-slot').innerHTML='';$('drop-prompt').innerHTML='';dz.style.display='';$('fi').value='';$('s1').className='sn';document.querySelectorAll('.ri').forEach(x=>x.classList.remove('sel'));syncBtn();}
+function clearFW(){fw=null;fwN='';fwSrc='';$('fi-slot').innerHTML='';$('drop-prompt').innerHTML='';dz.style.display='';$('fi').value='';$('s1').className='sn';$('validator-slot').innerHTML='';pendingVersion=null;renderVersions();document.querySelectorAll('.ri').forEach(x=>x.classList.remove('sel'));syncBtn();}
 
 // ═══════════════════════════════════════════════════════════════════
 // BLE CONNECTION
@@ -364,10 +479,15 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 // v13: robust connect with retry + cleanup + post-connect settle.
 async function robustConnectAndDiscover(maxAttempts=4){
-  // User gesture — device picker only fires once.
+  // User gesture — device picker only fires once. Scan filter and the
+  // optionalServices list are driven by the selected device (see
+  // DEVICE_CONFIG): Edge filters by advertise name; earclip filters by
+  // its primary service UUID. Both include OTA (0x00FF) and DIS (0x180A)
+  // in optionalServices so version_display can read the firmware revision.
+  const cfg=deviceConfig(selectedDeviceKey());
   const device=await navigator.bluetooth.requestDevice({
-    filters:[{name:'Smart_Glasses'},{name:'Narbis_Edge'}],
-    optionalServices:[SVC]
+    filters:cfg.scanFilters,
+    optionalServices:cfg.optionalServices
   });
   // v13.1: register disconnect handler IMMEDIATELY so any mid-handshake
   // teardown is observed (previously registered after discovery, leaving
