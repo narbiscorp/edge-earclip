@@ -424,6 +424,16 @@ void elgendi_feed(const ppg_processed_sample_t *ps)
              * values from a bad block-end timestamp. 60 s = 1 BPM floor,
              * well below physiology. */
             uint32_t scaled = (s.last_ibi_ms * (uint32_t)s.refractory_ibi_pct) / 100u;
+            /* Hard ceiling at 750 ms protects against a single artifact-
+             * inflated last_ibi_ms (e.g. 1500–2000 ms after a missed
+             * beat) suppressing real beats at typical resting cadence
+             * (HR 75 → IBI 800 ms). At 60% × 1500 = 900 ms the next
+             * real beat would land inside refractory and be eaten,
+             * producing a half-rate stuck pattern. 750 ms admits beats
+             * down to 80 bpm-equivalent; below that, dicrotic-notch
+             * suppression is slightly weaker but the static refractory
+             * floor (ibi_min_ms, default 300) still applies. */
+            if (scaled > 750u) scaled = 750u;
             if (scaled > refr) refr = scaled;
         }
 

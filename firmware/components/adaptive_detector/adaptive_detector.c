@@ -112,7 +112,7 @@ typedef struct {
 
     /* Watchdog. */
     uint8_t  consecutive_rejects;
-    uint8_t  lockon_count;        /* consecutive 2× lock-on Kalman rejects */
+    uint16_t lockon_ring;         /* bit per Kalman gate decision; 1 = 2× lock-on reject */
     uint32_t last_accepted_ts_ms;
 
     /* α (= elgendi beta). Internally float for the dashboard's 0.0005 steps. */
@@ -192,7 +192,7 @@ static void reset_learned_state(void)
     s.recent_filled          = 0;
     s.beats_learned          = 0;
     s.consecutive_rejects    = 0;
-    s.lockon_count           = 0;
+    s.lockon_ring            = 0;
     s.last_accepted_ts_ms    = 0;
     s.kal_x                  = 900.0f;
     s.kal_P                  = 10000.0f;
@@ -303,31 +303,36 @@ static bool kalman_step(float observed_ibi_ms)
             /* "Every-other-beat" lock-on detection.
              *
              * Failure mode: an artifact bumped kal_x to ~2× the true IBI.
-             * Real beats now arrive with observed ≈ kal_x / 2. The gate
-             * rejects them; the gap-spanning IBI for the NEXT beat is
-             * ≈ kal_x and gets accepted, so consecutive_rejects keeps
-             * resetting and the existing rejects/silence watchdogs never
-             * trip. Detect it directly: if predicted is 1.7×–2.3× the
-             * observed for two rejects in a row, force reset. Two-in-a-row
-             * is what distinguishes a sustained lock-on from a single
-             * ectopic beat (which has the same ratio but is followed by
-             * a compensatory long IBI, not another short one). The next
-             * accepted beat will have last_accepted_ts_ms=0 → no IBI
-             * computed → reseeds Kalman from scratch with the true rate. */
+             * Real beats arrive with observed ≈ kal_x / 2 and get gate-
+             * rejected; the gap-spanning IBI for the *next* real beat
+             * is ≈ kal_x and gets accepted (since last_accepted_ts_ms
+             * wasn't updated by the rejected beat between). consecutive_
+             * rejects resets on every other accept, so that watchdog
+             * never trips; the silence watchdog doesn't trip either
+             * because we ARE accepting beats, just at half rate.
+             *
+             * Detect by sliding-window count of lock-on-ratio rejects
+             * over the last 16 Kalman decisions. Stuck pattern produces
+             * ~8 lock-on rejects in 16 → trip. Single ectopic produces
+             * 1 → harmless. Threshold 3 absorbs an ectopic-then-real-
+             * lockon sequence without a false positive. After reset, the
+             * next accepted beat has last_accepted_ts_ms=0 so no IBI is
+             * computed → Kalman reseeds from scratch at the true rate. */
+            bool was_lockon = false;
             if (observed_ibi_ms > 0.0f) {
                 float ratio = xPred / observed_ibi_ms;
-                if (ratio > 1.7f && ratio < 2.3f) {
-                    s.lockon_count++;
-                    if (s.lockon_count >= 2) {
-                        ESP_LOGW(TAG,
-                                 "kalman: 2× lock-on confirmed (xPred=%.0f, obs=%.0f) → reset",
-                                 (double)xPred, (double)observed_ibi_ms);
-                        s.watchdog_resets++;
-                        reset_learned_state();
-                    }
-                } else {
-                    s.lockon_count = 0;
-                }
+                if (ratio > 1.7f && ratio < 2.3f) was_lockon = true;
+            }
+            s.lockon_ring = (uint16_t)((s.lockon_ring << 1) | (was_lockon ? 1u : 0u));
+            uint16_t v = s.lockon_ring;
+            uint8_t lockon_n = 0;
+            while (v) { lockon_n += (uint8_t)(v & 1u); v >>= 1; }
+            if (lockon_n >= 3) {
+                ESP_LOGW(TAG,
+                         "kalman: 2× lock-on (%u/16, xPred=%.0f, obs=%.0f) → reset",
+                         lockon_n, (double)xPred, (double)observed_ibi_ms);
+                s.watchdog_resets++;
+                reset_learned_state();  /* clears lockon_ring */
             }
             return false;
         }
@@ -336,7 +341,11 @@ static bool kalman_step(float observed_ibi_ms)
     s.kal_x = xPred + K * y;
     s.kal_P = (1.0f - K) * PPred;
     s.kal_initialized = true;
-    s.lockon_count = 0;  /* clear on any successful Kalman update */
+    /* Push a 0 into the lock-on ring on accept. Don't clear the whole
+     * ring — the alternating stuck pattern intersperses lockon-rejects
+     * with normal-looking accepts, and we need those rejects to keep
+     * accumulating until the popcount threshold trips. */
+    s.lockon_ring = (uint16_t)(s.lockon_ring << 1);
     return true;
 }
 
