@@ -3,10 +3,11 @@ name: dashboard-deploy
 on:
   push:
     branches: [main]
-    paths:
-      - 'dashboard/**'
-      - 'protocol/**'
-      - '.github/workflows/dashboard-deploy.yml'
+    # No paths filter: rebuild on any main push so the dashboard's
+    # build-stamp (`relay-v5 · <ts>-<sha>`) always matches `git log HEAD`.
+    # Firmware-only commits previously didn't redeploy, which was
+    # confusing because the visible SHA lagged the actual repo state.
+    # Build is ~90 s; not worth optimizing.
   workflow_dispatch:
 
 permissions:
