@@ -29,17 +29,22 @@ interface JsonPreset {
 // silently ignored by jsonToConfig now.
 type JsonConfig = NarbisRuntimeConfig;
 
-function jsonToConfig(j: JsonConfig): NarbisRuntimeConfig {
-  const cfg = { ...j } as NarbisRuntimeConfig;
+// Fallback values for fields a JSON preset doesn't specify. Sourced from the
+// first built-in preset (config_version-N defaults), so any new field added in
+// a schema bump automatically inherits the default-preset value when reading
+// an older user preset out of IndexedDB. Without this, a Path-C launch with
+// a Path-B preset on disk throws at module-load and blanks the dashboard.
+const FALLBACK_CONFIG = (builtInsRaw as JsonPreset[])[0].config as unknown as Record<string, number>;
+
+function jsonToConfig(j: Partial<JsonConfig>): NarbisRuntimeConfig {
+  const cfg: Record<string, number> = { ...(j as Record<string, number>) };
   for (const key of ALL_FIELD_KEYS) {
-    if (!(key in cfg)) {
-      throw new Error(`preset missing field: ${String(key)}`);
-    }
-    if (typeof cfg[key] !== 'number') {
-      throw new Error(`preset field ${String(key)} must be a number`);
+    const v = cfg[key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      cfg[key] = FALLBACK_CONFIG[key];
     }
   }
-  return cfg;
+  return cfg as unknown as NarbisRuntimeConfig;
 }
 
 function configToJson(cfg: NarbisRuntimeConfig): JsonConfig {

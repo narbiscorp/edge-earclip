@@ -5,7 +5,7 @@
     "builtIn": true,
     "description": "Mirrors firmware defaults from config_manager.c.",
     "config": {
-      "config_version": 3,
+      "config_version": 4,
       "sample_rate_hz": 200,
       "led_red_ma_x10": 70,
       "led_ir_ma_x10": 70,
@@ -30,7 +30,23 @@
       "diagnostics_enabled": 1,
       "light_sleep_enabled": 1,
       "diagnostics_mask": 0,
-      "battery_low_mv": 3300
+      "battery_low_mv": 3300,
+      "detector_mode": 0,
+      "template_max_beats": 10,
+      "template_warmup_beats": 4,
+      "kalman_warmup_beats": 5,
+      "template_window_ms": 200,
+      "ncc_min_x1000": 500,
+      "ncc_learn_min_x1000": 750,
+      "kalman_q_ms2": 400,
+      "kalman_r_ms2": 2500,
+      "kalman_sigma_x10": 30,
+      "watchdog_max_consec_rejects": 5,
+      "watchdog_silence_ms": 4000,
+      "alpha_min_x1000": 10,
+      "alpha_max_x1000": 500,
+      "agc_adaptive_step": 0,
+      "refractory_ibi_pct": 60
     }
   },
   {
@@ -39,7 +55,7 @@
     "builtIn": true,
     "description": "Tighter bandpass and longer beat window for clean resting HRV.",
     "config": {
-      "config_version": 3,
+      "config_version": 4,
       "sample_rate_hz": 200,
       "led_red_ma_x10": 70,
       "led_ir_ma_x10": 70,
@@ -64,7 +80,23 @@
       "diagnostics_enabled": 1,
       "light_sleep_enabled": 1,
       "diagnostics_mask": 0,
-      "battery_low_mv": 3300
+      "battery_low_mv": 3300,
+      "detector_mode": 0,
+      "template_max_beats": 10,
+      "template_warmup_beats": 4,
+      "kalman_warmup_beats": 5,
+      "template_window_ms": 200,
+      "ncc_min_x1000": 500,
+      "ncc_learn_min_x1000": 750,
+      "kalman_q_ms2": 400,
+      "kalman_r_ms2": 2500,
+      "kalman_sigma_x10": 30,
+      "watchdog_max_consec_rejects": 5,
+      "watchdog_silence_ms": 4000,
+      "alpha_min_x1000": 10,
+      "alpha_max_x1000": 500,
+      "agc_adaptive_step": 0,
+      "refractory_ibi_pct": 60
     }
   },
   {
@@ -73,7 +105,7 @@
     "builtIn": true,
     "description": "Wider bandpass and looser thresholds tolerate motion artifact.",
     "config": {
-      "config_version": 3,
+      "config_version": 4,
       "sample_rate_hz": 200,
       "led_red_ma_x10": 70,
       "led_ir_ma_x10": 70,
@@ -98,7 +130,23 @@
       "diagnostics_enabled": 1,
       "light_sleep_enabled": 0,
       "diagnostics_mask": 0,
-      "battery_low_mv": 3300
+      "battery_low_mv": 3300,
+      "detector_mode": 0,
+      "template_max_beats": 10,
+      "template_warmup_beats": 4,
+      "kalman_warmup_beats": 5,
+      "template_window_ms": 200,
+      "ncc_min_x1000": 500,
+      "ncc_learn_min_x1000": 750,
+      "kalman_q_ms2": 400,
+      "kalman_r_ms2": 2500,
+      "kalman_sigma_x10": 30,
+      "watchdog_max_consec_rejects": 5,
+      "watchdog_silence_ms": 4000,
+      "alpha_min_x1000": 10,
+      "alpha_max_x1000": 500,
+      "agc_adaptive_step": 1,
+      "refractory_ibi_pct": 60
     }
   },
   {
@@ -107,7 +155,7 @@
     "builtIn": true,
     "description": "Higher LED current and lower DC target for low-perfusion tissue.",
     "config": {
-      "config_version": 3,
+      "config_version": 4,
       "sample_rate_hz": 200,
       "led_red_ma_x10": 100,
       "led_ir_ma_x10": 100,
@@ -132,7 +180,23 @@
       "diagnostics_enabled": 1,
       "light_sleep_enabled": 1,
       "diagnostics_mask": 0,
-      "battery_low_mv": 3300
+      "battery_low_mv": 3300,
+      "detector_mode": 0,
+      "template_max_beats": 10,
+      "template_warmup_beats": 4,
+      "kalman_warmup_beats": 5,
+      "template_window_ms": 200,
+      "ncc_min_x1000": 500,
+      "ncc_learn_min_x1000": 750,
+      "kalman_q_ms2": 400,
+      "kalman_r_ms2": 2500,
+      "kalman_sigma_x10": 30,
+      "watchdog_max_consec_rejects": 5,
+      "watchdog_silence_ms": 4000,
+      "alpha_min_x1000": 10,
+      "alpha_max_x1000": 500,
+      "agc_adaptive_step": 0,
+      "refractory_ibi_pct": 60
     }
   },
   {
@@ -141,7 +205,7 @@
     "builtIn": true,
     "description": "Streams pre/post-filter samples and peak candidates for Polar H10 comparison.",
     "config": {
-      "config_version": 3,
+      "config_version": 4,
       "sample_rate_hz": 200,
       "led_red_ma_x10": 70,
       "led_ir_ma_x10": 70,
@@ -166,7 +230,23 @@
       "diagnostics_enabled": 1,
       "light_sleep_enabled": 1,
       "diagnostics_mask": 7,
-      "battery_low_mv": 3300
+      "battery_low_mv": 3300,
+      "detector_mode": 0,
+      "template_max_beats": 10,
+      "template_warmup_beats": 4,
+      "kalman_warmup_beats": 5,
+      "template_window_ms": 200,
+      "ncc_min_x1000": 500,
+      "ncc_learn_min_x1000": 750,
+      "kalman_q_ms2": 400,
+      "kalman_r_ms2": 2500,
+      "kalman_sigma_x10": 30,
+      "watchdog_max_consec_rejects": 5,
+      "watchdog_silence_ms": 4000,
+      "alpha_min_x1000": 10,
+      "alpha_max_x1000": 500,
+      "agc_adaptive_step": 0,
+      "refractory_ibi_pct": 60
     }
   }
 ]
