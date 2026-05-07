@@ -112,6 +112,7 @@ typedef struct {
 
     /* Watchdog. */
     uint8_t  consecutive_rejects;
+    uint8_t  lockon_count;        /* consecutive 2× lock-on Kalman rejects */
     uint32_t last_accepted_ts_ms;
 
     /* α (= elgendi beta). Internally float for the dashboard's 0.0005 steps. */
@@ -191,6 +192,7 @@ static void reset_learned_state(void)
     s.recent_filled          = 0;
     s.beats_learned          = 0;
     s.consecutive_rejects    = 0;
+    s.lockon_count           = 0;
     s.last_accepted_ts_ms    = 0;
     s.kal_x                  = 900.0f;
     s.kal_P                  = 10000.0f;
@@ -298,6 +300,35 @@ static bool kalman_step(float observed_ibi_ms)
         float gate = ((float)s.kalman_sigma_x10 / 10.0f) * sigma;
         if (fabsf(y) > gate) {
             s.kalman_rejects++;
+            /* "Every-other-beat" lock-on detection.
+             *
+             * Failure mode: an artifact bumped kal_x to ~2× the true IBI.
+             * Real beats now arrive with observed ≈ kal_x / 2. The gate
+             * rejects them; the gap-spanning IBI for the NEXT beat is
+             * ≈ kal_x and gets accepted, so consecutive_rejects keeps
+             * resetting and the existing rejects/silence watchdogs never
+             * trip. Detect it directly: if predicted is 1.7×–2.3× the
+             * observed for two rejects in a row, force reset. Two-in-a-row
+             * is what distinguishes a sustained lock-on from a single
+             * ectopic beat (which has the same ratio but is followed by
+             * a compensatory long IBI, not another short one). The next
+             * accepted beat will have last_accepted_ts_ms=0 → no IBI
+             * computed → reseeds Kalman from scratch with the true rate. */
+            if (observed_ibi_ms > 0.0f) {
+                float ratio = xPred / observed_ibi_ms;
+                if (ratio > 1.7f && ratio < 2.3f) {
+                    s.lockon_count++;
+                    if (s.lockon_count >= 2) {
+                        ESP_LOGW(TAG,
+                                 "kalman: 2× lock-on confirmed (xPred=%.0f, obs=%.0f) → reset",
+                                 (double)xPred, (double)observed_ibi_ms);
+                        s.watchdog_resets++;
+                        reset_learned_state();
+                    }
+                } else {
+                    s.lockon_count = 0;
+                }
+            }
             return false;
         }
     }
@@ -305,6 +336,7 @@ static bool kalman_step(float observed_ibi_ms)
     s.kal_x = xPred + K * y;
     s.kal_P = (1.0f - K) * PPred;
     s.kal_initialized = true;
+    s.lockon_count = 0;  /* clear on any successful Kalman update */
     return true;
 }
 
@@ -511,6 +543,14 @@ esp_err_t adaptive_detector_apply_config(const narbis_runtime_config_t *cfg)
 
     bool mode_changed = (s.mode != cfg->detector_mode);
 
+    /* Compute the new window size first so we can decide whether the change
+     * actually invalidates the learned template. */
+    uint16_t new_sample_rate_hz = (cfg->sample_rate_hz > 0) ? cfg->sample_rate_hz : 200;
+    uint16_t new_window_samples = ms_to_samples(cfg->template_window_ms, new_sample_rate_hz,
+                                                ADAPT_WINDOW_MAX);
+    bool window_changed = (new_window_samples != s.template_window_samples) ||
+                          (new_sample_rate_hz != s.sample_rate_hz);
+
     s.mode                        = cfg->detector_mode;
     s.template_max_beats          = cfg->template_max_beats;
     if (s.template_max_beats == 0 || s.template_max_beats > ADAPT_RECENT_MAX) {
@@ -530,15 +570,19 @@ esp_err_t adaptive_detector_apply_config(const narbis_runtime_config_t *cfg)
     s.alpha_max_x1000             = cfg->alpha_max_x1000;
     s.ibi_min_ms                  = (cfg->ibi_min_ms > 0) ? cfg->ibi_min_ms : 300;
     s.ibi_max_ms                  = (cfg->ibi_max_ms > s.ibi_min_ms) ? cfg->ibi_max_ms : 2000;
-    s.sample_rate_hz              = (cfg->sample_rate_hz > 0) ? cfg->sample_rate_hz : 200;
+    s.sample_rate_hz              = new_sample_rate_hz;
+    s.template_window_samples     = new_window_samples;
+    s.template_half_samples       = (uint16_t)(s.template_window_samples / 2u);
 
-    s.template_window_samples = ms_to_samples(cfg->template_window_ms, s.sample_rate_hz,
-                                              ADAPT_WINDOW_MAX);
-    s.template_half_samples   = (uint16_t)(s.template_window_samples / 2u);
-
-    /* Always reset learned state on config change — template is sample-rate
-     * and window-size sensitive, so any tuning change invalidates it. */
-    reset_learned_state();
+    /* Reset learned state ONLY when the structural shape of the template
+     * changes (window-size or sample-rate or detector-mode). Threshold
+     * tweaks (NCC/Kalman/α/watchdog values) preserve the learned template
+     * and Kalman state — otherwise touching any slider would force a
+     * 4-beat re-learn and that's how a user accidentally papers over
+     * stuck-state bugs. */
+    if (mode_changed || window_changed) {
+        reset_learned_state();
+    }
     publish_dynamic_refractory();
 
     if (mode_changed) {
