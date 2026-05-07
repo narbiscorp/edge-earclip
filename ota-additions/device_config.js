@@ -1,41 +1,54 @@
 /*
- * device_config.js — device-type → BLE/firmware identity mapping.
+ * device_config.js — device-type → BLE/firmware identity + release-source
+ * mapping.
  *
  * Used by the OTA webapp to:
  *   - filter the requestDevice() scan to the selected product
  *   - tell the firmware validator which chip / project_name to require
+ *   - know which GitHub repo to fetch firmware releases from
+ *   - know which release asset filename is the application image
  *
  * The OTA service UUIDs (0x00FF / 0xFF01-0xFF03) are identical between
  * Edge and the Narbis earclip — earclip's DFU was deliberately ported
  * from Edge so a single transport implementation drives both. What
- * differs is the product's primary service (used for scan filtering),
- * the chip target (ESP32 vs ESP32-C6), and the esp_app_desc project
- * name baked into the .bin.
+ * differs is the scan filter (Edge advertises by name; earclip
+ * advertises a primary service UUID), the chip target (ESP32 vs
+ * ESP32-C6), the esp_app_desc project name baked into the .bin, and
+ * the GitHub repo the firmware releases are published to.
  *
- * NOTE on the Edge `productServiceUuid`: the existing Edge firmware
- * already advertises a product service UUID — fill it in from Edge's
- * existing webapp scan filter at integration time. The earclip side
- * is concrete (NARBIS_SVC_UUID from protocol/uuids.ts).
+ * `scanFilters` mirrors the exact shape `navigator.bluetooth.requestDevice()`
+ * accepts for its `filters` field, so the integrator can pass it through
+ * without rewrapping. `optionalServices` likewise feeds straight into
+ * the same call.
  */
 
 export const DEVICE_CONFIG = {
   edge: {
     label: "Edge glasses",
-    otaServiceUuid: 0x00ff,
-    // TODO(integrator): replace with the Edge primary service UUID
-    // currently used by the existing webapp's requestDevice() filter.
-    productServiceUuid: null,
+    scanFilters: [{ name: "Smart_Glasses" }, { name: "Narbis_Edge" }],
+    optionalServices: [0x00ff],
     projectNamePrefix: "edge",
     chipId: 0x0000,
     chipLabel: "ESP32",
+    releaseRepo: { owner: "narbiscorp", repo: "edge-firmware" },
+    binName: "ESP32_Ble.bin",
   },
   earclip: {
     label: "Narbis earclip",
-    otaServiceUuid: 0x00ff,
-    productServiceUuid: "a24080b2-8857-4785-b3ba-a43b66af4f28",
+    scanFilters: [
+      { services: ["a24080b2-8857-4785-b3ba-a43b66af4f28"] },
+    ],
+    optionalServices: [0x00ff, 0x180a],
     projectNamePrefix: "narbis_earclip",
     chipId: 0x000d,
     chipLabel: "ESP32-C6",
+    // TODO(integrator): replace `repo` with the actual destination repo
+    // once the earclip firmware release workflow is installed (see
+    // firmware-release-additions/INTEGRATION.md). Until then, the OTA
+    // webapp will surface a "release source not configured" message
+    // instead of issuing a 404 against a placeholder.
+    releaseRepo: { owner: "narbiscorp", repo: null },
+    binName: "narbis_earclip.bin",
   },
 };
 
