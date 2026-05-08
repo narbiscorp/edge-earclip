@@ -535,10 +535,18 @@ async function doConnect(){
     cS.addEventListener('characteristicvaluechanged',onNotify);
     log('Connected — 0xFF01/02/03 ready','s');
     setConn(true,dev.name);
+
+    // v13.2: read device firmware revision from DIS (0x180A / 0x2A26)
+    // and surface it in the version row alongside the uploaded .bin's
+    // version (if any). Failure is silent — pre-DIS firmware should not
+    // break the OTA flow.
+    currentVersion=await readDeviceVersion(srv);
+    if(currentVersion)log(`Device firmware: ${currentVersion}`,'i');
+    renderVersions();
   }
   catch(e){if(e.name==='NotFoundError')log('Cancelled','w');else{log(`Failed: ${e.message}`,'e');showBanner(`Connect: ${e.message}`,'err');}}
 }
-function onDC(){log('Disconnected','w');setConn(false);cC=cD=cS=svc_=srv=null;if(flashing&&!cancelled){showBanner('Disconnected during OTA','err');flashing=false;}}
+function onDC(){log('Disconnected','w');setConn(false);cC=cD=cS=svc_=srv=null;currentVersion=null;renderVersions();if(flashing&&!cancelled){showBanner('Disconnected during OTA','err');flashing=false;}}
 function doDisconnect(){if(dev?.gatt.connected){dev.gatt.disconnect();log('Disconnected','i');}}
 function setConn(on,name){$('cdot').className='cdot'+(on?' on':'');$('clbl').textContent=on?`Connected: ${name}`:'Not connected';$('b-conn').disabled=on;$('b-disc').disabled=!on;$('c-conn').className='card'+(on?' gl-g':'');$('s2').className=on?'sn ok':'sn';if(!on)$('s3').className='sn';syncBtn();}
 function syncBtn(){$('b-flash').disabled=!(dev?.gatt.connected&&fw&&!flashing)}
@@ -818,7 +826,7 @@ setInterval(()=>{
   });
 },30000);
 
-log('EDGE OTA Updater v13.2','i');
+log('Narbis OTA Updater v14 — Edge + Earclip','i');
 log('Page-based CRC transfer (4KB pages, 0xAD confirm)');
 fetchReleases();
 </script>
