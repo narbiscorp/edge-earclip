@@ -34,6 +34,17 @@ static const char *TAG = "sleep_button";
 #define WAKE_GRACE_MS           1500          /* don't arm until user releases wake-press */
 
 static void enter_deep_sleep(void) {
+    ESP_LOGW(TAG, "sleep requested — release the button to enter deep sleep");
+
+    /* CRITICAL: ESP_GPIO_WAKEUP_GPIO_LOW is *level*-triggered, not edge.
+     * If we call esp_deep_sleep_start() while the user is still holding
+     * the button (pin LOW), the wake fires immediately and the chip
+     * resets right back up — looking like sleep never happened. Wait
+     * here until the button is released, then arm wake and sleep. */
+    while (gpio_get_level(SLEEP_BUTTON_GPIO) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
+    }
+
     ESP_LOGW(TAG, "entering deep sleep — wake by pressing GPIO%d", SLEEP_BUTTON_GPIO);
 
     /* Arm the same pin as wake source. ESP_GPIO_WAKEUP_GPIO_LOW means
