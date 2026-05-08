@@ -48,12 +48,18 @@ static void enter_deep_sleep(void) {
 
     ESP_LOGW(TAG, "entering deep sleep — wake by pressing GPIO%d", SLEEP_BUTTON_GPIO);
 
-    /* CRITICAL: keep the pull-up alive through deep sleep. The HP GPIO
-     * peripheral (where gpio_config() set the pull-up) powers off in
-     * deep sleep on ESP32-C6; LP_IO takes over for GPIO0–7 but does
-     * NOT inherit the HP pull-up. Without rtc_gpio_pullup_en the pin
-     * floats, noise reads as LOW, and ESP_GPIO_WAKEUP_GPIO_LOW fires
-     * an immediate false wake → chip resets right back up. */
+    /* Disarm every wake source other modules may have left armed —
+     * confirmed via boot diagnostic: BLE controller + esp_pm arm a
+     * TIMER wake for light-sleep tickless idle (visible in BLE_INIT:
+     * "Enable light sleep, the wake up source is BLE timer"). Without
+     * this clear, that timer fires shortly after esp_deep_sleep_start
+     * and the chip resets — wake_cause=TIMER on the next boot. */
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    /* Keep the pull-up alive through deep sleep. The HP GPIO peripheral
+     * (where gpio_config() set the pull-up) powers off in deep sleep on
+     * ESP32-C6; LP_IO takes over for GPIO0–7 but does NOT inherit the
+     * HP pull-up. */
     rtc_gpio_pullup_en(SLEEP_BUTTON_GPIO);
     rtc_gpio_pulldown_dis(SLEEP_BUTTON_GPIO);
 
