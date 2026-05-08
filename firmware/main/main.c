@@ -226,8 +226,8 @@ void app_main(void)
     ESP_ERROR_CHECK(app_state_init());
     (void)app_state_resume_last_mode();
 
-    /* User-initiated sleep: hold the BOOT button (GPIO9) for 2 s to
-     * enter deep sleep. Same button wakes (chip resets out of deep
+    /* User-initiated sleep: hold the D2 (GPIO2) tactile button for 2 s
+     * to enter deep sleep. Same button wakes (chip resets out of deep
      * sleep, app_main runs again). */
     ESP_ERROR_CHECK(sleep_button_init());
 
