@@ -66,14 +66,19 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # manually flip this back to n in a local `idf.py menuconfig` run
 # before flashing.
 #
-# DIV_NUM/DIV_DEN here is a single project-wide multiplier. With ideal
-# 1:1 resistors the math is 2/1; in practice tolerance + ADC bias
-# pushes the reading ~3% low, so 33/16 (= 2.0625) lands the live
-# bench-validated board within ±15 mV of bench across 3500–4200 mV.
+# Calibration uses slope + offset so it matches the actual ADC behavior
+# at multiple voltages (a single ratio drifts at the endpoints because
+# the ADC bias isn't proportional to voltage). Derived from a 2-point
+# bench cal:
+#   4.00 V supply → ADC ≈ 1940 mV at the pin
+#   3.70 V supply → ADC ≈ 1770 mV at the pin
+# Linear fit: final_mv = (adc_mv * 30 / 17) + 576
+# Verifies: 1940*30/17+576=4000, 1770*30/17+576=3700 ✓
 # A future PR moves these into narbis_runtime_config_t (NVS-persisted,
 # dashboard-tweakable, OTA-survivable) so each board can keep its own
-# trim — until then the project default is the bench-calibrated 33/16.
+# 2-point trim — until then this is the project default.
 CONFIG_NARBIS_BATT_DIVIDER_PRESENT=y
 CONFIG_NARBIS_BATT_ADC_GPIO=1
-CONFIG_NARBIS_BATT_ADC_DIV_NUM=33
-CONFIG_NARBIS_BATT_ADC_DIV_DEN=16
+CONFIG_NARBIS_BATT_ADC_DIV_NUM=30
+CONFIG_NARBIS_BATT_ADC_DIV_DEN=17
+CONFIG_NARBIS_BATT_ADC_OFFSET_MV=576
