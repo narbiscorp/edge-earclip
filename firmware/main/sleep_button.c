@@ -27,6 +27,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "ppg_driver_max3010x.h"
+#include "transport_ble.h"
+
 static const char *TAG = "sleep_button";
 
 #define SLEEP_BUTTON_GPIO       GPIO_NUM_2    /* D2 on XIAO ESP32-C6 (LP_IO; external tactile button to GND) */
@@ -48,18 +51,45 @@ static void enter_deep_sleep(void) {
 
     ESP_LOGW(TAG, "entering deep sleep — wake by pressing GPIO%d", SLEEP_BUTTON_GPIO);
 
-    /* Disarm every wake source other modules may have left armed —
-     * confirmed via boot diagnostic: BLE controller + esp_pm arm a
-     * TIMER wake for light-sleep tickless idle (visible in BLE_INIT:
-     * "Enable light sleep, the wake up source is BLE timer"). Without
-     * this clear, that timer fires shortly after esp_deep_sleep_start
-     * and the chip resets — wake_cause=TIMER on the next boot. */
+    /* 1. Tear down peripherals BEFORE arming wake. Mirrors Edge's
+     * pre-sleep sequence (EDGE/EDGE FIRMWARE/main/main.c:4374-4378
+     * + v4.11.1 changelog: "full teardown via bluedroid_disable/deinit
+     * + bt_controller_disable/deinit. Radio is completely off; no
+     * RF activity of any kind"). Earclip adds MAX3010x SHDN which
+     * Edge doesn't need.
+     *
+     *   - ppg_driver_deinit() writes MAX3010X_MODE_SHDN, deletes the
+     *     I2C master bus + GPIO ISR. Sensor drops to <0.7 µA standby.
+     *     Single biggest power win on the earclip — without this the
+     *     sensor keeps pulsing red+IR LEDs at idle.
+     *   - transport_ble_deinit() runs ble_gap_adv_stop, terminates
+     *     active peers cleanly, then nimble_port_stop +
+     *     nimble_port_deinit. Brings the BLE controller fully cold —
+     *     also releases its timer wake source so step 2 mostly catches
+     *     anything leftover. */
+    ESP_LOGI(TAG, "shutting down PPG sensor (MAX3010x SHDN)…");
+    esp_err_t perr = ppg_driver_deinit();
+    if (perr != ESP_OK) {
+        ESP_LOGW(TAG, "ppg_driver_deinit rc=%s — proceeding anyway",
+                 esp_err_to_name(perr));
+    }
+    ESP_LOGI(TAG, "shutting down BLE radio…");
+    esp_err_t berr = transport_ble_deinit();
+    if (berr != ESP_OK) {
+        ESP_LOGW(TAG, "transport_ble_deinit rc=%s — proceeding anyway",
+                 esp_err_to_name(berr));
+    }
+
+    /* 2. Disarm any wake source still left armed (defensive — the BLE
+     * controller's TIMER wake should be released by the deinit above,
+     * but esp_pm or other modules may have armed others). Confirmed
+     * via boot diagnostic before this fix landed: wake_cause=TIMER. */
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    /* Keep the pull-up alive through deep sleep. The HP GPIO peripheral
-     * (where gpio_config() set the pull-up) powers off in deep sleep on
-     * ESP32-C6; LP_IO takes over for GPIO0–7 but does NOT inherit the
-     * HP pull-up. */
+    /* 3. Keep the pull-up alive through deep sleep. The HP GPIO
+     * peripheral (where gpio_config() set the pull-up) powers off in
+     * deep sleep on ESP32-C6; LP_IO takes over for GPIO0–7 but does
+     * NOT inherit the HP pull-up. */
     rtc_gpio_pullup_en(SLEEP_BUTTON_GPIO);
     rtc_gpio_pulldown_dis(SLEEP_BUTTON_GPIO);
 
@@ -74,8 +104,9 @@ static void enter_deep_sleep(void) {
         return;
     }
 
-    /* Brief delay so the log line + any in-flight BLE notify drain
-     * before the radio shuts down. */
+    /* Brief settle delay after radio + sensor teardown — lets the
+     * BLE supervision-timeout disconnects ship and the sensor's last
+     * I2C write settle before we cut power. */
     vTaskDelay(pdMS_TO_TICKS(150));
 
     esp_deep_sleep_start();
