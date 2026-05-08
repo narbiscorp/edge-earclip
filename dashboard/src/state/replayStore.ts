@@ -6,7 +6,7 @@ import {
   ReplayPlayer,
 } from '../recording/replay';
 import type { LoadedSession } from '../recording/types';
-import { useDashboardStore } from './store';
+import { useDashboardStore, setReplayBattery } from './store';
 import { metricsBuffers } from './metricsBuffer';
 
 export type ReplaySpeed = 1 | 2 | 5 | 10;
@@ -93,6 +93,7 @@ export const useReplayStore = create<ReplayStoreState>((set, get) => ({
     bufs.sqi.clear();
     bufs.filtered.clear();
     bufs.polarBeats.clear();
+    setReplayBattery(null);
     if (useDashboardStore.getState().dataSource === 'replay') {
       useDashboardStore.getState().setDataSource('live');
     }

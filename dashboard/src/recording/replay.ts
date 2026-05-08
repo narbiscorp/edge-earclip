@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { useDashboardStore } from '../state/store';
+import { useDashboardStore, setReplayBattery } from '../state/store';
 import { metricsBuffers } from '../state/metricsBuffer';
 import { METRICS_WINDOW_SEC } from '../state/metricsRunner';
 import { extractIbiWindow } from '../metrics/windowing';
@@ -8,6 +8,7 @@ import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { snapshotFromResult } from '../state/metricsBuffer';
 import type {
   Annotation,
+  BatteryRecord,
   BeatRecord,
   ConfigChangeEntry,
   FilteredRecord,
@@ -65,6 +66,7 @@ function loadedFromEvents(
   const raw: Array<{ timestamp: number; sample: { red: number; ir: number } }> = [];
   const beats: BeatRecord[] = [];
   const sqi: SqiRecord[] = [];
+  const battery: BatteryRecord[] = [];
   const filtered: FilteredRecord[] = [];
   const polarBeats: PolarBeatRecordTimed[] = [];
   const metrics: MetricsRecord[] = [];
@@ -82,6 +84,9 @@ function loadedFromEvents(
         break;
       case 'sqi':
         sqi.push(e.payload as SqiRecord);
+        break;
+      case 'battery':
+        battery.push(e.payload as BatteryRecord);
         break;
       case 'filtered':
         filtered.push(e.payload as FilteredRecord);
@@ -107,6 +112,7 @@ function loadedFromEvents(
     raw,
     beats,
     sqi,
+    battery,
     filtered,
     polarBeats,
     metrics,
@@ -249,7 +255,31 @@ export class ReplayPlayer {
       METRICS_DISPLAY_WINDOW_SEC,
       (m) => metricsBuffers.replay.push(m.timestamp, m.snapshot),
     );
+
+    /* Battery is sparse (every ~30 s) — find the most-recent record at or
+     * before tEnd and surface it on the connection panel during playback. */
+    const b = latestAtOrBefore(this.session.battery, tEnd);
+    if (b) {
+      setReplayBattery({ soc_pct: b.soc_pct, mv: b.mv, charging: b.charging });
+    } else {
+      setReplayBattery(null);
+    }
   }
+}
+
+function latestAtOrBefore<T extends { timestamp: number }>(
+  arr: T[],
+  tEnd: number,
+): T | null {
+  if (arr.length === 0) return null;
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid].timestamp <= tEnd) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 ? arr[lo - 1] : null;
 }
 
 function beatRecordToEvent(b: BeatRecord): NarbisBeatEvent {

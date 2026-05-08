@@ -4,8 +4,10 @@ import {
   type NarbisBeatEvent,
   type NarbisRawSampleEvent,
   type NarbisSqiEvent,
+  type NarbisBatteryEvent,
   type NarbisDiagnosticEvent,
 } from '../ble/narbisDevice';
+import { edgeDevice, type RelayedBattery } from '../ble/edgeDevice';
 import { polarH10, type PolarBeatEvent } from '../ble/polarH10';
 import {
   metricsRunner,
@@ -35,6 +37,7 @@ import {
 import type {
   Annotation,
   AnnotationEventType,
+  BatteryRecord,
   BeatRecord,
   ConfigChangeEntry,
   FilteredRecord,
@@ -75,6 +78,7 @@ export interface RecordingCounts {
   raw: number;
   beats: number;
   sqi: number;
+  battery: number;
   filtered: number;
   polarBeats: number;
   metrics: number;
@@ -119,6 +123,7 @@ const ZERO_COUNTS: RecordingCounts = {
   raw: 0,
   beats: 0,
   sqi: 0,
+  battery: 0,
   filtered: 0,
   polarBeats: 0,
   metrics: 0,
@@ -129,6 +134,7 @@ class SessionAccumulator {
   raw: RawSampleRecord[] = [];
   beats: BeatRecord[] = [];
   sqi: SqiRecord[] = [];
+  battery: BatteryRecord[] = [];
   filtered: FilteredRecord[] = [];
   polarBeats: PolarBeatRecordTimed[] = [];
   metrics: MetricsRecord[] = [];
@@ -140,6 +146,7 @@ class SessionAccumulator {
       this.raw.length === 0 &&
       this.beats.length === 0 &&
       this.sqi.length === 0 &&
+      this.battery.length === 0 &&
       this.filtered.length === 0 &&
       this.polarBeats.length === 0 &&
       this.metrics.length === 0 &&
@@ -152,6 +159,7 @@ class SessionAccumulator {
     this.raw = [];
     this.beats = [];
     this.sqi = [];
+    this.battery = [];
     this.filtered = [];
     this.polarBeats = [];
     this.metrics = [];
@@ -178,6 +186,8 @@ interface RecorderRuntime {
   onBeat: (e: Event) => void;
   onRaw: (e: Event) => void;
   onSqi: (e: Event) => void;
+  onBattery: (e: Event) => void;
+  onRelayedBattery: (e: Event) => void;
   onDiag: (e: Event) => void;
   onConfig: (e: Event) => void;
   onPolar: (e: Event) => void;
@@ -534,6 +544,8 @@ function createRuntime(
     onBeat: () => {},
     onRaw: () => {},
     onSqi: () => {},
+    onBattery: () => {},
+    onRelayedBattery: () => {},
     onDiag: () => {},
     onConfig: () => {},
     onPolar: () => {},
@@ -542,6 +554,8 @@ function createRuntime(
   r.onBeat = makeOnBeat(r);
   r.onRaw = makeOnRaw(r);
   r.onSqi = makeOnSqi(r);
+  r.onBattery = makeOnBattery(r);
+  r.onRelayedBattery = makeOnRelayedBattery(r);
   r.onDiag = makeOnDiag(r);
   r.onConfig = makeOnConfig(r);
   r.onPolar = makeOnPolar(r);
@@ -553,6 +567,11 @@ function attachListeners(r: RecorderRuntime): void {
   if (r.meta.streams.beats) narbisDevice.addEventListener('beatReceived', r.onBeat);
   if (r.meta.streams.raw) narbisDevice.addEventListener('rawSampleReceived', r.onRaw);
   if (r.meta.streams.sqi) narbisDevice.addEventListener('sqiReceived', r.onSqi);
+  /* Battery is always recorded — payload is tiny (~480 B/hr) and there's no
+   * 'battery' flag in the streams meta. Listen on both the direct path and
+   * the glasses-relay path; the source field disambiguates. */
+  narbisDevice.addEventListener('batteryReceived', r.onBattery);
+  edgeDevice.addEventListener('relayedBattery', r.onRelayedBattery);
   if (r.meta.streams.filtered) narbisDevice.addEventListener('diagnosticReceived', r.onDiag);
   narbisDevice.addEventListener('configChanged', r.onConfig);
   if (r.meta.streams.polar) polarH10.addEventListener('beatReceived', r.onPolar);
@@ -563,6 +582,8 @@ function detachListeners(r: RecorderRuntime): void {
   narbisDevice.removeEventListener('beatReceived', r.onBeat);
   narbisDevice.removeEventListener('rawSampleReceived', r.onRaw);
   narbisDevice.removeEventListener('sqiReceived', r.onSqi);
+  narbisDevice.removeEventListener('batteryReceived', r.onBattery);
+  edgeDevice.removeEventListener('relayedBattery', r.onRelayedBattery);
   narbisDevice.removeEventListener('diagnosticReceived', r.onDiag);
   narbisDevice.removeEventListener('configChanged', r.onConfig);
   polarH10.removeEventListener('beatReceived', r.onPolar);
@@ -634,6 +655,41 @@ function makeOnDiag(r: RecorderRuntime) {
       r.acc.filtered.push({ timestamp: s.timestamp, sample: s });
     }
     bump(r, 'filtered', 32 * diag.samples.length);
+  };
+}
+
+function isEarclipDirectConnected(): boolean {
+  return useDashboardStore.getState().connection.narbis.state === 'connected';
+}
+
+function makeOnBattery(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const b = (ev as CustomEvent<NarbisBatteryEvent>).detail;
+    r.acc.battery.push({
+      timestamp: b.timestamp,
+      mv: b.mv ?? null,
+      soc_pct: b.soc_pct,
+      charging: !!b.charging,
+      source: b.source,  // 'narbis' | 'standard'
+    });
+    bump(r, 'battery', 40);
+  };
+}
+
+function makeOnRelayedBattery(r: RecorderRuntime) {
+  return (ev: Event) => {
+    /* Suppress when the dashboard is also directly connected — the direct
+     * path already covers it. Mirrors store.ts::isEarclipDirect(). */
+    if (isEarclipDirectConnected()) return;
+    const b = (ev as CustomEvent<RelayedBattery>).detail;
+    r.acc.battery.push({
+      timestamp: b.timestamp,
+      mv: b.mv,
+      soc_pct: b.soc_pct,
+      charging: !!b.charging,
+      source: 'relay',
+    });
+    bump(r, 'battery', 40);
   };
 }
 
@@ -729,6 +785,7 @@ async function flushChunk(): Promise<void> {
   if (r.acc.raw.length) chunk.raw = r.acc.raw;
   if (r.acc.beats.length) chunk.beats = r.acc.beats;
   if (r.acc.sqi.length) chunk.sqi = r.acc.sqi;
+  if (r.acc.battery.length) chunk.battery = r.acc.battery;
   if (r.acc.filtered.length) chunk.filtered = r.acc.filtered;
   if (r.acc.polarBeats.length) chunk.polarBeats = r.acc.polarBeats;
   if (r.acc.metrics.length) chunk.metrics = r.acc.metrics;
@@ -750,6 +807,7 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.raw[0]?.timestamp,
     acc.beats[0]?.timestamp,
     acc.sqi[0]?.timestamp,
+    acc.battery[0]?.timestamp,
     acc.filtered[0]?.timestamp,
     acc.polarBeats[0]?.timestamp,
     acc.metrics[0]?.timestamp,
@@ -765,6 +823,7 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.raw)?.timestamp,
     last(acc.beats)?.timestamp,
     last(acc.sqi)?.timestamp,
+    last(acc.battery)?.timestamp,
     last(acc.filtered)?.timestamp,
     last(acc.polarBeats)?.timestamp,
     last(acc.metrics)?.timestamp,

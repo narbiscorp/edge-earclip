@@ -44,6 +44,10 @@ uint16_t transport_ble_get_mtu(void);
 /* True iff at least one BLE central is currently connected. */
 bool transport_ble_any_connected(void);
 
+/* Count of currently-connected centrals (0..NARBIS_BLE_MAX_CONNECTIONS).
+ * Used by the periodic status summary log. */
+uint8_t transport_ble_active_peer_count(void);
+
 /* Returns the connection handle of any currently-connected central, or
  * 0xFFFF if none. Used by ble_ota and diagnostics — best-effort, picks
  * the first active slot. Prefer transport_ble_notify() for per-peer

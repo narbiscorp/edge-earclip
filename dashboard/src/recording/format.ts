@@ -1,5 +1,6 @@
 import type {
   Annotation,
+  BatteryRecord,
   BeatRecord,
   ConfigChangeEntry,
   MetricsRecord,
@@ -53,6 +54,8 @@ const METRICS_HEADER = [
   'resonance_coherence',
   'sqi_avg',
 ];
+
+const BATTERY_HEADER = ['timestamp_ms', 'mv', 'soc_pct', 'charging', 'source'];
 
 const ANNOTATION_HEADER = ['timestamp_ms', 'event_type', 'annotation_text', 'source'];
 
@@ -161,6 +164,14 @@ export function writeAnnotationsCSV(annotations: Annotation[]): string {
   return lines.join('\n') + '\n';
 }
 
+export function writeBatteryCSV(battery: BatteryRecord[]): string {
+  const lines: string[] = [BATTERY_HEADER.join(',')];
+  for (const b of battery) {
+    lines.push(csvRow([b.timestamp, b.mv ?? '', b.soc_pct, b.charging, b.source]));
+  }
+  return lines.join('\n') + '\n';
+}
+
 export function writeConfigHistoryJSON(history: ConfigChangeEntry[]): string {
   const out = history.map((e) => ({
     timestamp_ms: e.timestamp,
@@ -235,6 +246,7 @@ export const FILE_NAMES = {
   manifest: 'manifest.json',
   rawSamples: 'raw_samples.csv',
   beats: 'beats.csv',
+  battery: 'battery.csv',
   metrics: 'metrics_1hz.csv',
   annotations: 'annotations.csv',
   configHistory: 'config_history.json',

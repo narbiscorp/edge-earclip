@@ -434,6 +434,20 @@ export class EdgeDevice extends EventTarget {
           timestamp: ts,
           bytes: bytes.slice(1),
         } as RelayedDiagnostic);
+      } else if (type === 0xF8 && bytes.length >= 5) {
+        /* 0xF8 = structured earclip battery relay. Payload mirrors
+         * narbis_battery_payload_t: mv u16 LE, soc u8, charging u8.
+         * The 0xF1 log-line fallback parser remains as belt-and-suspenders
+         * for older glasses firmware. */
+        const mv = bytes[1] | (bytes[2] << 8);
+        const soc_pct = bytes[3];
+        const charging = bytes[4];
+        this.dispatch('relayedBattery', {
+          timestamp: ts,
+          soc_pct,
+          mv,
+          charging,
+        } as RelayedBattery);
       }
     } catch (err) {
       this.emitError(err, 'status-parse');

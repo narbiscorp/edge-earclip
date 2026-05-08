@@ -3022,9 +3022,11 @@ static void ble_log(const char *fmt, ...) {
 
 /* Path B Phase 1/2: emit a binary status frame on 0xFF03.
  * Layout: [type u8][payload …]. Used for 0xF4 (relayed earclip config,
- * NARBIS_CONFIG_WIRE_SIZE bytes) and 0xF5 (relayed raw PPG batch, up to
- * 4 + 29*8 = 236 bytes). The negotiated MTU on Web Bluetooth is typically
- * 247, so 240 B payload + 1 B type fits. */
+ * NARBIS_CONFIG_WIRE_SIZE bytes), 0xF5 (relayed raw PPG batch, up to
+ * 4 + 29*8 = 236 bytes), 0xF7 (relayed earclip diagnostics), and
+ * 0xF8 (relayed earclip battery: 4 B = mv u16 LE, soc u8, charging u8).
+ * The negotiated MTU on Web Bluetooth is typically 247, so 240 B
+ * payload + 1 B type fits. */
 static void send_status_frame(uint8_t type, const uint8_t *payload, size_t len) {
     if (!notifications_enabled || !is_connected) return;
     if (status_char_handle == 0) return;
@@ -5813,6 +5815,16 @@ static void on_earclip_ibi(uint16_t ibi_ms, uint8_t conf, uint8_t flags) {
 
 static void on_earclip_battery(uint8_t soc_pct, uint16_t mv, uint8_t charging) {
     ble_log("earclip batt soc=%u%% mv=%u chg=%u", soc_pct, mv, charging);
+
+    /* Structured pass-through: 4-byte payload mirroring the earclip's
+     * narbis_battery_payload_t (mv u16 LE, soc u8, charging u8). The
+     * dashboard prefers this over the regex-parsed 0xF1 log line. */
+    uint8_t payload[4];
+    payload[0] = (uint8_t)(mv & 0xFF);
+    payload[1] = (uint8_t)((mv >> 8) & 0xFF);
+    payload[2] = soc_pct;
+    payload[3] = charging;
+    send_status_frame(0xF8, payload, sizeof(payload));
 }
 
 /* Path B Phase 1: forward the earclip's CONFIG payload to the dashboard

@@ -424,20 +424,11 @@ esp_err_t power_mgmt_deinit(void)
     return ESP_OK;
 }
 
-esp_err_t power_mgmt_get_battery(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging)
+static esp_err_t read_cached_battery(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging)
 {
     if (mv == NULL || soc_pct == NULL || charging == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
-#if !CONFIG_NARBIS_BATT_DIVIDER_PRESENT
-    int64_t now = esp_timer_get_time();
-    if (now - s_last_stub_warn_us >= (int64_t)BATT_STUB_WARN_PERIOD_US) {
-        ESP_LOGW(TAG, "STUB: battery divider not populated; returning placeholder");
-        s_last_stub_warn_us = now;
-    }
-#endif
-
     if (s_batt_mutex != NULL) {
         xSemaphoreTake(s_batt_mutex, portMAX_DELAY);
         *mv       = s_batt.mv;
@@ -448,6 +439,23 @@ esp_err_t power_mgmt_get_battery(uint16_t *mv, uint8_t *soc_pct, uint8_t *chargi
         *mv = 4000; *soc_pct = 80; *charging = 0;
     }
     return ESP_OK;
+}
+
+esp_err_t power_mgmt_get_battery(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging)
+{
+#if !CONFIG_NARBIS_BATT_DIVIDER_PRESENT
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_stub_warn_us >= (int64_t)BATT_STUB_WARN_PERIOD_US) {
+        ESP_LOGW(TAG, "STUB: battery divider not populated; returning placeholder");
+        s_last_stub_warn_us = now;
+    }
+#endif
+    return read_cached_battery(mv, soc_pct, charging);
+}
+
+esp_err_t power_mgmt_get_battery_quiet(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging)
+{
+    return read_cached_battery(mv, soc_pct, charging);
 }
 
 esp_err_t power_mgmt_set_light_sleep_enabled(bool enabled)
