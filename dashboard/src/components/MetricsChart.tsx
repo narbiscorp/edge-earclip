@@ -35,6 +35,14 @@ export default function MetricsChart() {
   const yLatch = useMemo(() => new RescaleLatch(), []);
   const y2Latch = useMemo(() => new RescaleLatch(), []);
 
+  // User-overridden trace visibility. Plotly.react() rewrites every trace
+  // property each refresh (10 Hz), so without this the legendonly default
+  // gets re-applied every frame and a legend click gets undone in <100 ms
+  // — the trace flickers on, then off. We listen to plotly_legendclick
+  // and remember the user's choice; pull() consults this map and only
+  // emits the default `visible` if the user hasn't toggled that trace.
+  const userVisibilityRef = useRef<Map<string, boolean | 'legendonly'>>(new Map());
+
   useEffect(() => {
     yLatch.invalidate();
     y2Latch.invalidate();
@@ -143,6 +151,13 @@ export default function MetricsChart() {
       const lineShape: LineShape = shapeRef.current;
       const traceType: 'scattergl' | 'scatter' = lineShape === 'linear' ? 'scattergl' : 'scatter';
 
+      // Resolve a trace's visible flag: user override (from legend click)
+      // wins over the per-trace default. Returns one of true / 'legendonly'.
+      const vis = (name: string, deflt: boolean | 'legendonly'): boolean | 'legendonly' => {
+        const override = userVisibilityRef.current.get(name);
+        return override !== undefined ? override : deflt;
+      };
+
       const traces: Data[] = [
         {
           x: hr.x, y: hrY, name: 'mean HR',
@@ -152,59 +167,83 @@ export default function MetricsChart() {
           // HR dwarfs HRV-band traces (60–80 bpm vs 10–60 ms) and forces
           // a Y-axis split that hides rMSSD detail. Off by default; click
           // the legend to bring it back when you want a side-by-side.
-          visible: 'legendonly',
+          visible: vis('mean HR', 'legendonly'),
         },
         {
           x: rmssd.x, y: rmssdY, name: 'rMSSD',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.rmssd, width: 1.5, shape: lineShape },
           yaxis: 'y',
+          visible: vis('rMSSD', true),
         },
         {
           x: sdnn.x, y: sdnnY, name: 'SDNN',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.sdnn, width: 1.5, shape: lineShape },
           yaxis: 'y',
-          visible: 'legendonly',
+          visible: vis('SDNN', 'legendonly'),
         },
         {
           x: lf.x, y: lfY, name: 'LF',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.lf, width: 1.5, shape: lineShape },
           yaxis: 'y',
-          visible: 'legendonly',
+          visible: vis('LF', 'legendonly'),
         },
         {
           x: hf.x, y: hfY, name: 'HF',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.hf, width: 1.5, shape: lineShape },
           yaxis: 'y',
-          visible: 'legendonly',
+          visible: vis('HF', 'legendonly'),
         },
         {
           x: lfhf.x, y: lfhfY, name: 'LF/HF',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.lfhf, width: 1.5, shape: lineShape },
           yaxis: 'y2',
-          visible: 'legendonly',
+          visible: vis('LF/HF', 'legendonly'),
         },
         {
           x: resonance.x, y: resonanceY, name: 'Coherence (resonance)',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.resonance, width: 2, shape: lineShape },
           yaxis: 'y2',
+          visible: vis('Coherence (resonance)', true),
         },
         {
           x: hm.x, y: hmY, name: 'Coherence (HeartMath)',
           type: traceType, mode: 'lines',
           line: { color: CHART_COLORS.hm, width: 1.5, shape: lineShape, dash: 'dot' },
           yaxis: 'y2',
-          visible: 'legendonly',
+          visible: vis('Coherence (HeartMath)', 'legendonly'),
         },
       ];
       return { traces, layoutPatch, seq };
     },
   });
+
+  // Attach a Plotly legend-click listener so we capture user toggles and
+  // respect them in pull() instead of re-applying the default visibility
+  // every refresh. Runs after useLivePlot's effect (which calls
+  // Plotly.newPlot and attaches `.on()` to the div).
+  useEffect(() => {
+    const div = divRef.current as
+      | (HTMLDivElement & { on?: (event: string, cb: (data: unknown) => void) => void })
+      | null;
+    if (!div || typeof div.on !== 'function') return;
+    const onLegendClick = (data: unknown): void => {
+      const d = data as { label?: string; visible?: boolean | 'legendonly' };
+      if (typeof d.label !== 'string') return;
+      // Plotly's default legendclick toggles visible ↔ 'legendonly'. The
+      // `visible` field on the event is the state BEFORE the toggle, so
+      // we record the inverse as the user's intent.
+      const next: boolean | 'legendonly' = d.visible === true ? 'legendonly' : true;
+      userVisibilityRef.current.set(d.label, next);
+    };
+    div.on('plotly_legendclick', onLegendClick);
+    // useLivePlot's Plotly.purge on unmount tears down all listeners.
+  }, [divRef]);
 
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
