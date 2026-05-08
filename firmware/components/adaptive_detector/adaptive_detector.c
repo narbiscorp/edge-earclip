@@ -429,34 +429,34 @@ static void process_pending(void)
     bool accept = true;
     float ncc_v = 0.0f;
     const char *reject_reason = "";
-    bool ncc_active = (s.have_template && s.beats_learned >= s.template_warmup_beats);
+    /* In loose mode NCC becomes telemetry-only — Kalman + IBI bounds stay
+     * as the gates. Reason: a locked template (ncc_learn_min near 1.000)
+     * captured during a noisy warmup can permanently lock real beats out
+     * regardless of how low the admit threshold is set. The user's
+     * complaint of "filtered shows N peaks but tachogram shows N/3" came
+     * from exactly this — Kalman alone gives much more graceful behavior
+     * since it adapts to whatever IBI rhythm actually exists. */
+    bool ncc_telemetry = (s.have_template && s.beats_learned >= s.template_warmup_beats);
+    bool ncc_active = ncc_telemetry && !s.loose_mode;
 
-    if (ncc_active) {
+    if (ncc_telemetry) {
+        /* Always compute NCC for the dashboard's Detector tile so the user
+         * can see template alignment quality even when not gating on it. */
         ncc_v = ncc_floats(window, s.template, n);
         s.last_ncc_x1000 = (int16_t)lrintf(ncc_v * 1000.0f);
-        /* Loose mode halves the effective admit threshold (e.g. 0.500 → 0.250)
-         * so beats that drift slightly from the learned template still pass.
-         * Pairs with the elgendi β-halving from the same flag so motion that
-         * dips amplitude doesn't double-reject (Elgendi miss + NCC miss). */
-        float ncc_min = (float)s.ncc_min_x1000 / (s.loose_mode ? 2000.0f : 1000.0f);
-        /* The win_std floor used to be 1.0, which rejected windows whose raw
-         * bandpass amplitude was small (low-perfusion signal, motion dip).
-         * In loose mode drop it to 0.1 so a small but well-shaped beat still
-         * gets evaluated by NCC; outside loose mode keep 0.5 as a sanity
-         * check against truly flat (DC-only) windows. */
-        float min_std = s.loose_mode ? 0.1f : 0.5f;
-        if (ncc_v < ncc_min || win_std < min_std) {
+    }
+
+    if (ncc_active) {
+        /* NCC was computed above; here we only check the gate. */
+        float ncc_min = (float)s.ncc_min_x1000 / 1000.0f;
+        if (ncc_v < ncc_min || win_std < 0.5f) {
             accept = false;
-            reject_reason = (win_std < min_std) ? "win_std_low" : "ncc<min";
+            reject_reason = (win_std < 0.5f) ? "win_std_low" : "ncc<min";
             s.ncc_rejects++;
             s.consecutive_rejects++;
             s.alpha_x1000 += ADAPT_ALPHA_STEP_NCC_REJECT;
             publish_alpha();
         }
-    } else if (s.have_template) {
-        /* Pre-warmup: still measure NCC for telemetry, but don't gate. */
-        ncc_v = ncc_floats(window, s.template, n);
-        s.last_ncc_x1000 = (int16_t)lrintf(ncc_v * 1000.0f);
     }
 
     /* Kalman gate on observed IBI. */
