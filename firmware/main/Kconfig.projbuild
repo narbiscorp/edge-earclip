@@ -68,6 +68,28 @@ menu "Narbis earclip"
         help
             Divider ratio denominator. See NARBIS_BATT_ADC_DIV_NUM.
 
+    config NARBIS_BATT_ADC_OFFSET_MV
+        int "Battery sense ADC offset (mV, signed)"
+        depends on NARBIS_BATT_DIVIDER_PRESENT
+        range -2000 2000
+        default 0
+        help
+            Constant millivolt offset added to the divider-scaled
+            reading: final_mv = (adc_mv * NUM / DEN) + OFFSET.
+
+            Pure ratio scaling (OFFSET=0) is enough only if the ADC
+            is perfectly linear and the divider is exact. In practice
+            the ESP32-C6 ADC at 12 dB attenuation has a small bias
+            that isn't proportional to input voltage, so a single
+            ratio chosen at one bench point will drift at others.
+            A 2-point bench calibration (e.g. at 4.00 V and 3.70 V)
+            lets you solve for both NUM/DEN and OFFSET and land
+            within ±10 mV across the LiPo range.
+
+            Future PR moves these into narbis_runtime_config_t so
+            each board can keep its own calibration in NVS instead
+            of all boards sharing one project-wide value.
+
     config NARBIS_PPG_POLL_FALLBACK_MS
         int "PPG FIFO poll-fallback interval (ms, 0 = IRQ only)"
         range 0 200

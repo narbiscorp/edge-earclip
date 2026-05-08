@@ -183,9 +183,10 @@ static esp_err_t adc_init(void)
     }
 
     s_adc_ready = true;
-    ESP_LOGI(TAG, "battery ADC ready: GPIO%d unit=%d chan=%d divider=%d/%d",
+    ESP_LOGI(TAG, "battery ADC ready: GPIO%d unit=%d chan=%d divider=%d/%d offset=%dmV",
              CONFIG_NARBIS_BATT_ADC_GPIO, (int)s_adc_unit_id, (int)s_adc_channel,
-             CONFIG_NARBIS_BATT_ADC_DIV_NUM, CONFIG_NARBIS_BATT_ADC_DIV_DEN);
+             CONFIG_NARBIS_BATT_ADC_DIV_NUM, CONFIG_NARBIS_BATT_ADC_DIV_DEN,
+             CONFIG_NARBIS_BATT_ADC_OFFSET_MV);
     return ESP_OK;
 }
 
@@ -215,7 +216,8 @@ static esp_err_t adc_sample_mv(uint16_t *out_mv)
     }
 
     int batt_mv = (mv_at_pin * CONFIG_NARBIS_BATT_ADC_DIV_NUM) /
-                  CONFIG_NARBIS_BATT_ADC_DIV_DEN;
+                  CONFIG_NARBIS_BATT_ADC_DIV_DEN
+                + CONFIG_NARBIS_BATT_ADC_OFFSET_MV;
     if (batt_mv < 0)     batt_mv = 0;
     if (batt_mv > 65535) batt_mv = 65535;
     *out_mv = (uint16_t)batt_mv;
