@@ -1,0 +1,102 @@
+name: build-release-firmware
+
+# Auto-builds and releases the Narbis earclip firmware. Modeled on the
+# Edge firmware's `build-firmware.yml` (narbiscorp/edge-firmware) so that
+# both devices' release artifacts are produced by an identical CI shape.
+#
+# Triggers:
+#   - push to main         → auto-tagged release (vYYYY.MM.DD-shortsha)
+#   - push of a v* tag     → release tagged with the explicit tag name
+#   - pull_request to main → build only, no release
+#   - manual dispatch      → auto-tagged release
+#
+# Assumed destination-repo layout:
+#   firmware/                   ← ESP-IDF project root (idf.py runs here)
+#   firmware/CMakeLists.txt     ← project(narbis_earclip)
+#   firmware/sdkconfig.defaults ← CONFIG_IDF_TARGET="esp32c6"
+#
+# If the destination repo puts the firmware elsewhere, change every
+# `firmware/...` path below and the `path:` input on esp-idf-ci-action.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to create releases
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32c6
+          path: firmware
+          command: rm -rf build && idf.py set-target esp32c6 && idf.py build
+
+      - name: Build info
+        id: info
+        run: |
+          BIN="firmware/build/narbis_earclip.bin"
+          echo "size=$(stat -c%s "$BIN" 2>/dev/null || echo 0)" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          AUTO_TAG="v$(date -u +'%Y.%m.%d')-${SHORT_SHA}"
+          echo "auto_tag=${AUTO_TAG}" >> $GITHUB_OUTPUT
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${AUTO_TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32c6
+          path: |
+            firmware/build/narbis_earclip.bin
+            firmware/build/narbis_earclip.elf
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Create Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.info.outputs.tag }}
+          name: "Earclip Firmware ${{ steps.info.outputs.tag }}"
+          body: |
+            ## Narbis Earclip Firmware ${{ steps.info.outputs.tag }}
+
+            **Built:** ${{ steps.info.outputs.date }}
+            **Size:** ${{ steps.info.outputs.size }} bytes
+            **Commit:** ${{ github.sha }}
+            **Target:** ESP32-C6 (ESP-IDF v5.5.1)
+
+            ### OTA Update
+            Download `narbis_earclip.bin` → open the OTA Updater → select **Narbis earclip** → Connect → Flash.
+
+            ### Wired Flash
+            | File | Address |
+            | --- | --- |
+            | bootloader.bin | 0x0000 |
+            | partition-table.bin | 0x8000 |
+            | narbis_earclip.bin | 0x10000 |
+          files: |
+            firmware/build/narbis_earclip.bin
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
