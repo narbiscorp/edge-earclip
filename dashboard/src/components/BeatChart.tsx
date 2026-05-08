@@ -77,17 +77,19 @@ export default function BeatChart() {
 
       const ecX: number[] = [];
       const ecY: number[] = [];
-      const artX: number[] = [];
-      const artY: number[] = [];
+      // Hard physiological cap. Anything outside [200 ms, 2500 ms]
+      // (24-300 BPM) is implausible — usually a state-reset spanning
+      // several missed beats. Drop entirely instead of rendering as a
+      // marker, since even markers on the same axis blow up the
+      // autorange when a single outlier is at 5000 ms.
+      const HARD_MIN_MS = 200;
+      const HARD_MAX_MS = 2500;
       bufs.narbisBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
         if (v.ibi_ms <= 0) return;
-        if (isArtifactBeat(v)) {
-          artX.push(ts);
-          artY.push(v.ibi_ms);
-        } else {
-          ecX.push(ts);
-          ecY.push(v.ibi_ms);
-        }
+        if (v.ibi_ms < HARD_MIN_MS || v.ibi_ms > HARD_MAX_MS) return;  // outlier — don't plot
+        if (isArtifactBeat(v)) return;                                  // artifact — don't plot
+        ecX.push(ts);
+        ecY.push(v.ibi_ms);
       });
 
       const polarX: number[] = [];
@@ -150,14 +152,8 @@ export default function BeatChart() {
           line: { color: CHART_COLORS.polar, width: 1, shape: lineShape },
           marker: { color: CHART_COLORS.polar, size: 4 },
         },
-        {
-          x: artX,
-          y: artY,
-          type: 'scattergl',
-          mode: 'markers',
-          name: 'Artifact',
-          marker: { color: CHART_COLORS.artifact, size: 6, symbol: 'x' },
-        },
+        // Artifact trace removed — outliers/artifact beats are dropped
+        // entirely upstream so the autorange isn't pulled by them.
       ];
       return { traces, layoutPatch, seq };
     },

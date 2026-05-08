@@ -177,28 +177,34 @@ void beat_validator_feed(const elgendi_peak_t *p)
     int confidence = 100;
     uint8_t flags = 0;
 
-    /* In adaptive-detector mode, the upstream NCC + Kalman has already run
-     * a stricter IBI gate. Skip the bounds + delta% checks (they only fire
-     * here on beats Kalman would also have rejected) but still update the
-     * running median below for the dashboard's clean/ectopic telemetry. */
-    if (!s.kalman_active) {
-        bool plausibility_ok = (ibi >= s.ibi_min_ms) && (ibi <= s.ibi_max_ms);
-        if (!plausibility_ok) {
-            flags |= NARBIS_BEAT_FLAG_ARTIFACT;
-            confidence = 0;
-        }
+    /* IBI bounds check ALWAYS runs — even in adaptive mode. The previous
+     * design assumed the upstream Kalman gate would catch out-of-range
+     * values, but a state reset (lock-on watchdog or similar) can leave
+     * adaptive_detector with last_accepted_ts_ms=0, which bypasses its
+     * own bounds check. The first beat after such a reset reaches
+     * beat_validator with prev_ts_ms still pointing at a beat from
+     * before the reset — producing a 4–6 s "IBI" that blew up the
+     * dashboard tachogram autorange. Flagging those as artifact lets
+     * the dashboard render them as separate markers instead of polluting
+     * the main line. */
+    bool plausibility_ok = (ibi >= s.ibi_min_ms) && (ibi <= s.ibi_max_ms);
+    if (!plausibility_ok) {
+        flags |= NARBIS_BEAT_FLAG_ARTIFACT;
+        confidence = 0;
+    }
 
-        if (s.ring_filled > 0) {
-            uint16_t median = running_median();
-            if (median > 0) {
-                int32_t diff = (int32_t)ibi - (int32_t)median;
-                if (diff < 0) diff = -diff;
-                int32_t threshold = ((int32_t)median * (int32_t)s.ibi_max_delta_pct) / 100;
-                if (diff > threshold) {
-                    flags |= NARBIS_BEAT_FLAG_ARTIFACT;
-                    confidence -= 50;
-                    if (confidence < 0) confidence = 0;
-                }
+    /* The delta-from-median check is skipped in adaptive mode because the
+     * upstream Kalman is already a more principled IBI continuity gate. */
+    if (!s.kalman_active && s.ring_filled > 0) {
+        uint16_t median = running_median();
+        if (median > 0) {
+            int32_t diff = (int32_t)ibi - (int32_t)median;
+            if (diff < 0) diff = -diff;
+            int32_t threshold = ((int32_t)median * (int32_t)s.ibi_max_delta_pct) / 100;
+            if (diff > threshold) {
+                flags |= NARBIS_BEAT_FLAG_ARTIFACT;
+                confidence -= 50;
+                if (confidence < 0) confidence = 0;
             }
         }
     }
