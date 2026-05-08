@@ -439,9 +439,15 @@ static void process_pending(void)
          * Pairs with the elgendi β-halving from the same flag so motion that
          * dips amplitude doesn't double-reject (Elgendi miss + NCC miss). */
         float ncc_min = (float)s.ncc_min_x1000 / (s.loose_mode ? 2000.0f : 1000.0f);
-        if (ncc_v < ncc_min || win_std < 1.0f) {
+        /* The win_std floor used to be 1.0, which rejected windows whose raw
+         * bandpass amplitude was small (low-perfusion signal, motion dip).
+         * In loose mode drop it to 0.1 so a small but well-shaped beat still
+         * gets evaluated by NCC; outside loose mode keep 0.5 as a sanity
+         * check against truly flat (DC-only) windows. */
+        float min_std = s.loose_mode ? 0.1f : 0.5f;
+        if (ncc_v < ncc_min || win_std < min_std) {
             accept = false;
-            reject_reason = (win_std < 1.0f) ? "win_std<1" : "ncc<min";
+            reject_reason = (win_std < min_std) ? "win_std_low" : "ncc<min";
             s.ncc_rejects++;
             s.consecutive_rejects++;
             s.alpha_x1000 += ADAPT_ALPHA_STEP_NCC_REJECT;

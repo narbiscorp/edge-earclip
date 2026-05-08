@@ -390,14 +390,18 @@ void elgendi_feed(const ppg_processed_sample_t *ps)
      *
      * All operands are non-negative; LHS/RHS easily fit int64 because
      * the squared signal has been averaged across W1/W2 already. */
-    /* Loose mode halves the effective β so the threshold sits closer to
-     * MA2 — block triggers fire earlier and on shallower peaks, which the
-     * user wants for motion-tolerant detection (light hand movement that
-     * dips amplitude transiently was eating real beats with the default
-     * β=0.020). Trade-off: more dicrotic-notch false starts, which the
-     * W1-width gate downstream still throws out. */
-    uint16_t effective_beta = s.loose_mode ? (uint16_t)(s.beta_x1000 / 2u)
-                                           : s.beta_x1000;
+    /* Loose mode collapses the effective β to ZERO. Threshold becomes a
+     * literal MA1 > MA2 comparison — any local upswing in the squared
+     * signal triggers a block. Original loose mode just halved β, which
+     * still kept enough margin that small-amplitude beats during motion
+     * dips never crossed (MA2 lags ~5 beats behind a real amplitude
+     * change at default W2=667 ms, so MA1 stays close to MA2 for too
+     * long). β=0 is the most permissive value the trigger can take
+     * without going unstable, and the refractory gate downstream still
+     * throws out spurious double-fires. Trade-off: more dicrotic-notch
+     * false starts, but those land inside the dynamic refractory window
+     * (60% × current IBI) and get suppressed there. */
+    uint16_t effective_beta = s.loose_mode ? 0u : s.beta_x1000;
     int64_t lhs = s.w1_sum * (int64_t)s.w2_samples * 1000;
     int64_t rhs = s.w2_sum * (int64_t)s.w1_samples *
                   (int64_t)(1000 + (int32_t)effective_beta);
