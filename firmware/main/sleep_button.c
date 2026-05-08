@@ -21,6 +21,7 @@
 #include "sleep_button.h"
 
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
@@ -47,9 +48,17 @@ static void enter_deep_sleep(void) {
 
     ESP_LOGW(TAG, "entering deep sleep — wake by pressing GPIO%d", SLEEP_BUTTON_GPIO);
 
+    /* CRITICAL: keep the pull-up alive through deep sleep. The HP GPIO
+     * peripheral (where gpio_config() set the pull-up) powers off in
+     * deep sleep on ESP32-C6; LP_IO takes over for GPIO0–7 but does
+     * NOT inherit the HP pull-up. Without rtc_gpio_pullup_en the pin
+     * floats, noise reads as LOW, and ESP_GPIO_WAKEUP_GPIO_LOW fires
+     * an immediate false wake → chip resets right back up. */
+    rtc_gpio_pullup_en(SLEEP_BUTTON_GPIO);
+    rtc_gpio_pulldown_dis(SLEEP_BUTTON_GPIO);
+
     /* Arm the same pin as wake source. ESP_GPIO_WAKEUP_GPIO_LOW means
-     * the chip wakes when the pin is LOW (button pressed). The button
-     * has an internal pull-up; pressing connects to GND. */
+     * the chip wakes when the pin is LOW (button pressed). */
     esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(
         1ULL << SLEEP_BUTTON_GPIO,
         ESP_GPIO_WAKEUP_GPIO_LOW);
