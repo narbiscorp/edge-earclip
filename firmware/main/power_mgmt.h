@@ -21,6 +21,11 @@ esp_err_t power_mgmt_deinit(void);
  * with a rate-limited STUB warning. */
 esp_err_t power_mgmt_get_battery(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging);
 
+/* Same snapshot, but suppresses the rate-limited STUB warning. For use
+ * by periodic readers (e.g. the status summary log) that would otherwise
+ * amplify the warn cadence. */
+esp_err_t power_mgmt_get_battery_quiet(uint16_t *mv, uint8_t *soc_pct, uint8_t *charging);
+
 /* Live-toggle light sleep. Calls esp_pm_configure() with the new policy. */
 esp_err_t power_mgmt_set_light_sleep_enabled(bool enabled);
 

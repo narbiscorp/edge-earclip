@@ -1,4 +1,5 @@
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -32,6 +33,14 @@
 #endif
 
 static const char *TAG = "narbis";
+static const char *TAG_SUMMARY = "summary";
+
+/* Periodic-summary stats. on_beat() updates them; status_summary_tick()
+ * reads them. Single-writer (validator task) + single-reader (timer task);
+ * the small races (beats_total ticking up between read & format) are
+ * harmless for a 2-min log line. */
+static uint32_t s_beats_total = 0;
+static uint16_t s_ibi_ema_ms  = 0;  /* 0 = uninitialised */
 
 static void on_beat(const beat_event_t *e, void *ctx)
 {
@@ -45,7 +54,36 @@ static void on_beat(const beat_event_t *e, void *ctx)
              bpm_x10 / 10, bpm_x10 % 10, e->confidence_x100, e->flags,
              e->peak_amplitude);
 
+    s_beats_total++;
+    if (e->ibi_ms > 0) {
+        if (s_ibi_ema_ms == 0) {
+            s_ibi_ema_ms = e->ibi_ms;
+        } else {
+            uint32_t blended = (7u * (uint32_t)s_ibi_ema_ms + (uint32_t)e->ibi_ms) / 8u;
+            if (blended > 0xFFFFu) blended = 0xFFFFu;
+            s_ibi_ema_ms = (uint16_t)blended;
+        }
+    }
+
     (void)transport_ble_send_beat(e);
+}
+
+static void status_summary_tick(void *arg)
+{
+    (void)arg;
+    uint32_t up_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    size_t   heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint8_t  peers = transport_ble_active_peer_count();
+    uint16_t batt_mv = 0;
+    uint8_t  batt_soc = 0, batt_chg = 0;
+    (void)power_mgmt_get_battery_quiet(&batt_mv, &batt_soc, &batt_chg);
+    ESP_LOGI(TAG_SUMMARY,
+             "up=%us heap=%uB peers=%u/%u beats_total=%lu ibi_avg=%ums batt=%umV(%u%%)%s",
+             (unsigned)up_s, (unsigned)heap,
+             (unsigned)peers, (unsigned)NARBIS_BLE_MAX_CONNECTIONS,
+             (unsigned long)s_beats_total, (unsigned)s_ibi_ema_ms,
+             (unsigned)batt_mv, (unsigned)batt_soc,
+             batt_chg ? " chg" : "");
 }
 
 static void boot_log_macs(void)
@@ -230,6 +268,21 @@ void app_main(void)
      * to enter deep sleep. Same button wakes (chip resets out of deep
      * sleep, app_main runs again). */
     ESP_ERROR_CHECK(sleep_button_init());
+
+    /* Periodic one-line status summary on the USB log. 120 s cadence
+     * stays out of the way of beat-by-beat output but still gives
+     * timing info, free heap, peer count, beat throughput, and battery
+     * mV at a steady rhythm. The 30 s battery-only log inside
+     * power_mgmt.c stays as-is — finer cadence for low-battery debug. */
+    static esp_timer_handle_t s_summary_timer;
+    const esp_timer_create_args_t sum_args = {
+        .callback        = &status_summary_tick,
+        .name            = "summary",
+        .dispatch_method = ESP_TIMER_TASK,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&sum_args, &s_summary_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_summary_timer,
+                                             120ULL * 1000ULL * 1000ULL));
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

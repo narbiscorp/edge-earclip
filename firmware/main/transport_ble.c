@@ -149,6 +149,14 @@ bool transport_ble_any_connected(void)
     return active_slot_count() > 0;
 }
 
+uint8_t transport_ble_active_peer_count(void)
+{
+    int n = active_slot_count();
+    if (n < 0) n = 0;
+    if (n > 255) n = 255;
+    return (uint8_t)n;
+}
+
 uint16_t transport_ble_get_conn_handle(void)
 {
     for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
