@@ -3,7 +3,6 @@ import type { Data, Layout } from 'plotly.js';
 import { getActiveBuffers, useDashboardStore } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
-import { isArtifactBeat } from '../metrics/windowing';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
 
@@ -77,17 +76,19 @@ export default function BeatChart() {
 
       const ecX: number[] = [];
       const ecY: number[] = [];
-      // Hard physiological cap. Anything outside [200 ms, 2500 ms]
-      // (24-300 BPM) is implausible — usually a state-reset spanning
-      // several missed beats. Drop entirely instead of rendering as a
-      // marker, since even markers on the same axis blow up the
-      // autorange when a single outlier is at 5000 ms.
+      // Filter ONLY on physiological plausibility, not on the artifact
+      // flag. Reasoning: when elgendi misses one beat, the next beat's
+      // IBI is ~2× normal (e.g. 1500 ms at HR 80). beat_validator's
+      // delta-from-median check flags that as ARTIFACT, but the IBI
+      // itself is perfectly plottable — dropping it cascades one
+      // elgendi miss into two missing tach points (the missed beat AND
+      // the spans-it beat). The HARD bounds catch the real outliers
+      // (state-reset spans of 4-6 s); leave the rest to render.
       const HARD_MIN_MS = 200;
       const HARD_MAX_MS = 2500;
       bufs.narbisBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
         if (v.ibi_ms <= 0) return;
-        if (v.ibi_ms < HARD_MIN_MS || v.ibi_ms > HARD_MAX_MS) return;  // outlier — don't plot
-        if (isArtifactBeat(v)) return;                                  // artifact — don't plot
+        if (v.ibi_ms < HARD_MIN_MS || v.ibi_ms > HARD_MAX_MS) return;
         ecX.push(ts);
         ecY.push(v.ibi_ms);
       });
