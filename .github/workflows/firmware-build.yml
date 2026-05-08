@@ -11,6 +11,8 @@ on:
       - 'firmware/**'
       - 'protocol/**'
       - '.github/workflows/firmware-build.yml'
+  release:
+    types: [published]
 
 jobs:
   build:
@@ -36,3 +38,18 @@ jobs:
             firmware/build/partition_table/partition-table.bin
             firmware/build/bootloader/bootloader.bin
           if-no-files-found: warn
+
+      # Attach the built binaries to a GitHub Release when one is published.
+      # The OTA webapp at webapp/ota/index.html fetches the asset named
+      # narbis_earclip.bin from this repo's releases. Cut a release with
+      # `gh release create v0.1.0 --generate-notes` (or via the GitHub UI)
+      # and this step will upload the build outputs to it.
+      - name: Attach firmware to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            firmware/build/narbis_earclip.bin
+            firmware/build/partition_table/partition-table.bin
+            firmware/build/bootloader/bootloader.bin
+          fail_on_unmatched_files: true

@@ -168,12 +168,16 @@ static void notify_page_crc(uint16_t page, uint32_t crc_le)
     uint8_t f[7] = {
         NARBIS_OTA_ST_PAGE_CRC,
         (uint8_t)(page >> 8), (uint8_t)(page & 0xFF),
-        /* CRC is little-endian on the wire — matches webapp's
-         * DataView.getUint32(off, true) parse. */
-        (uint8_t)(crc_le & 0xFF),
-        (uint8_t)((crc_le >> 8) & 0xFF),
-        (uint8_t)((crc_le >> 16) & 0xFF),
+        /* CRC sent big-endian on the wire (MSB first) to match the
+         * webapp's decode at index.html:
+         *     ((v[3]<<24)|(v[4]<<16)|(v[5]<<8)|v[6])>>>0
+         * which is also what the Edge firmware emits. The previous
+         * little-endian emit produced byte-reversed CRCs and made
+         * every page fail validation on the host side. */
         (uint8_t)((crc_le >> 24) & 0xFF),
+        (uint8_t)((crc_le >> 16) & 0xFF),
+        (uint8_t)((crc_le >> 8) & 0xFF),
+        (uint8_t)(crc_le & 0xFF),
     };
     (void)notify_status(f, sizeof(f));
 }
@@ -521,12 +525,15 @@ static int access_data(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
     }
 
-    /* Pull the chunk out before grabbing the lock. Edge sized chunks at
-     * 244 B; we accept anything up to one page. */
-    uint8_t  chunk[NARBIS_OTA_PAGE_SIZE];
-    uint16_t chunk_len = 0;
-    if (read_om_to_bytes(ctxt->om, chunk, sizeof(chunk), &chunk_len) != 0
-        || chunk_len == 0) {
+    /* Read the chunk length up front. Each chunk is at most NARBIS_OTA_CHUNK_SIZE
+     * (244 B) per the wire protocol, but a host could legally send up to MTU-3
+     * (≈244 B with PREF_MTU=247). We do NOT allocate a stack buffer here —
+     * doing so blew the NimBLE host task stack (default 4 KB in IDF 5.5)
+     * and dropped the connection mid-transfer with "GATT operation failed
+     * for unknown reason" on the webapp side. We instead copy the mbuf
+     * straight into the heap-allocated page buffer below, under the lock. */
+    uint16_t chunk_len = OS_MBUF_PKTLEN(ctxt->om);
+    if (chunk_len == 0) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 
@@ -557,8 +564,19 @@ static int access_data(uint16_t conn_handle, uint16_t attr_handle,
          * rather than overwrite the buffer. */
         chunk_len = (uint16_t)avail;
     }
-    memcpy(s_page_buf + s_page_offset, chunk, chunk_len);
-    s_page_offset += chunk_len;
+
+    /* Copy the mbuf directly into the heap-allocated page buffer. No
+     * intermediate stack temp — see comment above. */
+    uint16_t copied = 0;
+    int rc = ble_hs_mbuf_to_flat(ctxt->om,
+                                  s_page_buf + s_page_offset,
+                                  chunk_len,
+                                  &copied);
+    if (rc != 0 || copied == 0) {
+        xSemaphoreGive(s_mtx);
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    s_page_offset += copied;
 
     if (!s_image_header_validated && s_page_offset >= ESP_IMAGE_HEADER_BYTES) {
         need_chip_check = true;
@@ -742,6 +760,22 @@ esp_err_t ble_ota_init(void)
     ESP_LOGI(TAG, "init complete (page=%u chunk=%u)",
              (unsigned)NARBIS_OTA_PAGE_SIZE, (unsigned)NARBIS_OTA_CHUNK_SIZE);
     return ESP_OK;
+}
+
+void ble_ota_on_disconnect(uint16_t conn_handle)
+{
+    (void)conn_handle;
+    if (s_mtx == NULL || s_cmd_q == NULL) return;
+
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    bool active = s_in_ota_mode;
+    xSemaphoreGive(s_mtx);
+
+    if (active) {
+        ESP_LOGW(TAG, "BLE disconnect during active OTA session — queueing cancel");
+        ota_task_cmd_t cmd = OTA_TASK_CANCEL;
+        (void)xQueueSend(s_cmd_q, &cmd, 0);
+    }
 }
 
 esp_err_t ble_ota_deinit(void)
