@@ -2,6 +2,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -206,6 +208,45 @@ static esp_err_t nvs_init_with_recovery(void)
 
 void app_main(void)
 {
+    /* Boot-cause diagnostic — surfaces *why* this boot happened so we can
+     * tell a user-press-wake from a false-wake (floating pin, brownout,
+     * watchdog). Read these before any other init clobbers the wake state. */
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        const char *rr_str =
+            rr == ESP_RST_POWERON   ? "POWERON" :
+            rr == ESP_RST_EXT       ? "EXT_RESET" :
+            rr == ESP_RST_SW        ? "SW" :
+            rr == ESP_RST_PANIC     ? "PANIC" :
+            rr == ESP_RST_INT_WDT   ? "INT_WDT" :
+            rr == ESP_RST_TASK_WDT  ? "TASK_WDT" :
+            rr == ESP_RST_WDT       ? "WDT" :
+            rr == ESP_RST_DEEPSLEEP ? "DEEPSLEEP" :
+            rr == ESP_RST_BROWNOUT  ? "BROWNOUT" :
+            rr == ESP_RST_SDIO      ? "SDIO" :
+            rr == ESP_RST_USB       ? "USB" :
+            rr == ESP_RST_JTAG      ? "JTAG" :
+            "UNKNOWN";
+        ESP_LOGW(TAG, "boot: reset_reason=%s (%d)", rr_str, (int)rr);
+        if (rr == ESP_RST_DEEPSLEEP) {
+            esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+            const char *wc_str =
+                wc == ESP_SLEEP_WAKEUP_UNDEFINED ? "UNDEFINED" :
+                wc == ESP_SLEEP_WAKEUP_TIMER     ? "TIMER" :
+                wc == ESP_SLEEP_WAKEUP_GPIO      ? "GPIO" :
+                wc == ESP_SLEEP_WAKEUP_UART      ? "UART" :
+                wc == ESP_SLEEP_WAKEUP_EXT0      ? "EXT0" :
+                wc == ESP_SLEEP_WAKEUP_EXT1      ? "EXT1" :
+                "OTHER";
+            ESP_LOGW(TAG, "boot: wake_cause=%s (%d)", wc_str, (int)wc);
+            if (wc == ESP_SLEEP_WAKEUP_GPIO) {
+                uint64_t mask = esp_sleep_get_gpio_wakeup_status();
+                ESP_LOGW(TAG, "boot: wake_gpio_mask=0x%016llx",
+                         (unsigned long long)mask);
+            }
+        }
+    }
+
     ESP_ERROR_CHECK(nvs_init_with_recovery());
 
     ESP_LOGI(TAG, "Narbis earclip booting v0.1.0, protocol version %d",
