@@ -416,6 +416,9 @@ static void process_pending(void)
     float window[ADAPT_WINDOW_MAX];
     if (!extract_window(window)) {
         /* Ring lost the data — drop the candidate. */
+        ESP_LOGI(TAG, "drop: extract_window failed (peak_local=%u, bp_head=%u, half=%u)",
+                 (unsigned)s.pending_peak_abs_idx, (unsigned)s.bp_head_idx,
+                 s.template_half_samples);
         s.have_pending = false;
         return;
     }
@@ -425,6 +428,7 @@ static void process_pending(void)
 
     bool accept = true;
     float ncc_v = 0.0f;
+    const char *reject_reason = "";
     bool ncc_active = (s.have_template && s.beats_learned >= s.template_warmup_beats);
 
     if (ncc_active) {
@@ -437,6 +441,7 @@ static void process_pending(void)
         float ncc_min = (float)s.ncc_min_x1000 / (s.loose_mode ? 2000.0f : 1000.0f);
         if (ncc_v < ncc_min || win_std < 1.0f) {
             accept = false;
+            reject_reason = (win_std < 1.0f) ? "win_std<1" : "ncc<min";
             s.ncc_rejects++;
             s.consecutive_rejects++;
             s.alpha_x1000 += ADAPT_ALPHA_STEP_NCC_REJECT;
@@ -449,18 +454,30 @@ static void process_pending(void)
     }
 
     /* Kalman gate on observed IBI. */
+    uint32_t observed = 0;
     if (accept && s.last_accepted_ts_ms > 0) {
-        uint32_t observed = (s.pending_peak_ts_ms >= s.last_accepted_ts_ms)
-                                ? (s.pending_peak_ts_ms - s.last_accepted_ts_ms) : 0;
+        observed = (s.pending_peak_ts_ms >= s.last_accepted_ts_ms)
+                        ? (s.pending_peak_ts_ms - s.last_accepted_ts_ms) : 0;
         if (observed < s.ibi_min_ms || observed > s.ibi_max_ms) {
             accept = false;
+            reject_reason = "ibi_bounds";
             s.consecutive_rejects++;
         } else {
             if (!kalman_step((float)observed)) {
                 accept = false;
+                reject_reason = "kalman";
                 s.consecutive_rejects++;
             }
         }
+    }
+    ESP_LOGI(TAG, "%s: ibi=%ums ncc=%.2f std=%.1f learned=%u %s%s",
+             accept ? "ACCEPT" : "REJECT",
+             (unsigned)observed, (double)ncc_v, (double)win_std,
+             (unsigned)s.beats_learned,
+             ncc_active ? "ncc_on" : "ncc_off",
+             accept ? "" : (reject_reason[0] ? " reason=" : ""));
+    if (!accept && reject_reason[0]) {
+        ESP_LOGI(TAG, "  reject_reason=%s", reject_reason);
     }
 
     if (accept) {
@@ -687,6 +704,10 @@ void adaptive_detector_propose_peak(const elgendi_peak_t *p)
     s.pending_peak_abs_idx  = peak_local;
     s.pending_peak_ts_ms    = p->timestamp_ms;
     s.pending_peak_amp      = p->amplitude;
+    ESP_LOGI(TAG, "propose: peak_ts=%u now=%u Δ=%ums peak_local=%u bp_head=%u half=%u",
+             (unsigned)p->timestamp_ms, (unsigned)s.last_sample_ts_ms,
+             (unsigned)delta_ms, (unsigned)peak_local,
+             (unsigned)s.bp_head_idx, s.template_half_samples);
 }
 
 void adaptive_detector_get_stats(adaptive_detector_stats_t *out)
