@@ -170,7 +170,15 @@ static void params_for_profile(uint8_t ble_profile, struct ble_gap_upd_params *p
         p->itvl_min = 12;   /* 15 ms */
         p->itvl_max = 24;   /* 30 ms */
         p->latency  = 0;
-        p->supervision_timeout = 200;
+        /* 20 s supervision timeout — matches Edge firmware
+         * (EDGE/EDGE FIRMWARE/main/main.c:4655). The earclip's previous
+         * 2 s value (200 × 10 ms) was too tight for OTA: a slow flash
+         * sector in esp_ota_write inside the BLE callback could exceed
+         * 2 s and drop the link mid-transfer. Edge has run reliably at
+         * 20 s and that is the value the v13.x OTA webapp was tuned
+         * against. Trade-off for normal dashboard streaming: a real
+         * link loss now takes up to 20 s to surface, vs 2 s before. */
+        p->supervision_timeout = 2000;
     } else {
         p->itvl_min = 40;   /* 50 ms */
         p->itvl_max = 80;   /* 100 ms */
@@ -431,6 +439,11 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         int slot = find_slot_by_handle(handle);
         ESP_LOGI(TAG, "disconnected slot=%d handle=%u reason=0x%02x",
                  slot, handle, event->disconnect.reason);
+        /* Let ble_ota tear down any active session — without this a
+         * mid-OTA disconnect leaves s_in_ota_mode=true and the next
+         * reconnect's START gets rejected with ERR_ALREADY_IN_OTA
+         * until the device power-cycles. */
+        ble_ota_on_disconnect(handle);
         if (slot >= 0) clear_slot(slot);
         start_advertising_if_room();
         break;

@@ -19,6 +19,15 @@ esp_err_t ble_ota_deinit(void);
 const struct ble_gatt_svc_def *ble_ota_svc_defs(void);
 void ble_ota_on_register(struct ble_gatt_register_ctxt *ctxt);
 
+/* Notify the OTA module that a BLE central just disconnected. If an OTA
+ * session is currently active, this queues a cancel — preventing the
+ * next reconnect from being rejected with NARBIS_OTA_ERR_ALREADY_IN_OTA
+ * because the previous attempt died mid-flight without sending CANCEL.
+ *
+ * Safe to call before/after init; it no-ops when the module is down.
+ * Idempotent — calling again while a cancel is already queued is fine. */
+void ble_ota_on_disconnect(uint16_t conn_handle);
+
 /* First-connect rollback validity self-test.
  *
  * On boot, if the running partition is an OTA slot in
