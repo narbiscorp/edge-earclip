@@ -661,9 +661,30 @@ void adaptive_detector_propose_peak(const elgendi_peak_t *p)
 
     /* ADAPTIVE mode: queue. If a previous candidate is somehow still pending,
      * drop it — the elgendi block detector won't propose a second peak before
-     * the first one's refractory expires anyway. */
+     * the first one's refractory expires anyway.
+     *
+     * CRITICAL: p->sample_index is in ppg_channel's counter space, which runs
+     * ~W2 samples ahead of OUR bp_head_idx because elgendi suppresses
+     * filtered_cb during the W2-window MA settling period. Using p->sample_index
+     * directly stalled process_pending forever (it would have required
+     * bp_head_idx to advance past sample_index+half, but the W2 offset was
+     * permanent and each new peak reset the wait clock before it could close).
+     *
+     * Convert to our local index space by walking back from the most recently
+     * fed sample by the timestamp delta. last_sample_ts_ms is the wall-clock
+     * timestamp of bp_head_idx-1; (now − peak_ts) / sample_period gives the
+     * number of samples between then and now. */
+    if (s.bp_head_idx == 0) return;
+    uint32_t newest_local = s.bp_head_idx - 1u;
+    uint32_t delta_ms = (s.last_sample_ts_ms >= p->timestamp_ms)
+                          ? (s.last_sample_ts_ms - p->timestamp_ms) : 0u;
+    uint16_t fs = (s.sample_rate_hz > 0) ? s.sample_rate_hz : 200;
+    uint32_t delta_samples = (delta_ms * (uint32_t)fs + 500u) / 1000u;
+    uint32_t peak_local = (newest_local >= delta_samples)
+                            ? (newest_local - delta_samples) : 0u;
+
     s.have_pending          = true;
-    s.pending_peak_abs_idx  = p->sample_index;
+    s.pending_peak_abs_idx  = peak_local;
     s.pending_peak_ts_ms    = p->timestamp_ms;
     s.pending_peak_amp      = p->amplitude;
 }
