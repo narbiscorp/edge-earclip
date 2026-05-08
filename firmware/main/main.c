@@ -208,6 +208,13 @@ static esp_err_t nvs_init_with_recovery(void)
 
 void app_main(void)
 {
+    /* Hold for ~1 s so the USB-CDC console has time to re-enumerate
+     * after a deep-sleep wake before we emit the boot diagnostic.
+     * Without this, the wake-cause line lands while the host monitor
+     * is still reattaching and gets dropped. (Diagnostic build only —
+     * remove once we've nailed the false-wake cause.) */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     /* Boot-cause diagnostic — surfaces *why* this boot happened so we can
      * tell a user-press-wake from a false-wake (floating pin, brownout,
      * watchdog). Read these before any other init clobbers the wake state. */
