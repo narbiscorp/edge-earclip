@@ -1,14 +1,17 @@
 /*
  * sleep_button.c — see sleep_button.h for behaviour.
  *
- * Implementation: a low-priority polling task (50 Hz) reads GPIO9 with
- * an internal pull-up. The XIAO ESP32-C6's BOOT button shorts GPIO9 to
- * GND when pressed, so a press reads as level 0.
+ * Implementation: a low-priority polling task (50 Hz) reads
+ * SLEEP_BUTTON_GPIO with an internal pull-up. An external tactile
+ * button between the pin and GND shorts it to GND when pressed, so a
+ * press reads as level 0.
  *
  * Wake source on ESP32-C6: esp_deep_sleep_enable_gpio_wakeup() with
  * ESP_GPIO_WAKEUP_GPIO_LOW — same pin, woken when held LOW (button
- * pressed). The chip resets out of deep sleep, so app_main runs from
- * the top again.
+ * pressed). Requires the pin to be in the LP_IO domain (GPIO0–GPIO7
+ * on C6); HP-domain pins are powered down in deep sleep and will be
+ * rejected with ESP_ERR_INVALID_ARG. The chip resets out of deep
+ * sleep, so app_main runs from the top again.
  *
  * Startup grace period: after boot we wait WAKE_GRACE_MS before arming,
  * giving the user time to release the wake-press without immediately
@@ -25,7 +28,7 @@
 
 static const char *TAG = "sleep_button";
 
-#define SLEEP_BUTTON_GPIO       GPIO_NUM_9    /* XIAO ESP32-C6 BOOT button */
+#define SLEEP_BUTTON_GPIO       GPIO_NUM_2    /* D2 on XIAO ESP32-C6 (LP_IO; external tactile button to GND) */
 #define SLEEP_BUTTON_HOLD_MS    2000          /* hold ≥ 2 s to enter sleep */
 #define POLL_PERIOD_MS          50
 #define WAKE_GRACE_MS           1500          /* don't arm until user releases wake-press */
@@ -86,8 +89,8 @@ static void sleep_button_task(void *arg) {
         if (pressed) {
             held_ms += POLL_PERIOD_MS;
             if (held_ms >= SLEEP_BUTTON_HOLD_MS) {
-                enter_deep_sleep();
-                /* Unreachable. */
+                enter_deep_sleep();   /* normally never returns; only on failure */
+                held_ms = 0;          /* defensive: require fresh hold to retry */
             }
         } else {
             held_ms = 0;
