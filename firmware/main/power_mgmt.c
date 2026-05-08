@@ -77,15 +77,22 @@ static bool                      s_adc_ready;
  * ========================================================================= */
 
 #if CONFIG_NARBIS_BATT_DIVIDER_PRESENT
+/* SoC% lookup table — resting LiPo OCV curve. The previous version was
+ * a "loaded discharge" curve that under-reported by ~10 pct points across
+ * the middle range (e.g. 3700 mV → 30 %, when typical resting OCV is
+ * ~40 %). Bench-measured against a 3.7 V cell sample at rest with the
+ * earclip idle. Values follow the broadly-cited Adafruit / TI resting
+ * curves rather than under-load; for a wearable PPG that's mostly idle
+ * the resting curve is the better match. */
 static const struct { uint16_t mv; uint8_t pct; } SOC_LUT[] = {
     { 4200, 100 },
     { 4100,  90 },
-    { 4000,  75 },
-    { 3900,  60 },
-    { 3800,  45 },
-    { 3700,  30 },
-    { 3600,  15 },
-    { 3500,   5 },
+    { 4000,  80 },
+    { 3900,  70 },
+    { 3800,  55 },
+    { 3700,  40 },
+    { 3600,  25 },
+    { 3500,  10 },
     { 3400,   0 },
 };
 #define SOC_LUT_LEN (sizeof(SOC_LUT) / sizeof(SOC_LUT[0]))
