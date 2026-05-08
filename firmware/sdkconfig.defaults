@@ -56,3 +56,24 @@ CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 
 # ---------------- Logging ----------------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ---------------- Battery sense ----------------
+# CI release binaries assume the 1 MΩ : 1 MΩ resistor divider is
+# soldered (or breadboarded) on every Narbis earclip board, BAT+ →
+# GPIO1 → GND, so power_mgmt_get_battery() reads real voltage instead
+# of returning the 4000 mV / 80% stub. Boards without the divider will
+# read random floating-pin values; for a fresh out-of-the-box XIAO,
+# manually flip this back to n in a local `idf.py menuconfig` run
+# before flashing.
+#
+# DIV_NUM/DIV_DEN here is a single project-wide multiplier. With ideal
+# 1:1 resistors the math is 2/1; in practice tolerance + ADC bias
+# pushes the reading ~3% low, so 33/16 (= 2.0625) lands the live
+# bench-validated board within ±15 mV of bench across 3500–4200 mV.
+# A future PR moves these into narbis_runtime_config_t (NVS-persisted,
+# dashboard-tweakable, OTA-survivable) so each board can keep its own
+# trim — until then the project default is the bench-calibrated 33/16.
+CONFIG_NARBIS_BATT_DIVIDER_PRESENT=y
+CONFIG_NARBIS_BATT_ADC_GPIO=1
+CONFIG_NARBIS_BATT_ADC_DIV_NUM=33
+CONFIG_NARBIS_BATT_ADC_DIV_DEN=16
