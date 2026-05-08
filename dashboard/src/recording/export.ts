@@ -9,6 +9,7 @@ import {
 import {
   FILE_NAMES,
   writeAnnotationsCSV,
+  writeBatteryCSV,
   writeBeatsCSV,
   writeComparisonCSV,
   writeConfigHistoryJSON,
@@ -22,6 +23,7 @@ import {
 import { buildManifest, sessionFolderName, summarize } from './manifest';
 import type {
   Annotation,
+  BatteryRecord,
   BeatRecord,
   ConfigChangeEntry,
   FileEntry,
@@ -55,6 +57,7 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
   const raw = concatStream(chunks, 'raw') as RawSampleRecord[];
   const beats = concatStream(chunks, 'beats') as BeatRecord[];
   const sqi = concatStream(chunks, 'sqi') as SqiRecord[];
+  const battery = concatStream(chunks, 'battery') as BatteryRecord[];
   const polarBeats = concatStream(chunks, 'polarBeats') as PolarBeatRecordTimed[];
   const metrics = concatStream(chunks, 'metrics') as MetricsRecord[];
   const annotations = concatStream(chunks, 'annotations') as Annotation[];
@@ -77,6 +80,7 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
   if (session.streams.raw) add(FILE_NAMES.rawSamples, writeRawSamplesCSV(raw));
   if (session.streams.beats) add(FILE_NAMES.beats, writeBeatsCSV(beats));
   if (session.streams.metrics) add(FILE_NAMES.metrics, writeMetricsCSV(metrics));
+  if (battery.length > 0) add(FILE_NAMES.battery, writeBatteryCSV(battery));
   add(FILE_NAMES.annotations, writeAnnotationsCSV(annotations));
   add(FILE_NAMES.configHistory, writeConfigHistoryJSON(configEvents));
   add(FILE_NAMES.replay, writeReplayJSON(replayEvents));

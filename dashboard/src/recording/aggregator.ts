@@ -51,6 +51,9 @@ export function buildReplayEvents(chunks: RecordingChunk[]): ReplayEvent[] {
     if (c.sqi) {
       for (const s of c.sqi) events.push({ t: s.timestamp, kind: 'sqi', payload: s });
     }
+    if (c.battery) {
+      for (const b of c.battery) events.push({ t: b.timestamp, kind: 'battery', payload: b });
+    }
     if (c.filtered) {
       for (const f of c.filtered) events.push({ t: f.timestamp, kind: 'filtered', payload: f });
     }

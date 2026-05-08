@@ -69,6 +69,14 @@ export interface SqiRecord {
   perfusion_idx_x1000: number;
 }
 
+export interface BatteryRecord {
+  timestamp: number;
+  mv: number | null;     // null on standard BAS source (0x180F only carries SoC%).
+  soc_pct: number;
+  charging: boolean;
+  source: 'narbis' | 'standard' | 'relay';
+}
+
 export interface PolarBeatRecordTimed {
   timestamp: number;
   bpm: number;
@@ -96,6 +104,7 @@ export interface RecordingChunk {
   raw?: RawSampleRecord[];
   beats?: BeatRecord[];
   sqi?: SqiRecord[];
+  battery?: BatteryRecord[];
   filtered?: FilteredRecord[];
   polarBeats?: PolarBeatRecordTimed[];
   metrics?: MetricsRecord[];
@@ -162,6 +171,7 @@ export type ReplayEventKind =
   | 'raw'
   | 'beat'
   | 'sqi'
+  | 'battery'
   | 'filtered'
   | 'polarBeat'
   | 'metric'
@@ -180,6 +190,7 @@ export interface LoadedSession {
   raw: Array<{ timestamp: number; sample: NarbisRawSample }>;
   beats: BeatRecord[];
   sqi: SqiRecord[];
+  battery: BatteryRecord[];
   filtered: FilteredRecord[];
   polarBeats: PolarBeatRecordTimed[];
   metrics: MetricsRecord[];

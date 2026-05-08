@@ -1,9 +1,17 @@
 import { useDashboardStore } from '../state/store';
+import type { BatteryState } from '../state/store';
 import { forgetPairedDevice, getPairedDeviceName } from '../ble/narbisDevice';
 import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevice';
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
 import type { EdgeStatus } from '../ble/edgeDevice';
+
+function formatBattery(b: BatteryState | null): string {
+  if (b === null) return '';
+  const v = b.mv != null ? `${(b.mv / 1000).toFixed(2)}V` : '—';
+  const chg = b.charging ? ' ⚡' : '';
+  return ` · ${v} · ${b.soc_pct}%${chg}`;
+}
 
 const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
   disconnected: 'bg-slate-500',
@@ -65,7 +73,7 @@ export default function ConnectionPanel() {
 
   const narbisLabel =
     narbis.state === 'connected'
-      ? `${narbis.deviceName ?? 'Narbis'}${narbis.battery !== null ? ` · ${narbis.battery}%` : ''}`
+      ? `${narbis.deviceName ?? 'Narbis'}${formatBattery(narbis.battery)}`
       : narbis.state === 'reconnecting'
         ? 'reconnecting…'
         : narbis.state === 'connecting'

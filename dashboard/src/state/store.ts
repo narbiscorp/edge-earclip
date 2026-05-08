@@ -62,6 +62,15 @@ export interface PolarBeatRecord {
   rr: number[];
 }
 
+/* Earclip battery snapshot for the connection panel. `mv` is null on the
+ * standard BAS path (0x180F only carries SoC%); the Narbis custom char and
+ * the glasses 0xF8 relay both carry mv. */
+export interface BatteryState {
+  soc_pct: number;
+  mv: number | null;
+  charging: boolean;
+}
+
 export interface BufferSet {
   rawPpg: StreamBuffer<NarbisRawSample>;
   narbisBeats: StreamBuffer<NarbisBeatEvent>;
@@ -72,7 +81,7 @@ export interface BufferSet {
 
 export interface DashboardState {
   connection: {
-    narbis: { state: NarbisStatus; deviceName: string | null; battery: number | null };
+    narbis: { state: NarbisStatus; deviceName: string | null; battery: BatteryState | null };
     polar: { state: PolarStatus; deviceName: string | null };
     edge: {
       state: EdgeStatus;
@@ -450,12 +459,27 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
   const batt = (e as CustomEvent<NarbisBatteryEvent>).detail;
-  setState((s) => ({
-    connection: {
-      ...s.connection,
-      narbis: { ...s.connection.narbis, battery: batt.soc_pct },
-    },
-  }));
+  setState((s) => {
+    /* Both the standard BAS char (0x180F, soc_pct only) and the Narbis
+     * custom char (mv + soc + charging) notify into this same handler.
+     * Preserve mv/charging from the last Narbis update if the new event
+     * came from BAS — otherwise BAS would clobber the voltage display. */
+    const prev = s.connection.narbis.battery;
+    return {
+      connection: {
+        ...s.connection,
+        narbis: {
+          ...s.connection.narbis,
+          battery: {
+            soc_pct: batt.soc_pct,
+            mv: batt.mv != null ? batt.mv : (prev?.mv ?? null),
+            charging:
+              batt.charging != null ? !!batt.charging : (prev?.charging ?? false),
+          },
+        },
+      },
+    };
+  });
 });
 
 narbisDevice.addEventListener('configChanged', (e) => {
@@ -648,7 +672,14 @@ edgeDevice.addEventListener('relayedBattery', (e) => {
   setState((s) => ({
     connection: {
       ...s.connection,
-      narbis: { ...s.connection.narbis, battery: b.soc_pct },
+      narbis: {
+        ...s.connection.narbis,
+        battery: {
+          soc_pct: b.soc_pct,
+          mv: b.mv,
+          charging: !!b.charging,
+        },
+      },
     },
   }));
 });
@@ -736,4 +767,16 @@ edgeDevice.addEventListener('relayedDiagnostic', (e) => {
 
 export function setRecordingState(active: boolean, startedAt: number | null): void {
   setState({ recording: { active, startedAt } });
+}
+
+/** Used by the replay player to surface the recorded battery state on the
+ * connection panel as the playhead moves. Pass null to clear (e.g. when
+ * unloading a replay or seeking before any recorded sample). */
+export function setReplayBattery(b: BatteryState | null): void {
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      narbis: { ...s.connection.narbis, battery: b },
+    },
+  }));
 }
