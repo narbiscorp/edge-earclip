@@ -20,6 +20,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "esp_bt.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -623,52 +624,20 @@ esp_err_t transport_ble_init(void)
 
 esp_err_t transport_ble_deinit(void)
 {
-    /* Bring the radio fully down — used by deep-sleep entry to ensure
-     * the BLE controller isn't leaking current. Mirrors Edge's
-     * bluedroid_disable + bluedroid_deinit + bt_controller_disable +
-     * bt_controller_deinit in EDGE/EDGE FIRMWARE/main/main.c:4374-4378.
+    /* Fast teardown for sleep entry. The previous version did a graceful
+     * NimBLE shutdown (ble_gap_adv_stop → terminate peers → 50 ms drain
+     * → nimble_port_stop → 20 ms → nimble_port_deinit), which blocks for
+     * several seconds waiting on the host task to drain — making sleep
+     * feel like it takes 5+ s of holding the button to engage.
      *
-     * Order matters:
-     *   1. ble_gap_adv_stop / cancel any in-flight advertising so the
-     *      controller isn't pumping out broadcasts after we tell the
-     *      host to stop.
-     *   2. nimble_port_stop() — signals nimble_port_run() in the host
-     *      task to return; the host_task() trampoline then calls
-     *      nimble_port_freertos_deinit() and the task self-deletes.
-     *   3. nimble_port_deinit() — releases all NimBLE resources and
-     *      brings down the BLE controller on ESP32-C6.
-     *
-     * Returns ESP_OK even on partial failure — we're on the way to
-     * deep sleep, no point bubbling errors back. Logs a warning. */
-    int rc = ble_gap_adv_stop();
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "ble_gap_adv_stop on shutdown rc=%d", rc);
+     * The radio is what costs power, not the host. esp_bt_controller_
+     * disable() stops all RF activity in microseconds. The NimBLE host
+     * keeps running in software but consumes no extra current — and the
+     * deep_sleep_start that follows kills it anyway. Skip the slow path. */
+    esp_err_t err = esp_bt_controller_disable();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "esp_bt_controller_disable rc=%s", esp_err_to_name(err));
     }
-
-    /* Disconnect any active peers cleanly — graceful disconnect lets
-     * the central see the link drop instead of a supervision timeout. */
-    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
-        if (g_slots[i].handle != BLE_TRANSPORT_INVALID_CONN) {
-            (void)ble_gap_terminate(g_slots[i].handle, BLE_ERR_REM_USER_CONN_TERM);
-        }
-    }
-    /* Brief settle so the disconnect packet ships before we kill the
-     * host task. */
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    int srv = nimble_port_stop();
-    if (srv != 0) {
-        ESP_LOGW(TAG, "nimble_port_stop rc=%d", srv);
-    }
-    /* nimble_port_run() returns inside host_task; give the FreeRTOS
-     * scheduler a tick to run that trampoline + self-delete. */
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-    srv = nimble_port_deinit();
-    if (srv != 0) {
-        ESP_LOGW(TAG, "nimble_port_deinit rc=%d", srv);
-    }
-
-    ESP_LOGI(TAG, "BLE radio torn down for sleep");
+    ESP_LOGI(TAG, "BT controller disabled for sleep");
     return ESP_OK;
 }
