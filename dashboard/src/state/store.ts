@@ -38,6 +38,7 @@ import type {
   DiagnosticSample,
 } from '../ble/parsers';
 import { resetDiagnosticClock, deserializeConfig, parseDiagnostic } from '../ble/parsers';
+import { BUILT_IN_DEFAULT } from '../components/config/presetStore';
 import { StreamBuffer } from './streamBuffer';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
@@ -109,6 +110,15 @@ export interface DashboardState {
     startedAt: number | null;
   };
   config: NarbisRuntimeConfig | null;
+  /** True when `config` was populated by enterBlindDefaultsMode() rather
+   * than by a 0xF4/configChanged event from the device. The ConfigPanel
+   * shows a warning banner so the user knows their edits will overwrite
+   * whatever's currently on the device — they're flying blind on the
+   * actual current values. Cleared automatically when a real config
+   * arrives from the earclip (which happens on next 0xF4 notify, e.g.
+   * after the user writes their first field and the earclip notifies
+   * back the new state). */
+  configIsBlindDefault: boolean;
   lastBeat: NarbisBeatEvent | null;
   lastSqi: NarbisSqiPayload | null;
   counters: {
@@ -143,6 +153,14 @@ export interface DashboardState {
    *  device handle and GATT cache. Without this the next connect can
    *  hit a stale cache and need several Forget+Connect cycles to recover. */
   forgetNarbis: () => Promise<void>;
+  /** Escape hatch for the relay-passthrough path on earclip firmware
+   *  that predates the notify-on-subscribe fix: load the firmware
+   *  defaults into `config` so the ConfigPanel can render an editable
+   *  form even though no 0xF4 ever arrived from the earclip. The user's
+   *  Apply will write the values back via the existing 0xC3 forward
+   *  path, and the earclip's notify-on-change will then return real
+   *  state which clears configIsBlindDefault automatically. */
+  enterBlindDefaultsMode: () => void;
   connectPolar: () => Promise<void>;
   disconnectPolar: () => Promise<void>;
   connectEdge: () => Promise<void>;
@@ -181,6 +199,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     startedAt: null,
   },
   config: null,
+  configIsBlindDefault: false,
   lastBeat: null,
   lastSqi: null,
   counters: { beats: 0, rawSamples: 0, sqi: 0, polarBeats: 0 },
@@ -206,6 +225,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   forgetNarbis: async () => {
     await narbisDevice.forget();
+  },
+  enterBlindDefaultsMode: () => {
+    set({ config: BUILT_IN_DEFAULT.config, configIsBlindDefault: true });
   },
   connectPolar: async () => {
     set({ lastError: null });
@@ -527,7 +549,9 @@ narbisDevice.addEventListener('batteryReceived', (e) => {
 
 narbisDevice.addEventListener('configChanged', (e) => {
   const cfg = (e as CustomEvent<NarbisRuntimeConfig>).detail;
-  setState({ config: cfg });
+  /* Real config from the device — clear the blind-defaults flag if it was
+   * set, since we now know the actual current values. */
+  setState({ config: cfg, configIsBlindDefault: false });
   appendBleLog('earclip', 'rx', `config v${cfg.config_version} (sample_rate=${cfg.sample_rate_hz} Hz)`);
 });
 
@@ -775,7 +799,9 @@ edgeDevice.addEventListener('relayedConfig', (e) => {
   const r = (e as CustomEvent<RelayedConfig>).detail;
   try {
     const cfg = deserializeConfig(r.bytes);
-    setState({ config: cfg });
+    /* Real config from the relay path — clear the blind-defaults flag
+     * since we now have actual device state. */
+    setState({ config: cfg, configIsBlindDefault: false });
     appendBleLog(
       'earclip',
       'rx',
