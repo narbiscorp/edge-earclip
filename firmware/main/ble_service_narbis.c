@@ -416,9 +416,20 @@ esp_err_t ble_service_narbis_notify_config(void)
     uint8_t buf[NARBIS_CONFIG_WIRE_SIZE];
     size_t out_len = 0;
     if (narbis_config_serialize(buf, sizeof(buf), config_get(), &out_len) != 0) {
+        ESP_LOGW(TAG, "notify_config: serialize failed");
         return ESP_FAIL;
     }
-    return transport_ble_notify(BLE_SUB_NARBIS_CONFIG, buf, (uint16_t)out_len);
+    /* Diagnostic — was the notify actually queued, and how many subscribers
+     * received it? cfg=0 on the central side means either this never fired
+     * (compile-out / wrong path) or fired but transport_ble_notify saw zero
+     * subscribed peers (subscribed[CONFIG] race). The post-call log answers
+     * both. Bump to ESP_LOGW so it survives any later log-level lowering. */
+    bool subbed = transport_ble_is_subscribed(BLE_SUB_NARBIS_CONFIG);
+    uint16_t hdl = transport_ble_val_handle(BLE_SUB_NARBIS_CONFIG);
+    esp_err_t rc = transport_ble_notify(BLE_SUB_NARBIS_CONFIG, buf, (uint16_t)out_len);
+    ESP_LOGW(TAG, "notify_config: %u B hdl=%u any_subbed=%d rc=%s",
+             (unsigned)out_len, hdl, (int)subbed, esp_err_to_name(rc));
+    return rc;
 }
 
 /* ============================================================================
