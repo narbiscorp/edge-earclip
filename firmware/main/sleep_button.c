@@ -24,8 +24,11 @@
 #include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include "sdkconfig.h"
 
 #include "led_status.h"
 #include "ppg_driver_max3010x.h"
@@ -151,10 +154,23 @@ static void sleep_button_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
     }
 
-    ESP_LOGI(TAG, "armed on GPIO%d (hold %d ms to sleep)",
+#if CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S > 0
+    const int64_t idle_timeout_us =
+        (int64_t)CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S * 1000LL * 1000LL;
+    ESP_LOGI(TAG, "armed on GPIO%d (hold %d ms = manual sleep, idle timeout %ds)",
+             SLEEP_BUTTON_GPIO, SLEEP_BUTTON_HOLD_MS,
+             CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S);
+#else
+    ESP_LOGI(TAG, "armed on GPIO%d (hold %d ms to sleep, idle timeout disabled)",
              SLEEP_BUTTON_GPIO, SLEEP_BUTTON_HOLD_MS);
+#endif
 
     uint32_t held_ms = 0;
+    /* Idle-sleep timer. Counts elapsed time during which zero BLE peers
+     * are connected. Reset to "now" on any poll where a peer is present.
+     * Initialized to "now" at task entry so a device that never gets a
+     * peer after boot still falls asleep on schedule. */
+    int64_t idle_since_us = esp_timer_get_time();
     while (1) {
         bool pressed = (gpio_get_level(SLEEP_BUTTON_GPIO) == 0);
         if (pressed) {
@@ -162,10 +178,28 @@ static void sleep_button_task(void *arg) {
             if (held_ms >= SLEEP_BUTTON_HOLD_MS) {
                 enter_deep_sleep();   /* normally never returns; only on failure */
                 held_ms = 0;          /* defensive: require fresh hold to retry */
+                idle_since_us = esp_timer_get_time();
             }
         } else {
             held_ms = 0;
         }
+
+#if CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S > 0
+        /* Idle-driven deep sleep: same destination as the button hold,
+         * just triggered by "no central for a while" instead of a
+         * physical press. enter_deep_sleep waits for any held button
+         * to be released first — when arriving from the idle path the
+         * button is up, so that wait falls through immediately. */
+        if (transport_ble_any_connected()) {
+            idle_since_us = esp_timer_get_time();
+        } else if ((esp_timer_get_time() - idle_since_us) >= idle_timeout_us) {
+            ESP_LOGW(TAG, "idle for %ds with no BLE peer — entering deep sleep",
+                     CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S);
+            enter_deep_sleep();
+            idle_since_us = esp_timer_get_time();   /* defensive: only reached on failure */
+        }
+#endif
+
         vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
     }
 }

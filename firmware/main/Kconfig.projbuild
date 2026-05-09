@@ -100,6 +100,24 @@ menu "Narbis earclip"
             ("agc railed at LED cap") when this cap is hit, so a poor
             optical coupling stays visible.
 
+    config NARBIS_IDLE_SLEEP_TIMEOUT_S
+        int "Idle deep-sleep timeout (seconds, 0 = disabled)"
+        range 0 3600
+        default 300
+        help
+            If nonzero, the earclip enters deep sleep after this many
+            seconds with zero BLE peers connected. Press the sleep
+            button (D2 / GPIO2) to wake — same wake source as the
+            manual hold-to-sleep gesture.
+
+            Defaults to 300 (5 minutes). The timer is evaluated by the
+            existing sleep_button polling task (50 ms cadence) and is
+            reset on every poll where transport_ble_any_connected()
+            returns true. Set to 0 to disable the idle-sleep timer
+            entirely (manual button hold still works).
+
+            Use a smaller value (e.g. 60) for bench testing.
+
     menu "Power-draw bisection (debug only)"
 
         config NARBIS_DISABLE_BLE
