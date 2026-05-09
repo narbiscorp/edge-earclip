@@ -623,5 +623,52 @@ esp_err_t transport_ble_init(void)
 
 esp_err_t transport_ble_deinit(void)
 {
+    /* Bring the radio fully down — used by deep-sleep entry to ensure
+     * the BLE controller isn't leaking current. Mirrors Edge's
+     * bluedroid_disable + bluedroid_deinit + bt_controller_disable +
+     * bt_controller_deinit in EDGE/EDGE FIRMWARE/main/main.c:4374-4378.
+     *
+     * Order matters:
+     *   1. ble_gap_adv_stop / cancel any in-flight advertising so the
+     *      controller isn't pumping out broadcasts after we tell the
+     *      host to stop.
+     *   2. nimble_port_stop() — signals nimble_port_run() in the host
+     *      task to return; the host_task() trampoline then calls
+     *      nimble_port_freertos_deinit() and the task self-deletes.
+     *   3. nimble_port_deinit() — releases all NimBLE resources and
+     *      brings down the BLE controller on ESP32-C6.
+     *
+     * Returns ESP_OK even on partial failure — we're on the way to
+     * deep sleep, no point bubbling errors back. Logs a warning. */
+    int rc = ble_gap_adv_stop();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "ble_gap_adv_stop on shutdown rc=%d", rc);
+    }
+
+    /* Disconnect any active peers cleanly — graceful disconnect lets
+     * the central see the link drop instead of a supervision timeout. */
+    for (int i = 0; i < NARBIS_BLE_MAX_CONNECTIONS; i++) {
+        if (g_slots[i].handle != BLE_TRANSPORT_INVALID_CONN) {
+            (void)ble_gap_terminate(g_slots[i].handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
+    }
+    /* Brief settle so the disconnect packet ships before we kill the
+     * host task. */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    int srv = nimble_port_stop();
+    if (srv != 0) {
+        ESP_LOGW(TAG, "nimble_port_stop rc=%d", srv);
+    }
+    /* nimble_port_run() returns inside host_task; give the FreeRTOS
+     * scheduler a tick to run that trampoline + self-delete. */
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    srv = nimble_port_deinit();
+    if (srv != 0) {
+        ESP_LOGW(TAG, "nimble_port_deinit rc=%d", srv);
+    }
+
+    ESP_LOGI(TAG, "BLE radio torn down for sleep");
     return ESP_OK;
 }
