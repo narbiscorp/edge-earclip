@@ -688,9 +688,15 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
 });
 
 /* Path B: glasses-to-earclip relay link state. Fires on connect/disconnect
- * of the central inside the glasses. The header renders this so users can
- * see "Earclip relay: linked" without reading the BLE event log. */
+ * of the central inside the glasses, AND on every periodic 0xF6 heartbeat
+ * (~30 s). Edge-trigger off the previous state so we only react to actual
+ * transitions; treating every event as fresh fired the auto-config-refresh
+ * every heartbeat → multiple 0xC5 in flight via Web Bluetooth → "GATT
+ * operation already in progress" → controller jam → both BLE links
+ * (dashboard↔glasses and glasses↔earclip) cratered together. */
 let configRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let configRefreshInFlight = false;
+let prevRelayConnected: boolean | null = null;
 edgeDevice.addEventListener('centralRelayState', (e) => {
   const r = (e as CustomEvent<CentralRelayState>).detail;
   setState((s) => ({
@@ -700,31 +706,41 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
     },
   }));
   appendBleLog('edge', 'info', `glasses→earclip relay ${r.connected ? 'LINKED' : 'lost'}`);
-  /* Reset the diagnostic clock anchor whenever the relay link
-   * transitions. Without this, diag samples on the relay path inherit
-   * a stale anchor from a previous direct-earclip session and land at
-   * nonsense timestamps (off-screen on the chart). */
-  if (r.connected) {
+
+  /* Only react to actual transitions — ignore heartbeat re-emissions
+   * where the connected flag hasn't changed since the last frame. */
+  const transitionedUp   = r.connected && prevRelayConnected !== true;
+  const transitionedDown = !r.connected && prevRelayConnected === true;
+  prevRelayConnected = r.connected;
+
+  if (transitionedUp) {
+    /* Reset the diagnostic clock anchor on the actual link-up — diag
+     * samples on the relay path inherit a stale anchor from a previous
+     * direct-earclip session and land off-screen on the chart otherwise. */
     resetDiagnosticClock();
     lastRawTs = 0;
-    /* When the relay first goes UP, the glasses' central does a one-shot
-     * GATTC read of the earclip's CONFIG inside enter_ready and forwards
-     * the result as a 0xF4 frame. That read sometimes drops on Bluedroid's
-     * outbound queue (esp. after self-heal, where 9+ ops fire back-to-back),
-     * leaving us with relay UP but config null forever. Auto-recover by
-     * sending 0xC5 (refresh-config opcode) ~2 s after relay-up if the
-     * config slot is still empty. Idempotent on the firmware side — safe
-     * to send even if the original read landed and a 0xF4 is already in
-     * flight. Requires glasses firmware with 0xC5 handler. */
+    /* Schedule one-shot auto-refresh ~2 s after link-up. The glasses'
+     * central does an enter_ready CONFIG read that should make this
+     * unnecessary, but if the read drops (Bluedroid outbound queue) we
+     * recover with a single 0xC5. The earclip-side notify-on-subscribe
+     * fix (see firmware/main/transport_ble.c BLE_GAP_EVENT_SUBSCRIBE)
+     * is the primary delivery path; this is the second-chance backup.
+     * Manual reload via the ConfigPanel button is the third. */
     if (configRefreshTimer) clearTimeout(configRefreshTimer);
     configRefreshTimer = setTimeout(() => {
       configRefreshTimer = null;
       if (useDashboardStore.getState().config !== null) return;
-      void edgeDevice.requestEarclipConfigRead().catch((err) => {
-        appendBleLog('edge', 'error', `auto config refresh: ${(err as Error).message}`);
-      });
+      if (configRefreshInFlight) return;   // overlap guard
+      configRefreshInFlight = true;
+      void edgeDevice.requestEarclipConfigRead()
+        .catch((err) => {
+          appendBleLog('edge', 'error', `auto config refresh: ${(err as Error).message}`);
+        })
+        .finally(() => {
+          configRefreshInFlight = false;
+        });
     }, 2000);
-  } else if (configRefreshTimer) {
+  } else if (transitionedDown && configRefreshTimer) {
     clearTimeout(configRefreshTimer);
     configRefreshTimer = null;
   }
