@@ -30,4 +30,5 @@ idf_component_register(
         elgendi
         adaptive_detector
         beat_validator
+        led_status
 )

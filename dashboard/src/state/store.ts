@@ -9,6 +9,7 @@ import {
   type NarbisDiagnosticEvent,
   type NarbisDisconnectedDetail,
   type NarbisErrorDetail,
+  type NarbisPhaseDetail,
 } from '../ble/narbisDevice';
 import {
   polarH10,
@@ -81,7 +82,17 @@ export interface BufferSet {
 
 export interface DashboardState {
   connection: {
-    narbis: { state: NarbisStatus; deviceName: string | null; battery: BatteryState | null };
+    narbis: {
+      state: NarbisStatus;
+      deviceName: string | null;
+      battery: BatteryState | null;
+      /** Current sub-phase of connect/openSession/reconnect for fine-grained
+       *  status display (e.g. "discovering services", "subscribing"). null
+       *  outside of an active connect attempt. */
+      phase: string | null;
+      /** Attempt counter for the auto-reconnect loop. null when not retrying. */
+      reconnectAttempt: number | null;
+    };
     polar: { state: PolarStatus; deviceName: string | null };
     edge: {
       state: EdgeStatus;
@@ -126,6 +137,12 @@ export interface DashboardState {
 
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
+  /** Disconnect and release the Web Bluetooth permission grant for the
+   *  earclip. Does what plain disconnect+localStorage-clear used to do,
+   *  but also calls device.forget() so the browser flushes its cached
+   *  device handle and GATT cache. Without this the next connect can
+   *  hit a stale cache and need several Forget+Connect cycles to recover. */
+  forgetNarbis: () => Promise<void>;
   connectPolar: () => Promise<void>;
   disconnectPolar: () => Promise<void>;
   connectEdge: () => Promise<void>;
@@ -155,7 +172,7 @@ const replayBuffers = makeBuffers();
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
-    narbis: { state: 'disconnected', deviceName: null, battery: null },
+    narbis: { state: 'disconnected', deviceName: null, battery: null, phase: null, reconnectAttempt: null },
     polar:  { state: 'disconnected', deviceName: null },
     edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null },
   },
@@ -186,6 +203,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   disconnectNarbis: async () => {
     await narbisDevice.disconnect();
+  },
+  forgetNarbis: async () => {
+    await narbisDevice.forget();
   },
   connectPolar: async () => {
     set({ lastError: null });
@@ -272,7 +292,13 @@ narbisDevice.addEventListener('connected', (e) => {
   setState((s) => ({
     connection: {
       ...s.connection,
-      narbis: { ...s.connection.narbis, state: 'connected', deviceName: name },
+      narbis: {
+        ...s.connection.narbis,
+        state: 'connected',
+        deviceName: name,
+        phase: null,
+        reconnectAttempt: null,
+      },
     },
   }));
   appendBleLog('earclip', 'info', `connected to ${name}`);
@@ -298,6 +324,9 @@ narbisDevice.addEventListener('disconnected', (e) => {
         state: narbisDevice.status,
         deviceName: narbisDevice.status === 'reconnecting' ? s.connection.narbis.deviceName : null,
         battery: narbisDevice.status === 'reconnecting' ? s.connection.narbis.battery : null,
+        phase: narbisDevice.status === 'reconnecting' ? s.connection.narbis.phase : null,
+        reconnectAttempt:
+          narbisDevice.status === 'reconnecting' ? s.connection.narbis.reconnectAttempt : null,
       },
     },
     lastError: reason === 'error' && error ? error.message : s.lastError,
@@ -309,6 +338,20 @@ narbisDevice.addEventListener('disconnected', (e) => {
       ? `disconnected (${reason}) - reconnecting`
       : `disconnected (${reason})`,
   );
+});
+
+narbisDevice.addEventListener('phase', (e) => {
+  const { phase, attempt } = (e as CustomEvent<NarbisPhaseDetail>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      narbis: {
+        ...s.connection.narbis,
+        phase,
+        reconnectAttempt: attempt ?? s.connection.narbis.reconnectAttempt,
+      },
+    },
+  }));
 });
 
 narbisDevice.addEventListener('error', (e) => {

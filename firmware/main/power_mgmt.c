@@ -33,6 +33,7 @@
 
 #include "ble_service_battery.h"
 #include "ble_service_narbis.h"
+#include "led_status.h"
 #include "ppg_driver_max3010x.h"
 #include "transport_ble.h"
 
@@ -269,6 +270,44 @@ static void battery_tick(void *arg)
         if (now - s_last_low_warn_us >= (int64_t)BATT_LOW_WARN_PERIOD_US) {
             ESP_LOGW(TAG, "battery low: %u%% (%u mV)", soc, mv);
             s_last_low_warn_us = now;
+        }
+    }
+
+    /* User LED battery alerts. Three-state FSM with hysteresis to avoid
+     * flapping near edges on a noisy ADC. Thresholds (per led_status
+     * handoff §10): low at <20%, crit at <5%, recovery at >=10% (crit→low)
+     * and >=25% (low→normal). On recovery to normal, restore the BLE base
+     * state — request_base_state can't downgrade BATTERY_LOW so we have
+     * to do an explicit OFF first per the priority rules. */
+    enum { BATT_NORMAL = 0, BATT_LOW = 1, BATT_CRIT = 2 };
+    static int s_batt_led_state = BATT_NORMAL;
+    int desired = s_batt_led_state;
+    switch (s_batt_led_state) {
+    case BATT_NORMAL:
+        if (soc < 5)        desired = BATT_CRIT;
+        else if (soc < 20)  desired = BATT_LOW;
+        break;
+    case BATT_LOW:
+        if (soc < 5)        desired = BATT_CRIT;
+        else if (soc >= 25) desired = BATT_NORMAL;
+        break;
+    case BATT_CRIT:
+        if (soc >= 10)      desired = BATT_LOW;
+        break;
+    }
+    if (desired != s_batt_led_state) {
+        s_batt_led_state = desired;
+        if (desired == BATT_CRIT) {
+            led_status_set_state(LED_STATE_BATTERY_CRIT);
+        } else if (desired == BATT_LOW) {
+            /* From CRIT → LOW the priority blocks (4 < 5), so clear first. */
+            led_status_set_state(LED_STATE_OFF);
+            led_status_set_state(LED_STATE_BATTERY_LOW);
+        } else {  /* BATT_NORMAL */
+            led_status_set_state(LED_STATE_OFF);
+            led_status_set_state(transport_ble_any_connected()
+                                 ? LED_STATE_STREAMING
+                                 : LED_STATE_PAIRING);
         }
     }
 

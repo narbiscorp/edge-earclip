@@ -35,6 +35,7 @@
 #include "ble_service_dis.h"
 #include "ble_service_hrs.h"
 #include "ble_service_narbis.h"
+#include "led_status.h"
 #include "power_mgmt.h"
 
 static const char *TAG = "transport_ble";
@@ -388,6 +389,9 @@ static void start_advertising_if_room(void)
         return;
     }
     g_advertising = true;
+    /* User LED reflects discoverable state. request_base_state respects
+     * an active battery alert (won't clobber LOW/CRIT). */
+    led_status_request_base_state(LED_STATE_PAIRING);
     ESP_LOGI(TAG, "advertising as \"%s\" (slots used %d/%d)",
              g_device_name, active_slot_count(), NARBIS_BLE_MAX_CONNECTIONS);
 }
@@ -454,6 +458,12 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
          * until the device power-cycles. */
         ble_ota_on_disconnect(handle);
         if (slot >= 0) clear_slot(slot);
+        /* If that was the last peer, drop the LED back to PAIRING (also
+         * driven by start_advertising_if_room below — covered for the
+         * case where we're already advertising and don't restart). */
+        if (active_slot_count() == 0) {
+            led_status_request_base_state(LED_STATE_PAIRING);
+        }
         start_advertising_if_room();
         break;
     }
@@ -479,6 +489,11 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 g_slots[slot].subscribed[i] = subscribed;
                 ESP_LOGI(TAG, "subscribe slot=%d which=%d %s",
                          slot, i, subscribed ? "on" : "off");
+                /* First subscribe of any kind = streaming has begun.
+                 * request_base_state preserves any active battery alert. */
+                if (subscribed) {
+                    led_status_request_base_state(LED_STATE_STREAMING);
+                }
                 break;
             }
         }

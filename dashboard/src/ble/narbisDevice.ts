@@ -100,6 +100,15 @@ export interface NarbisErrorDetail {
   phase: string;
 }
 
+/* Non-error progress signal. Emitted at every meaningful step so the UI
+ * can show "discovering services…" instead of an opaque "connecting…"
+ * during the multi-second openSession() handshake. `attempt` is set on
+ * reconnect-loop events so the panel can show "reconnecting (3)…". */
+export interface NarbisPhaseDetail {
+  phase: string;
+  attempt?: number;
+}
+
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 
 interface ListenerHandle {
@@ -134,6 +143,7 @@ export class NarbisDevice extends EventTarget {
     }
     this.intentionalDisconnect = false;
     this.setStatus('connecting');
+    this.emitPhase('requesting-device');
     try {
       // Two filters in OR: prefer service-UUID match (works on
       // Linux/Android/macOS and many Windows configs); fall back to
@@ -167,6 +177,7 @@ export class NarbisDevice extends EventTarget {
       // MTU 247 negotiated by browser/OS; not configurable from JS.
       await this.openSession();
       this.setStatus('connected');
+      this.emitPhase('ready');
       this.dispatch('connected', { name: this._deviceName });
     } catch (err) {
       this.setStatus('disconnected');
@@ -183,6 +194,55 @@ export class NarbisDevice extends EventTarget {
       }
       throw err;
     }
+  }
+
+  /** Fully forget this earclip: disconnects, releases the Web Bluetooth
+   * permission grant (so the browser drops its cached device handle
+   * instead of auto-matching it next time), and clears the localStorage
+   * pairing keys.
+   *
+   * Without `device.forget()` the browser keeps the device cached for
+   * ~30 s after disconnect. The next requestDevice() returns the same
+   * cached entry whose GATT service descriptor may now be stale → the
+   * post-connect getPrimaryService() throws NotFoundError → the
+   * reconnect loop retries the same stale handle and fails the same
+   * way. This is exactly the "needs multiple Forget+Connect cycles to
+   * actually work" symptom users hit. Calling forget() here clears
+   * the cache properly so the next pair is a clean slate.
+   *
+   * `device.forget()` shipped in Chrome 114 (May 2023). Older browsers
+   * fall back to disconnect + localStorage clear, which is the previous
+   * behaviour — strictly no worse than before. */
+  async forget(): Promise<void> {
+    this.intentionalDisconnect = true;
+    const dev = this.device;
+
+    if (dev?.gatt?.connected) {
+      try { dev.gatt.disconnect(); } catch { /* ignore */ }
+    }
+
+    if (dev !== null) {
+      // Feature-detect: BluetoothDevice.forget is in the Web Bluetooth
+      // spec but not in lib.dom.d.ts ambient types yet.
+      const maybeForget = (dev as unknown as { forget?: () => Promise<void> }).forget;
+      if (typeof maybeForget === 'function') {
+        try {
+          await maybeForget.call(dev);
+        } catch (err) {
+          this.emitError(err, 'forget');
+        }
+      }
+    }
+
+    if (this.device !== null) {
+      this.cleanupConnection();
+    }
+    this.intentionalDisconnect = false;
+
+    forgetPairedDevice();
+
+    this.setStatus('disconnected');
+    this.dispatch('disconnected', { reason: 'user' } as NarbisDisconnectedDetail);
   }
 
   async disconnect(): Promise<void> {
@@ -222,10 +282,40 @@ export class NarbisDevice extends EventTarget {
 
   private async openSession(): Promise<void> {
     if (!this.device?.gatt) throw new Error('no GATT server');
+    this.emitPhase('connecting-gatt');
     this.server = await this.device.gatt.connect();
 
-    const narbisSvc = await this.server.getPrimaryService(NARBIS_SVC_UUID);
+    this.emitPhase('discovering-services');
+    let narbisSvc: BluetoothRemoteGATTService;
+    try {
+      narbisSvc = await this.server.getPrimaryService(NARBIS_SVC_UUID);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotFoundError') {
+        // Stale GATT cache: the device handle exists but the cached
+        // service descriptor doesn't include our service. Try once more
+        // after a brief delay; some browsers re-fetch on retry. If the
+        // second attempt also fails, surface a clear remediation
+        // message — the user needs to click Forget (which now actually
+        // releases the Web Bluetooth permission) and try again.
+        this.emitPhase('discovering-services-retry');
+        await sleep(500);
+        try {
+          narbisSvc = await this.server.getPrimaryService(NARBIS_SVC_UUID);
+        } catch (err2) {
+          if (err2 instanceof DOMException && err2.name === 'NotFoundError') {
+            throw new Error(
+              'Narbis service not found on this device. ' +
+              'Click Forget, then Connect Earclip again — the browser is holding a stale BLE cache.',
+            );
+          }
+          throw err2;
+        }
+      } else {
+        throw err;
+      }
+    }
 
+    this.emitPhase('discovering-characteristics');
     const [chIbi, chSqi, chRaw, chBatt, chCfg, chCfgWrite, chMode] = await Promise.all([
       narbisSvc.getCharacteristic(NARBIS_CHR_IBI_UUID),
       narbisSvc.getCharacteristic(NARBIS_CHR_SQI_UUID),
@@ -250,6 +340,7 @@ export class NarbisDevice extends EventTarget {
       this.emitError(err, 'peer-role-optional');
     }
 
+    this.emitPhase('subscribing');
     this.attach(chIbi, this.onIbiNotify);
     this.attach(chSqi, this.onSqiNotify);
     this.attach(chRaw, this.onRawNotify);
@@ -325,9 +416,11 @@ export class NarbisDevice extends EventTarget {
       const delay = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
       await sleep(delay);
       if (this.intentionalDisconnect || !this.device) return;
+      this.emitPhase('reconnecting', attempt + 1);
       try {
         await this.openSession();
         this.setStatus('connected');
+        this.emitPhase('ready');
         this.dispatch('connected', { name: this._deviceName ?? 'Narbis Earclip' });
         return;
       } catch (err) {
@@ -468,6 +561,10 @@ export class NarbisDevice extends EventTarget {
   private emitError(err: unknown, phase: string): void {
     const error = err instanceof Error ? err : new Error(String(err));
     this.dispatch('error', { error, phase } as NarbisErrorDetail);
+  }
+
+  private emitPhase(phase: string, attempt?: number): void {
+    this.dispatch('phase', { phase, attempt } as NarbisPhaseDetail);
   }
 }
 

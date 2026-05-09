@@ -5857,15 +5857,18 @@ static void on_earclip_diag(const uint8_t *bytes, uint16_t len) {
  *   1. 0xF6 status frame to the dashboard so the header badge updates.
  *   2. ble_log line so the BLE event log shows the transition.
  *   3. Visible lens feedback so the user knows without looking at the
- *      app:  connect → 5 slow pulses + 3 s clear hold (same pattern the
- *      hall-driven sensor-connected handshake uses);  disconnect → 2
- *      fast pulses to signal the relay dropped. */
+ *      app. The disambiguation mnemonic for users:
+ *        5 slow pulses + 3 s hold = finger detected on Edge's local PPG
+ *        3 slow pulses (no hold)  = earclip linked (this path)
+ *        2 fast pulses            = earclip lost
+ *      Earclip-connect deliberately uses a distinct count from the local
+ *      sensor handshake so the user can tell them apart at a glance. */
 static void on_central_state(bool connected) {
     uint8_t pkt = connected ? 1u : 0u;
     send_status_frame(0xF6, &pkt, 1);
     ble_log("relay %s", connected ? "linked" : "lost");
     if (connected) {
-        indicator_trigger(5, 3000);   /* 5 slow pulses + 3 s clear */
+        indicator_trigger(3, 0);      /* 3 slow pulses, no hold */
     } else {
         indicator_trigger(2, 0);      /* 2 fast pulses */
     }
