@@ -1,4 +1,5 @@
 import { useDashboardStore } from '../state/store';
+import { edgeDevice } from '../ble/edgeDevice';
 import { SECTIONS } from './config/fieldSchema';
 import { useDebouncedConfigWrite } from './config/useDebouncedConfigWrite';
 import { useExpandState } from './config/useExpandState';
@@ -6,25 +7,58 @@ import ConfigSection from './config/ConfigSection';
 import { BUILT_IN_DEFAULT } from './config/presetStore';
 
 export default function ConfigPanel() {
-  const narbisState = useDashboardStore((s) => s.connection.narbis.state);
-  const edgeState   = useDashboardStore((s) => s.connection.edge.state);
-  const config      = useDashboardStore((s) => s.config);
+  const narbisState  = useDashboardStore((s) => s.connection.narbis.state);
+  const edgeState    = useDashboardStore((s) => s.connection.edge.state);
+  const earclipRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
+  const config       = useDashboardStore((s) => s.config);
   /* Path B Phase 1: editable when either the dashboard is directly on the
    * earclip OR the glasses are connected and the relay has populated a
    * config (writes fall through narbisDevice.writeConfig → edgeDevice). */
   const isConnected =
     narbisState === 'connected' ||
     (edgeState === 'connected' && config !== null);
+  /* Relay can pass writes through right now even if we haven't yet
+   * received the current config blob from the earclip. Used to render a
+   * "loading + reload" affordance instead of the blunt "connect a device"
+   * fallback when the user is on the relay path and the one-shot config
+   * read inside enter_ready() didn't make it through. */
+  const relayLinkedNoConfig =
+    edgeState === 'connected' && earclipRelay === true && config === null;
   const writer = useDebouncedConfigWrite(isConnected);
   const { expanded, toggle } = useExpandState();
 
   const disabled = !writer.canWrite;
 
+  const reloadFromEarclip = () => {
+    void edgeDevice.requestEarclipConfigRead().catch((err) => {
+      console.error('requestEarclipConfigRead failed', err);
+    });
+  };
+
   if (!writer.draft) {
     return (
       <div className="rounded border border-slate-800 bg-slate-900/50 p-4 text-[12px] text-slate-400">
-        <div className="font-medium text-slate-200 mb-1">Configuration</div>
-        Connect a Narbis device to load and edit config.
+        <div className="flex items-center justify-between mb-1">
+          <div className="font-medium text-slate-200">Configuration</div>
+          {relayLinkedNoConfig ? (
+            <button
+              type="button"
+              onClick={reloadFromEarclip}
+              className="text-[10px] rounded bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-slate-300"
+              title="Re-request the current config from the earclip via the glasses relay (sends 0xC5)"
+            >
+              reload from earclip
+            </button>
+          ) : null}
+        </div>
+        {relayLinkedNoConfig ? (
+          <span>
+            Loading config from earclip via glasses relay… If this stays here for more than a
+            few seconds, click <span className="text-slate-300">reload from earclip</span>.
+          </span>
+        ) : (
+          <span>Connect a Narbis device to load and edit config.</span>
+        )}
       </div>
     );
   }

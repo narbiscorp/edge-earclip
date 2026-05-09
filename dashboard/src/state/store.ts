@@ -690,6 +690,7 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
 /* Path B: glasses-to-earclip relay link state. Fires on connect/disconnect
  * of the central inside the glasses. The header renders this so users can
  * see "Earclip relay: linked" without reading the BLE event log. */
+let configRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 edgeDevice.addEventListener('centralRelayState', (e) => {
   const r = (e as CustomEvent<CentralRelayState>).detail;
   setState((s) => ({
@@ -706,6 +707,26 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
   if (r.connected) {
     resetDiagnosticClock();
     lastRawTs = 0;
+    /* When the relay first goes UP, the glasses' central does a one-shot
+     * GATTC read of the earclip's CONFIG inside enter_ready and forwards
+     * the result as a 0xF4 frame. That read sometimes drops on Bluedroid's
+     * outbound queue (esp. after self-heal, where 9+ ops fire back-to-back),
+     * leaving us with relay UP but config null forever. Auto-recover by
+     * sending 0xC5 (refresh-config opcode) ~2 s after relay-up if the
+     * config slot is still empty. Idempotent on the firmware side — safe
+     * to send even if the original read landed and a 0xF4 is already in
+     * flight. Requires glasses firmware with 0xC5 handler. */
+    if (configRefreshTimer) clearTimeout(configRefreshTimer);
+    configRefreshTimer = setTimeout(() => {
+      configRefreshTimer = null;
+      if (useDashboardStore.getState().config !== null) return;
+      void edgeDevice.requestEarclipConfigRead().catch((err) => {
+        appendBleLog('edge', 'error', `auto config refresh: ${(err as Error).message}`);
+      });
+    }, 2000);
+  } else if (configRefreshTimer) {
+    clearTimeout(configRefreshTimer);
+    configRefreshTimer = null;
   }
 });
 

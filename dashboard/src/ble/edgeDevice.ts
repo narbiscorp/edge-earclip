@@ -260,6 +260,20 @@ export class EdgeDevice extends EventTarget {
     await this.sendCtrlCommand(0xC4, new Uint8Array([on ? 1 : 0]));
   }
 
+  /** Path B Phase 1: ask the glasses' central to re-issue the one-shot
+   * GATTC read of the earclip's CONFIG characteristic. The central does
+   * this once inside enter_ready(), but if Bluedroid's outbound queue
+   * was full at that moment the read can be silently dropped — leaving
+   * the dashboard with no 0xF4 frame ever and the ConfigPanel stuck on
+   * "Connect a Narbis device". 0xC5 is the recovery path: store auto-
+   * sends it when relay goes UP but no config has arrived within ~2 s,
+   * and the ConfigPanel exposes it as a manual "Reload from earclip"
+   * button. Requires glasses firmware with the 0xC5 handler (PR
+   * narbiscorp/edge-firmware claude/refresh-config-opcode). */
+  async requestEarclipConfigRead(): Promise<void> {
+    await this.sendCtrlCommand(0xC5);
+  }
+
   // ---------- High-level setters (mirror v13.27 sendCmd_* helpers) ----------
 
   /** Switch the glasses into training mode and select PPG program 1-4.
