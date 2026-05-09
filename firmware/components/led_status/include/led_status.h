@@ -34,7 +34,7 @@ typedef enum {
     LED_STATE_OFF = 0,
     LED_STATE_BOOT,             /* one-shot ~1.5 s, auto-returns to OFF */
     LED_STATE_PAIRING,          /* continuous breathing, 1 Hz, 60% peak */
-    LED_STATE_STREAMING,        /* single soft pulse every 5 s, 30% peak */
+    LED_STATE_STREAMING,        /* 3 fast pulses (100 ms on / 100 ms off) every 3 s, 60% peak */
     LED_STATE_BATTERY_LOW,      /* double pulse every 5 s, 50% peak */
     LED_STATE_BATTERY_CRIT,     /* rapid pulse 2 Hz, 10 s timeout, full bright */
     LED_STATE_SLEEP_ENTRY,      /* 3 fast pulses (100 ms on / 100 ms off), auto-OFF at 600 ms */

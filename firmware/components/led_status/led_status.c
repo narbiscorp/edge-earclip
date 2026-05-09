@@ -91,10 +91,16 @@ static uint8_t render_pairing(float t)
 
 static uint8_t render_streaming(float t)
 {
-    /* Single 600 ms half-sine pulse every 5 s at 30% peak. */
-    float c = fmodf(t, 5.0f);
-    if (c < 0.6f) {
-        return (uint8_t)(76.0f * sinf(M_PI * c / 0.6f));
+    /* 3 fast half-sine pulses (100 ms on / 100 ms off, 60% peak) at the
+     * start of every 3 s window, then dark for the remaining 2.4 s.
+     * Tells user "device is streaming PPG data normally" — distinct from
+     * the sparser BATTERY_LOW double-pulse and the urgent SLEEP_ENTRY /
+     * BATTERY_CRIT full-brightness rapid pulses. */
+    float c = fmodf(t, 3.0f);
+    if (c >= 0.6f) return 0;            /* dark portion of cycle */
+    float p = fmodf(c, 0.2f);           /* 200 ms cycle: 100 ms pulse + 100 ms gap */
+    if (p < 0.1f) {
+        return (uint8_t)(153.0f * sinf(M_PI * p / 0.1f));
     }
     return 0;
 }
