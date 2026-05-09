@@ -86,15 +86,22 @@ static void enter_deep_sleep(void) {
      * via boot diagnostic before this fix landed: wake_cause=TIMER. */
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    /* 3. Keep the pull-up alive through deep sleep. The HP GPIO
-     * peripheral (where gpio_config() set the pull-up) powers off in
-     * deep sleep on ESP32-C6; LP_IO takes over for GPIO0–7 but does
-     * NOT inherit the HP pull-up. */
+    /* 3. Switch the pin into LP_IO / RTC mode and configure the pull-up
+     * there. Calling rtc_gpio_pullup_en() alone on a pin that is still
+     * routed to the HP GPIO matrix can silently no-op — the pin needs
+     * to be claimed by the LP_IO peripheral first via rtc_gpio_init().
+     * Without this, the pin floats in deep sleep, noise reads as LOW,
+     * and the level-triggered wake source either fires immediately
+     * (looks like sleep never engaged) or — once the chip is deep
+     * enough that even noise can't trigger it — the pin sits at an
+     * indeterminate level and the press never registers as a wake. */
+    rtc_gpio_init(SLEEP_BUTTON_GPIO);
+    rtc_gpio_set_direction(SLEEP_BUTTON_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pullup_en(SLEEP_BUTTON_GPIO);
     rtc_gpio_pulldown_dis(SLEEP_BUTTON_GPIO);
 
-    /* Arm the same pin as wake source. ESP_GPIO_WAKEUP_GPIO_LOW means
-     * the chip wakes when the pin is LOW (button pressed). */
+    /* 4. Arm the same pin as wake source. ESP_GPIO_WAKEUP_GPIO_LOW
+     * means the chip wakes when the pin is LOW (button pressed). */
     esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(
         1ULL << SLEEP_BUTTON_GPIO,
         ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -104,10 +111,15 @@ static void enter_deep_sleep(void) {
         return;
     }
 
-    /* Brief settle delay after radio + sensor teardown — lets the
-     * BLE supervision-timeout disconnects ship and the sensor's last
-     * I2C write settle before we cut power. */
+    /* Brief settle delay after radio + sensor teardown. */
     vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* Final pre-sleep diagnostic. If level=0 here, the pull-up did not
+     * hold and the chip will wake immediately on its own (false wake).
+     * If level=1, sleep should hold until the user actually presses. */
+    int final_level = rtc_gpio_get_level(SLEEP_BUTTON_GPIO);
+    ESP_LOGW(TAG, "pre-sleep: rtc_gpio%d=%d (expect 1 = pulled up)",
+             SLEEP_BUTTON_GPIO, final_level);
 
     esp_deep_sleep_start();
     /* Never returns; chip resets on wake. */
