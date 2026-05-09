@@ -15,7 +15,7 @@
  *      callers and does not include their headers.
  *
  * Priority enforcement (high → low):
- *     BATTERY_CRIT > BATTERY_LOW > PAIRING > STREAMING > BOOT > OFF
+ *     SLEEP_ENTRY > BATTERY_CRIT > BATTERY_LOW > PAIRING > STREAMING > BOOT > OFF
  * Setting a lower-priority state from a higher one is rejected so a
  * battery alert can't be silenced by a routine BLE event. Explicit clear
  * to OFF is always allowed (call OFF then set the new state when you
@@ -34,9 +34,10 @@ typedef enum {
     LED_STATE_OFF = 0,
     LED_STATE_BOOT,             /* one-shot ~1.5 s, auto-returns to OFF */
     LED_STATE_PAIRING,          /* continuous breathing, 1 Hz, 60% peak */
-    LED_STATE_STREAMING,        /* single soft pulse every 5 s, 30% peak */
+    LED_STATE_STREAMING,        /* 3 fast pulses (100 ms on / 100 ms off) every 3 s, 60% peak */
     LED_STATE_BATTERY_LOW,      /* double pulse every 5 s, 50% peak */
     LED_STATE_BATTERY_CRIT,     /* rapid pulse 2 Hz, 10 s timeout, full bright */
+    LED_STATE_SLEEP_ENTRY,      /* 3 fast pulses (100 ms on / 100 ms off), auto-OFF at 600 ms */
 } led_state_t;
 
 /* Bring up LEDC + the 50 Hz tick timer. Initial state is OFF. */

@@ -91,10 +91,16 @@ static uint8_t render_pairing(float t)
 
 static uint8_t render_streaming(float t)
 {
-    /* Single 600 ms half-sine pulse every 5 s at 30% peak. */
-    float c = fmodf(t, 5.0f);
-    if (c < 0.6f) {
-        return (uint8_t)(76.0f * sinf(M_PI * c / 0.6f));
+    /* 3 fast half-sine pulses (100 ms on / 100 ms off, 60% peak) at the
+     * start of every 3 s window, then dark for the remaining 2.4 s.
+     * Tells user "device is streaming PPG data normally" — distinct from
+     * the sparser BATTERY_LOW double-pulse and the urgent SLEEP_ENTRY /
+     * BATTERY_CRIT full-brightness rapid pulses. */
+    float c = fmodf(t, 3.0f);
+    if (c >= 0.6f) return 0;            /* dark portion of cycle */
+    float p = fmodf(c, 0.2f);           /* 200 ms cycle: 100 ms pulse + 100 ms gap */
+    if (p < 0.1f) {
+        return (uint8_t)(153.0f * sinf(M_PI * p / 0.1f));
     }
     return 0;
 }
@@ -126,6 +132,24 @@ static uint8_t render_battery_crit(float t)
     return 0;
 }
 
+static uint8_t render_sleep_entry(float t)
+{
+    /* 3 fast half-sine pulses, 100 ms on / 100 ms off, full brightness.
+     * Total 600 ms. Tells the user "you've held long enough — sleep is
+     * engaging now." Auto-clears to OFF after the third pulse so the
+     * subsequent deep_sleep_start hits a quiet LED. */
+    if (t >= 0.6f) {
+        led_status_set_state(LED_STATE_OFF);
+        return 0;
+    }
+    /* 200 ms cycle: 100 ms pulse + 100 ms gap. */
+    float c = fmodf(t, 0.2f);
+    if (c < 0.1f) {
+        return (uint8_t)(255.0f * sinf(M_PI * c / 0.1f));
+    }
+    return 0;
+}
+
 /* === Tick callback ======================================================= */
 
 static void tick_cb(void *arg)
@@ -151,6 +175,7 @@ static void tick_cb(void *arg)
     case LED_STATE_STREAMING:     b = render_streaming(t);      break;
     case LED_STATE_BATTERY_LOW:   b = render_battery_low(t);    break;
     case LED_STATE_BATTERY_CRIT:  b = render_battery_crit(t);   break;
+    case LED_STATE_SLEEP_ENTRY:   b = render_sleep_entry(t);    break;
     }
 
     uint8_t corrected = s_gamma_ready ? s_gamma_lut[b] : b;
@@ -221,6 +246,7 @@ void led_status_set_state(led_state_t state)
         [LED_STATE_PAIRING]      = 3,
         [LED_STATE_BATTERY_LOW]  = 4,
         [LED_STATE_BATTERY_CRIT] = 5,
+        [LED_STATE_SLEEP_ENTRY]  = 6,   /* user-initiated: overrides everything */
     };
 
     portENTER_CRITICAL(&s_lock);

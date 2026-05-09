@@ -37,16 +37,18 @@
 static const char *TAG = "sleep_button";
 
 #define SLEEP_BUTTON_GPIO       GPIO_NUM_2    /* D2 on XIAO ESP32-C6 (LP_IO; external tactile button to GND) */
-#define SLEEP_BUTTON_HOLD_MS    2000          /* hold ≥ 2 s to enter sleep */
+#define SLEEP_BUTTON_HOLD_MS    5000          /* hold ≥ 5 s to enter sleep */
 #define POLL_PERIOD_MS          50
 #define WAKE_GRACE_MS           1500          /* don't arm until user releases wake-press */
 
 static void enter_deep_sleep(void) {
     ESP_LOGW(TAG, "sleep requested — release the button to enter deep sleep");
-    /* Drive the user LED to OFF before we tear down peripherals. The LED
-     * task will pick this up on its next 50 ms tick and write a 0 duty
-     * via LEDC; deep_sleep_start kills the timer task shortly after. */
-    led_status_set_state(LED_STATE_OFF);
+    /* Trigger the 3-fast-pulse sleep-entry indicator so the user sees a
+     * positive confirmation that the 5 s hold registered. The animation
+     * runs concurrently with the wait-for-release loop below and auto-
+     * clears to OFF after 600 ms. SLEEP_ENTRY has the highest priority
+     * (above BATTERY_CRIT) so it overrides whatever was on the LED. */
+    led_status_set_state(LED_STATE_SLEEP_ENTRY);
 
     /* CRITICAL: ESP_GPIO_WAKEUP_GPIO_LOW is *level*-triggered, not edge.
      * If we call esp_deep_sleep_start() while the user is still holding
