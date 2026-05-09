@@ -80,28 +80,25 @@ static void enter_deep_sleep(void) {
                  esp_err_to_name(berr));
     }
 
-    /* 2. Disarm any wake source still left armed (defensive — the BLE
-     * controller's TIMER wake should be released by the deinit above,
-     * but esp_pm or other modules may have armed others). Confirmed
-     * via boot diagnostic before this fix landed: wake_cause=TIMER. */
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
-    /* 3. Switch the pin into LP_IO / RTC mode and configure the pull-up
+    /* 2. Switch the pin into LP_IO / RTC mode and configure the pull-up
      * there. Calling rtc_gpio_pullup_en() alone on a pin that is still
      * routed to the HP GPIO matrix can silently no-op — the pin needs
      * to be claimed by the LP_IO peripheral first via rtc_gpio_init().
-     * Without this, the pin floats in deep sleep, noise reads as LOW,
-     * and the level-triggered wake source either fires immediately
-     * (looks like sleep never engaged) or — once the chip is deep
-     * enough that even noise can't trigger it — the pin sits at an
-     * indeterminate level and the press never registers as a wake. */
+     * Without this, the pin floats in deep sleep and false-wakes. */
     rtc_gpio_init(SLEEP_BUTTON_GPIO);
     rtc_gpio_set_direction(SLEEP_BUTTON_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pullup_en(SLEEP_BUTTON_GPIO);
     rtc_gpio_pulldown_dis(SLEEP_BUTTON_GPIO);
 
-    /* 4. Arm the same pin as wake source. ESP_GPIO_WAKEUP_GPIO_LOW
-     * means the chip wakes when the pin is LOW (button pressed). */
+    /* 3. CRITICAL ORDER: disable-all + enable-gpio-wake must be the very
+     * LAST things before esp_deep_sleep_start, with NO blocking call
+     * (vTaskDelay, etc.) in between. Otherwise esp_pm's tickless light
+     * sleep slips in during the gap and re-arms a timer wake source for
+     * its own scheduling — which then fires immediately after deep sleep
+     * starts. Confirmed root cause of the recurring wake_cause=TIMER:
+     * even with a disable_all earlier in this function, a 150 ms delay
+     * before esp_deep_sleep_start was enough for esp_pm to undo it. */
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(
         1ULL << SLEEP_BUTTON_GPIO,
         ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -111,15 +108,10 @@ static void enter_deep_sleep(void) {
         return;
     }
 
-    /* Brief settle delay after radio + sensor teardown. */
-    vTaskDelay(pdMS_TO_TICKS(150));
-
     /* Final pre-sleep diagnostic. If level=0 here, the pull-up did not
-     * hold and the chip will wake immediately on its own (false wake).
-     * If level=1, sleep should hold until the user actually presses. */
-    int final_level = rtc_gpio_get_level(SLEEP_BUTTON_GPIO);
+     * hold and the chip will wake immediately on its own (false wake). */
     ESP_LOGW(TAG, "pre-sleep: rtc_gpio%d=%d (expect 1 = pulled up)",
-             SLEEP_BUTTON_GPIO, final_level);
+             SLEEP_BUTTON_GPIO, rtc_gpio_get_level(SLEEP_BUTTON_GPIO));
 
     esp_deep_sleep_start();
     /* Never returns; chip resets on wake. */
