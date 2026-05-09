@@ -615,6 +615,18 @@ esp_err_t transport_ble_init(void)
     }
     g_first_connect_seen = false;
 
+    /* Quiet NimBLE's per-notify INFO logs. By default the host emits
+     *   I (123456) NimBLE: GATT procedure initiated: notify;
+     *   I (123456) NimBLE: att_handle=N
+     * for every characteristic notification. At our sampling/streaming
+     * rates that's ~50 lines/sec on the USB serial console, drowning
+     * out anything else (adaptive_detector, narbis: beat, etc.) and
+     * making real diagnostics impossible to read. WARN drops just the
+     * INFO chatter — errors, disconnects, host-reset reasons all stay
+     * visible. Set BEFORE nimble_port_init so the very first log line
+     * already respects the level. */
+    esp_log_level_set("NimBLE", ESP_LOG_WARN);
+
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init: %s", esp_err_to_name(err));
