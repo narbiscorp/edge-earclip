@@ -1,6 +1,6 @@
 import { useDashboardStore } from '../state/store';
 import type { BatteryState } from '../state/store';
-import { forgetPairedDevice, getPairedDeviceName } from '../ble/narbisDevice';
+import { getPairedDeviceName } from '../ble/narbisDevice';
 import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevice';
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
@@ -75,12 +75,23 @@ export default function ConnectionPanel() {
     narbis.state === 'connected'
       ? `${narbis.deviceName ?? 'Narbis'}${formatBattery(narbis.battery)}`
       : narbis.state === 'reconnecting'
-        ? 'reconnecting…'
+        ? narbis.reconnectAttempt
+          ? `reconnecting (attempt ${narbis.reconnectAttempt})…`
+          : 'reconnecting…'
         : narbis.state === 'connecting'
           ? 'connecting…'
           : pairedName
             ? `disconnected (paired: ${pairedName})`
             : 'disconnected';
+
+  /* Sub-status line under the pill: shows the current phase of the
+   * connect / reconnect handshake so the user knows whether the dashboard
+   * is still scanning, discovering services, subscribing, or stuck. Only
+   * meaningful while a connect attempt is in flight. */
+  const narbisPhase =
+    (narbis.state === 'connecting' || narbis.state === 'reconnecting') && narbis.phase
+      ? formatPhase(narbis.phase)
+      : null;
 
   const edgeLabel =
     edge.state === 'connected'
@@ -114,8 +125,9 @@ export default function ConnectionPanel() {
           : 'disconnected';
 
   const onForgetNarbis = () => {
-    void useDashboardStore.getState().disconnectNarbis().catch(() => { /* ignore */ });
-    forgetPairedDevice();
+    void useDashboardStore.getState().forgetNarbis().catch((err) => {
+      console.error('forget narbis failed', err);
+    });
   };
   const onForgetEdge = () => {
     void useDashboardStore.getState().disconnectEdge().catch(() => { /* ignore */ });
@@ -225,6 +237,11 @@ export default function ConnectionPanel() {
           Recording: {recording.active ? 'on' : 'idle'}
         </span>
       </div>
+      {narbisPhase ? (
+        <div className="text-slate-400 text-[11px]" title={`narbis phase: ${narbisPhase}`}>
+          earclip: {narbisPhase}
+        </div>
+      ) : null}
       {lastError ? (
         <div className="text-rose-400 text-[11px] max-w-[640px] truncate" title={lastError}>
           {lastError}
@@ -241,4 +258,21 @@ function Pill({ label, dot }: { label: string; dot: string }) {
       <span>{label}</span>
     </span>
   );
+}
+
+/* Map raw phase strings emitted by NarbisDevice into short, user-readable
+ * labels. Anything unrecognised falls through verbatim so new phases
+ * surface in the UI without code changes. */
+function formatPhase(phase: string): string {
+  switch (phase) {
+    case 'requesting-device':           return 'waiting for device picker';
+    case 'connecting-gatt':             return 'connecting GATT';
+    case 'discovering-services':        return 'discovering services';
+    case 'discovering-services-retry':  return 'retrying service discovery';
+    case 'discovering-characteristics': return 'discovering characteristics';
+    case 'subscribing':                 return 'subscribing to notifications';
+    case 'reconnecting':                return 'reconnecting';
+    case 'ready':                       return 'ready';
+    default:                            return phase;
+  }
 }

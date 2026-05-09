@@ -27,6 +27,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "led_status.h"
 #include "ppg_driver_max3010x.h"
 #include "transport_ble.h"
 
@@ -39,6 +40,10 @@ static const char *TAG = "sleep_button";
 
 static void enter_deep_sleep(void) {
     ESP_LOGW(TAG, "sleep requested — release the button to enter deep sleep");
+    /* Drive the user LED to OFF before we tear down peripherals. The LED
+     * task will pick this up on its next 50 ms tick and write a 0 duty
+     * via LEDC; deep_sleep_start kills the timer task shortly after. */
+    led_status_set_state(LED_STATE_OFF);
 
     /* CRITICAL: ESP_GPIO_WAKEUP_GPIO_LOW is *level*-triggered, not edge.
      * If we call esp_deep_sleep_start() while the user is still holding

@@ -26,6 +26,7 @@
 #include "diagnostics.h"
 #include "elgendi.h"
 #include "power_mgmt.h"
+#include "led_status.h"
 #include "ppg_channel.h"
 #include "sleep_button.h"
 #include "transport_ble.h"
@@ -264,6 +265,13 @@ void app_main(void)
      * once everything is up. */
     ESP_ERROR_CHECK(config_manager_init());
     ESP_ERROR_CHECK(power_mgmt_init());
+
+    /* Bring up the user LED early so the boot animation (sine ramp up,
+     * brief hold, sine fade out — auto-clears to OFF after ~1.5 s) is
+     * visible from the start of app_main. The component spawns a 50 Hz
+     * esp_timer task and is otherwise inert until callers set states. */
+    (void)led_status_init();
+    led_status_set_state(LED_STATE_BOOT);
 
     boot_log_macs();
 

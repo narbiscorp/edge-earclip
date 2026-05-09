@@ -14,6 +14,9 @@ Narbis earclip firmware, dashboard, and protocol — all in one repo.
 
 See `CLAUDE.md` for architecture, decisions, and conventions.
 See `staged-prompts/README.md` for the build order.
+See [docs/pairing.md](docs/pairing.md) for the user-facing pairing & LED guide
+(what the earclip LED means, what the Edge lens patterns mean, how to pair with
+the dashboard and glasses, troubleshooting).
 
 ## Quick start
 
