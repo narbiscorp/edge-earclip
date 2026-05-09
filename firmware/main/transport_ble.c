@@ -493,6 +493,26 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                  * request_base_state preserves any active battery alert. */
                 if (subscribed) {
                     led_status_request_base_state(LED_STATE_STREAMING);
+                    /* Push the current CONFIG blob immediately on the
+                     * first subscribe to it. The dashboard's relay path
+                     * (Path B) needs this — the glasses' central tries
+                     * to do a one-shot GATTC read of CONFIG inside its
+                     * enter_ready, but that read can be silently dropped
+                     * by Bluedroid's outbound queue (especially after
+                     * self-heal, where 9+ ops fire back-to-back). With
+                     * no read response and no auto-notify, the dashboard
+                     * sits on "Loading config from earclip…" forever
+                     * even though IBI/battery are flowing fine.
+                     *
+                     * A NOTIFY at subscribe-time is the same delivery
+                     * mechanism the central's NOTIFY_EVT path already
+                     * forwards as a 0xF4 frame, so the dashboard
+                     * populates without depending on the read working.
+                     * Fan-out targets only the slot that just subscribed
+                     * (others' subscribed[CONFIG] hasn't changed). */
+                    if (i == BLE_SUB_NARBIS_CONFIG) {
+                        (void)ble_service_narbis_notify_config();
+                    }
                 }
                 break;
             }
