@@ -441,6 +441,60 @@ typedef struct __attribute__((packed)) {
     uint8_t  refractory_ibi_pct;         /* refractory = ibi_min_ms .. (pct/100)·IBI (default 60) */
 } narbis_runtime_config_t;
 
+/* =============================================================
+ * Edge glasses coherence-pipeline tuning struct.
+ *
+ * Lives on the Edge glasses (not the earclip). Written via CTRL opcode
+ * 0xE0 on the glasses' 0xFF01 characteristic; the dashboard exposes the
+ * fields as sliders. Lets the user re-tune the LF peak window, band
+ * boundaries, IBI gating, and coherence scaling at runtime without a
+ * reflash — keeps Approach A's "one source of truth" guarantee while
+ * removing the "coordinated firmware+dashboard updates" cost when
+ * iterating on the algorithm.
+ *
+ * Bin units are FFT-bin indices at the firmware's fixed 4 Hz × 256-point
+ * grid (df = 0.015625 Hz/bin). Compile-time grid is NOT runtime-tunable;
+ * resizing the static FFT buffers would mean dynamic allocation.
+ *
+ * NOTE: the on-glasses NVS storage is one u8 per field (see prefs_load
+ * in EDGE firmware main.c) for simplicity; the wire format below is the
+ * struct as-is.
+ * ============================================================= */
+typedef struct __attribute__((packed)) {
+    uint8_t  min_ibis;             /* default 20; minimum beats to compute coherence */
+    uint8_t  conf_threshold;       /* default 50; drop IBIs with conf<this in on_earclip_ibi / 0xCA */
+    /* Band-integration bin ranges (inclusive) */
+    uint8_t  vlf_band_lo;          /* default 1  */
+    uint8_t  vlf_band_hi;          /* default 2  */
+    uint8_t  lf_band_lo;           /* default 3  */
+    uint8_t  lf_band_hi;           /* default 9  */
+    uint8_t  hf_band_lo;           /* default 10 */
+    uint8_t  hf_band_hi;           /* default 25 */
+    /* LF-peak search (Lehrer/Vaschillo numerator) */
+    uint8_t  lf_peak_lo;           /* default 3  */
+    uint8_t  lf_peak_hi;           /* default 9  */
+    uint8_t  peak_halfwidth;       /* default 0 → single-bin peak; N → ±N bins inclusive */
+    /* Score scaling */
+    uint8_t  coh_multiplier;       /* default 100 (was 250 pre-v4.14.31) */
+} narbis_coh_params_t;
+
+#define NARBIS_COH_PARAMS_WIRE_SIZE 12u  /* matches sizeof(narbis_coh_params_t) */
+
+#define NARBIS_COH_PARAMS_DEFAULTS_INIT { \
+    .min_ibis        = 20,  \
+    .conf_threshold  = 50,  \
+    .vlf_band_lo     = 1,   \
+    .vlf_band_hi     = 2,   \
+    .lf_band_lo      = 3,   \
+    .lf_band_hi      = 9,   \
+    .hf_band_lo      = 10,  \
+    .hf_band_hi      = 25,  \
+    .lf_peak_lo      = 3,   \
+    .lf_peak_hi      = 9,   \
+    .peak_halfwidth  = 0,   \
+    .coh_multiplier  = 100, \
+}
+
 /* Diagnostics stream IDs — bit positions in narbis_runtime_config_t.diagnostics_mask.
  * Each stream is independently subscribable; emission also requires the
  * master diagnostics_enabled flag to be 1 and a NARBIS_CHR_DIAGNOSTICS

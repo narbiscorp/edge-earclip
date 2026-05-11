@@ -1,4 +1,9 @@
-import { NARBIS_CONFIG_WIRE_SIZE } from '../../../protocol/narbis_protocol';
+import {
+  NARBIS_CONFIG_WIRE_SIZE,
+  NARBIS_COH_PARAMS_WIRE_SIZE,
+  serializeCoherenceParams,
+  type NarbisCoherenceParams,
+} from '../../../protocol/narbis_protocol';
 
 /*
  * edgeDevice.ts - BLE connection to the Narbis Edge glasses.
@@ -66,6 +71,35 @@ export interface RelayedBattery {
   charging: number;
 }
 
+/* Firmware-computed coherence packet (0xF2). Same fields the dashboard
+ * decodes into the human-readable BLE log summary, but exposed as a
+ * structured payload for charts and the firmware-coherence parity check.
+ * Wire layout matches main.c::coh_emit_packet (18 B body after the type
+ * byte): coherence u8, resp_peak_mhz u16 LE, vlf/lf/hf/total u16 LE (each
+ * scaled into u16 range by firmware), lf_norm u8, hf_norm u8, lf_hf_fp88
+ * u16 LE (divide by 256 for ratio), n_ibis_used u8, pacer_bpm u8. The
+ * trailing byte was reserved=0 in v4.14.38; firmware ≥ v4.14.40 emits
+ * the current adaptive-pacer cycle BPM there. Older firmware reads as 0
+ * (the dashboard hides the pacer readout when 0). */
+export interface EdgeCoherenceFrame {
+  timestamp: number;
+  coh: number;
+  respMhz: number;
+  vlf: number;
+  lf: number;
+  hf: number;
+  total: number;
+  lfNorm: number;
+  hfNorm: number;
+  /** LF/HF ratio as a float (firmware fp8.8 already divided by 256). */
+  lfHf: number;
+  nIbis: number;
+  /** Current breathing-pacer cycle BPM (Programs 2 & 4 with adaptive ON).
+   * 0 if firmware is too old to report it OR if no breathing program is
+   * running yet. */
+  pacerBpm: number;
+}
+
 /* Path B Phase 1/2: binary relay frames on 0xFF03.
  * 0xF4 carries a serialized narbis_runtime_config_t (50 B incl. CRC).
  * 0xF5 carries a raw-PPG batch in the same wire format the direct
@@ -123,6 +157,8 @@ export const CTRL = {
   STROBE_DUTY_PCT:  0xAC,  // 10..90 % dark fraction per cycle
   FACTORY_RESET:    0xBF,  // 0x00 wipe ALL stored prefs
   NARBIS_FORGET:    0xC1,  // 0x00 wipe paired earclip + rescan (Path B)
+  INJECT_IBI:       0xCA,  // [ibi_lo, ibi_hi, conf, flags] feed external HR (H10) into coherence
+  COH_PARAMS:       0xE0,  // 12-byte narbis_coh_params_t — live algorithm tuning
   DETECTOR_RESET:   0xD0,  // 0x00 reset client/dashboard detector state
 } as const;
 
@@ -310,10 +346,17 @@ export class EdgeDevice extends EventTarget {
     await this.sendCtrlCommand(CTRL.LENS_LIMIT_PCT, new Uint8Array([v]));
   }
 
-  /** 1..50 Hz, flash rate for Program 4 / standalone strobe. */
+  /** 1.0..50.0 Hz, flash rate for Program 4 / standalone strobe.
+   *
+   * Sends the 3-byte form (deci-Hz, u16 LE) supported by firmware
+   * ≥ v4.14.41 so callers can hit half-Hz brainwave-entrainment targets
+   * (13.5 Hz, 17.5 Hz, etc.) without integer rounding. Older firmware
+   * ignores byte 2 and reads byte 1 as integer Hz — still works but
+   * loses the 0.1 Hz precision. */
   async setStrobeFreqHz(hz: number): Promise<void> {
-    const v = clamp(Math.round(hz), 1, 50);
-    await this.sendCtrlCommand(CTRL.STROBE_FREQ_HZ, new Uint8Array([v]));
+    const dhz = Math.round(clamp(hz, 1, 50) * 10);
+    const payload = new Uint8Array([dhz & 0xff, (dhz >> 8) & 0xff]);
+    await this.sendCtrlCommand(CTRL.STROBE_FREQ_HZ, payload);
   }
 
   /** 10..90 %, dark fraction per strobe cycle. */
@@ -347,6 +390,35 @@ export class EdgeDevice extends EventTarget {
   /** Tell firmware to reset its detector state (drop NCC template, restart blocks). */
   async detectorReset(): Promise<void> {
     await this.sendCtrlCommand(CTRL.DETECTOR_RESET, new Uint8Array([0]));
+  }
+
+  /** Push a new `narbis_coh_params_t` to the glasses (opcode 0xE0). The
+   * firmware validates ranges, rejects out-of-grid bins / inverted lo/hi,
+   * applies atomically, and persists each field to NVS. New params take
+   * effect on the next coherence_task tick (≤1 s). */
+  async writeCoherenceParams(p: NarbisCoherenceParams): Promise<void> {
+    const payload = serializeCoherenceParams(p);
+    if (payload.length !== NARBIS_COH_PARAMS_WIRE_SIZE) {
+      throw new Error(`coh params size mismatch: ${payload.length} vs ${NARBIS_COH_PARAMS_WIRE_SIZE}`);
+    }
+    await this.sendCtrlCommand(CTRL.COH_PARAMS, payload);
+  }
+
+  /** Inject an external IBI (e.g. from a Polar H10) into the glasses'
+   * coherence pipeline. Mirrors the path the earclip's IBI takes through
+   * on_earclip_ibi → coh_push_ibi, so all four PPG programs respond
+   * identically regardless of source. The dashboard calls this once per
+   * R-R interval when HR-source-for-glasses is set to H10. Firmware drops
+   * conf<50 or flags with ARTIFACT, matching the earclip path. */
+  async injectIbi(ibi_ms: number, conf = 100, flags = 0): Promise<void> {
+    const ibi = Math.max(0, Math.min(0xffff, Math.round(ibi_ms)));
+    const payload = new Uint8Array([
+      ibi & 0xff,
+      (ibi >> 8) & 0xff,
+      conf & 0xff,
+      flags & 0xff,
+    ]);
+    await this.sendCtrlCommand(CTRL.INJECT_IBI, payload);
   }
 
   private async openSession(): Promise<void> {
@@ -422,6 +494,28 @@ export class EdgeDevice extends EventTarget {
         if (ibi) this.dispatch('relayedIbi', ibi);
         const batt = parseRelayedBattery(summary, ts);
         if (batt) this.dispatch('relayedBattery', batt);
+      }
+
+      /* 0xF2 firmware HRV/coherence — surface as a structured event so
+       * charts can plot it alongside the dashboard's local
+       * firmwareCoherence output (parity check) and so the metrics
+       * runner can record it. Fields match coh_emit_packet exactly. */
+      if (type === 0xF2 && bytes.length >= 18) {
+        const detail: EdgeCoherenceFrame = {
+          timestamp: ts,
+          coh:      dv.getUint8(1),
+          respMhz:  dv.getUint16(2, true),
+          vlf:      dv.getUint16(4, true),
+          lf:       dv.getUint16(6, true),
+          hf:       dv.getUint16(8, true),
+          total:    dv.getUint16(10, true),
+          lfNorm:   dv.getUint8(12),
+          hfNorm:   dv.getUint8(13),
+          lfHf:     dv.getUint16(14, true) / 256,
+          nIbis:    dv.getUint8(16),
+          pacerBpm: dv.getUint8(17),  /* 0 on older firmware */
+        };
+        this.dispatch('edgeCoherence', detail);
       }
 
       /* Path B Phase 1/2: binary relay frames. The store deserializes the

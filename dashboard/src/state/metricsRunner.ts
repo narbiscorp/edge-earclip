@@ -1,11 +1,15 @@
 import MetricsWorker from '../workers/metricsWorker?worker';
 import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { useDashboardStore } from './store';
-import { extractIbiWindow } from '../metrics/windowing';
+import { extractIbiWindow, extractH10IbiWindow, type IbiWindow } from '../metrics/windowing';
 import { metricsBuffers, snapshotFromResult, type MetricsSnapshot } from './metricsBuffer';
 
 const COMPUTE_INTERVAL_MS = 1000;
-export const METRICS_WINDOW_SEC = 60;
+// The firmware coherence pipeline uses a 64-second window; widen the
+// metrics window beyond the historical 60 s so we have enough data in
+// the trailing 64 s for the firmware-mirror branch. Lomb-Scargle on the
+// other branch is unaffected — it just gets a slightly longer window.
+export const METRICS_WINDOW_SEC = 64;
 
 export interface MetricsUpdatedDetail {
   snapshot: MetricsSnapshot;
@@ -21,7 +25,9 @@ class MetricsRunner extends EventTarget {
   // tick. v13_26 strides frequency-domain HRV every 5 beats for the same
   // reason — Lomb-Scargle is the dominant cost and HRV moves on a ~30 s
   // timescale, so per-second recompute is wasted when nothing changed.
-  private lastBeatSeq = -1;
+  // Composite seq tag includes the source so toggling earclip↔h10 forces
+  // an immediate recompute on the new buffer.
+  private lastSeqTag = '';
 
   start(): void {
     if (this.worker) return;
@@ -41,7 +47,7 @@ class MetricsRunner extends EventTarget {
       this.worker = null;
     }
     this.inFlight = false;
-    this.lastBeatSeq = -1;
+    this.lastSeqTag = '';
     metricsBuffers.live.clear();
   }
 
@@ -51,13 +57,37 @@ class MetricsRunner extends EventTarget {
 
   private tick = (): void => {
     if (!this.worker || this.inFlight) return;
-    if (useDashboardStore.getState().dataSource !== 'live') return;
-    const beatBuf = useDashboardStore.getState().buffers.narbisBeats;
-    if (beatBuf.seq === this.lastBeatSeq) return;
-    const beats = beatBuf.getAll();
-    if (beats.length < 4) return;
-    const beatEvents = beats.map((s) => s.value);
-    const { times_s, ibis_ms } = extractIbiWindow(beatEvents, METRICS_WINDOW_SEC, Date.now());
+    const state = useDashboardStore.getState();
+    if (state.dataSource !== 'live') return;
+
+    const source = state.hrSourceForGlasses;
+    let window: IbiWindow;
+    let seqTag: string;
+    if (source === 'h10') {
+      const buf = state.buffers.polarBeats;
+      seqTag = `h10:${buf.seq}`;
+      if (seqTag === this.lastSeqTag) return;
+      const samples = buf.getAll();
+      if (samples.length < 1) return;
+      /* PolarBeatRecord lives in the StreamBuffer without a self-contained
+       * timestamp — the buffer wraps each value in a {timestamp, value}
+       * pair. Reshape into PolarBeatSample for the window extractor. */
+      const polarSamples = samples.map((s) => ({
+        timestamp: s.timestamp,
+        bpm: s.value.bpm,
+        rr: s.value.rr,
+      }));
+      window = extractH10IbiWindow(polarSamples, METRICS_WINDOW_SEC, Date.now());
+    } else {
+      const buf = state.buffers.narbisBeats;
+      seqTag = `earclip:${buf.seq}`;
+      if (seqTag === this.lastSeqTag) return;
+      const samples = buf.getAll();
+      if (samples.length < 4) return;
+      window = extractIbiWindow(samples.map((s) => s.value), METRICS_WINDOW_SEC, Date.now());
+    }
+
+    const { times_s, ibis_ms, beat_ms } = window;
     if (times_s.length < 4) return;
 
     const requestId = this.nextRequestId++;
@@ -66,10 +96,16 @@ class MetricsRunner extends EventTarget {
       requestId,
       times_s,
       ibis_ms,
+      beat_ms,
+      /* Pass the live params so the worker's firmware-mirror coherence
+       * uses the SAME constants the user just pushed to the glasses.
+       * Without this the dashboard's local trace drifts away from the
+       * 0xF2 stream as soon as the user touches a slider. */
+      coh_params: state.coherenceParams,
     };
     this.inFlight = true;
-    this.lastBeatSeq = beatBuf.seq;
-    this.worker.postMessage(msg, [times_s.buffer, ibis_ms.buffer]);
+    this.lastSeqTag = seqTag;
+    this.worker.postMessage(msg, [times_s.buffer, ibis_ms.buffer, beat_ms.buffer]);
   };
 
   private onMessage = (ev: MessageEvent<MetricsResult>): void => {

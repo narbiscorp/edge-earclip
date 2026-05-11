@@ -17,6 +17,10 @@ export const CHART_COLORS = {
   lfhf: '#fb923c',
   resonance: '#22d3ee',
   hm: '#f472b6',
+  /* Dashboard-side firmware-mirror coherence — port of coh_compute. */
+  firmwareCoh: '#a3e635',
+  /* On-glasses firmware coherence, decoded from the 0xF2 status frame. */
+  edgeCoh: '#fde047',
 };
 
 export function darkLayout(extra: Partial<Layout> = {}): Partial<Layout> {

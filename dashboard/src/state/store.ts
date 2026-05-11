@@ -24,13 +24,16 @@ import {
   type EdgeStatusFrame,
   type EdgeDisconnectedDetail,
   type EdgeErrorDetail,
+  type EdgeCoherenceFrame,
   type RelayedIbi,
   type RelayedBattery,
   type RelayedConfig,
   type RelayedRawPpg,
   type RelayedDiagnostic,
   type CentralRelayState,
+  type PpgProgram,
 } from '../ble/edgeDevice';
+import { edgeCoherenceBuffers } from './metricsBuffer';
 import type {
   NarbisRuntimeConfig,
   NarbisRawSample,
@@ -39,6 +42,10 @@ import type {
 } from '../ble/parsers';
 import { resetDiagnosticClock, deserializeConfig, parseDiagnostic } from '../ble/parsers';
 import { StreamBuffer } from './streamBuffer';
+import {
+  NARBIS_COH_PARAMS_DEFAULTS,
+  type NarbisCoherenceParams,
+} from '../../../protocol/narbis_protocol';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
 export type DataSource = 'live' | 'replay';
@@ -47,7 +54,7 @@ export type DataSource = 'live' | 'replay';
  * writes - everything user-visible across both devices. Stored as a fixed-
  * size ring (newest last) so the UI can show a tail without unbounded
  * memory growth. */
-export type BleLogSource = 'earclip' | 'edge' | 'system';
+export type BleLogSource = 'earclip' | 'edge' | 'polar' | 'system';
 export type BleLogLevel = 'info' | 'warn' | 'error' | 'rx' | 'tx';
 export interface BleLogEntry {
   id: number;
@@ -135,6 +142,55 @@ export interface DashboardState {
    * the wire is already uniform. Adds 150 ms of latency to the chart. */
   pcJitterSmoothing: boolean;
 
+  /** Which heart-rate source drives the glasses' coherence pipeline.
+   * 'earclip' (default): the glasses' BLE central pulls IBI from the
+   * paired Narbis earclip — the original path. 'h10': the dashboard
+   * forwards each Polar H10 R-R interval to the glasses via the 0xCA
+   * INJECT_IBI opcode, so the same 4 PPG programs run off H10 beats.
+   * The dashboard's local coherence runner also follows this source. */
+  hrSourceForGlasses: 'earclip' | 'h10';
+
+  /** Live coherence-pipeline params (LF peak window, band ranges, score
+   * multiplier, confidence gate). Mirrored to the glasses via the 0xE0
+   * opcode and persisted in localStorage. The dashboard's local
+   * firmwareCoherence port reads from the same struct, keeping the
+   * parity-check trace aligned with what the glasses are computing. */
+  coherenceParams: NarbisCoherenceParams;
+
+  /** Which PPG training program the glasses are currently running (1–4),
+   * or null if a standalone mode is active. Lifted to the store so the
+   * auto-start-on-H10-connect path and the user-click path stay in
+   * lockstep — clicking Prog N and the auto path both flow through the
+   * same setter. */
+  activeProgram: PpgProgram | null;
+
+  /** Which standalone (no-HR) mode is running on the glasses, or null
+   * if a PPG program is active instead. Mutually exclusive with
+   * activeProgram — setting one clears the other. */
+  standaloneMode: 'static' | 'strobe' | 'breathe' | 'pulse' | null;
+
+  /** Most recent firmware coherence frame (0xF2). Used for the live
+   * respiration-rate readout in the IBI tachogram header — and any other
+   * place that wants the freshest firmware values without polling the
+   * edgeCoherenceBuffers ring buffer. */
+  lastEdgeCoherence: EdgeCoherenceFrame | null;
+
+  /** Most recent H10 beat. Mirror of `lastBeat` (earclip) so the Basic-mode
+   * HR readout can pull whichever source is active without iterating the
+   * StreamBuffer on every render. */
+  lastPolarBeat: PolarBeatRecord | null;
+  /** Wall-clock ms of the most recent beat from EITHER source. Drives the
+   * heartbeat-pulse animation in the Basic-mode glasses visual without
+   * having to subscribe to both source-specific timestamps separately. */
+  lastBeatAt: number | null;
+
+  /** Dashboard UI complexity. 'basic' (default) shows a single-page
+   * lay-user view with just the metrics, program selector, and a couple
+   * of settings sliders. 'expert' is the full charts + sidebar layout
+   * with the algorithm tuning configurator, BLE log, recording controls,
+   * etc. Persisted to localStorage. */
+  uiMode: 'basic' | 'expert';
+
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
   /** Disconnect and release the Web Bluetooth permission grant for the
@@ -152,6 +208,24 @@ export interface DashboardState {
   edgeForgetEarclip: () => Promise<void>;
   clearBleLog: () => void;
   setPcJitterSmoothing: (enabled: boolean) => void;
+  setHrSourceForGlasses: (source: 'earclip' | 'h10') => void;
+  /** Updates the local params struct, persists it to localStorage, and
+   * pushes it to the connected glasses via 0xE0. Returns the BLE write
+   * promise so callers can await/handle failures. */
+  setCoherenceParams: (params: NarbisCoherenceParams) => Promise<void>;
+  /** Set the active PPG training program (1–4) or clear it (null). When
+   * non-null and Edge is connected, also fires 0xB7 PROGRAM_SELECT to
+   * the glasses. Clears standaloneMode (mutually exclusive). */
+  setActiveProgram: (p: PpgProgram | null) => Promise<void>;
+  /** Activate a standalone mode and fire its BLE command. Pass null to
+   * clear (leaves the glasses in whatever mode they were last in). For
+   * 'static', `dutyPct` overrides the brightness; otherwise it's
+   * ignored. Clears activeProgram. */
+  setStandaloneMode: (
+    mode: 'static' | 'strobe' | 'breathe' | 'pulse' | null,
+    dutyPct?: number,
+  ) => Promise<void>;
+  setUiMode: (mode: 'basic' | 'expert') => void;
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
   setWindowSec: (seconds: number) => void;
@@ -169,6 +243,49 @@ function makeBuffers(): BufferSet {
 
 const liveBuffers = makeBuffers();
 const replayBuffers = makeBuffers();
+
+const HR_SOURCE_FOR_GLASSES_KEY = 'hrSourceForGlasses';
+function loadHrSourceForGlasses(): 'earclip' | 'h10' {
+  try {
+    const v = localStorage.getItem(HR_SOURCE_FOR_GLASSES_KEY);
+    return v === 'h10' ? 'h10' : 'earclip';
+  } catch {
+    return 'earclip';
+  }
+}
+function saveHrSourceForGlasses(source: 'earclip' | 'h10'): void {
+  try { localStorage.setItem(HR_SOURCE_FOR_GLASSES_KEY, source); } catch { /* quota / private mode */ }
+}
+
+const COH_PARAMS_KEY = 'coherenceParams';
+function loadCoherenceParams(): NarbisCoherenceParams {
+  try {
+    const raw = localStorage.getItem(COH_PARAMS_KEY);
+    if (!raw) return { ...NARBIS_COH_PARAMS_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<NarbisCoherenceParams>;
+    // Merge over defaults so missing fields (e.g. older saved blob) fall
+    // back to compile-time defaults instead of NaN.
+    return { ...NARBIS_COH_PARAMS_DEFAULTS, ...parsed };
+  } catch {
+    return { ...NARBIS_COH_PARAMS_DEFAULTS };
+  }
+}
+function saveCoherenceParams(params: NarbisCoherenceParams): void {
+  try { localStorage.setItem(COH_PARAMS_KEY, JSON.stringify(params)); } catch { /* quota / private mode */ }
+}
+
+const UI_MODE_KEY = 'uiMode';
+function loadUiMode(): 'basic' | 'expert' {
+  try {
+    const v = localStorage.getItem(UI_MODE_KEY);
+    return v === 'expert' ? 'expert' : 'basic';
+  } catch {
+    return 'basic';
+  }
+}
+function saveUiMode(mode: 'basic' | 'expert'): void {
+  try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* quota / private mode */ }
+}
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
@@ -191,6 +308,14 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   windowSec: 30,
   bleLog: [],
   pcJitterSmoothing: true,
+  hrSourceForGlasses: loadHrSourceForGlasses(),
+  coherenceParams: loadCoherenceParams(),
+  activeProgram: null,
+  standaloneMode: null,
+  lastEdgeCoherence: null,
+  lastPolarBeat: null,
+  lastBeatAt: null,
+  uiMode: loadUiMode(),
 
   connectNarbis: async () => {
     set({ lastError: null });
@@ -209,10 +334,18 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   connectPolar: async () => {
     set({ lastError: null });
+    appendBleLog('polar', 'info', 'connect requested (opening device chooser)');
     try {
       await polarH10.connect();
     } catch (err) {
-      set({ lastError: errorMessage(err) });
+      const msg = errorMessage(err);
+      set({ lastError: msg });
+      /* Common cases:
+       *  - "User cancelled the requestDevice() chooser." — user closed the dialog.
+       *  - "Connection attempt failed." — gatt.connect() failed (strap out of
+       *    range, paired to another device, or Windows BLE stack stalled).
+       *  - "Bluetooth adapter not available." — OS Bluetooth off / no hardware. */
+      appendBleLog('polar', 'error', `connect failed: ${msg}`);
       throw err;
     }
   },
@@ -244,6 +377,68 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     // drop samples (also stops the drain timer). If enabling, the next
     // arriving packet kicks off the drain loop.
     if (!enabled) flushJitterQueue();
+  },
+  setHrSourceForGlasses: (source) => {
+    set({ hrSourceForGlasses: source });
+    saveHrSourceForGlasses(source);
+  },
+  setCoherenceParams: async (params) => {
+    set({ coherenceParams: params });
+    saveCoherenceParams(params);
+    if (edgeDevice.isConnected) {
+      try {
+        await edgeDevice.writeCoherenceParams(params);
+      } catch (err) {
+        appendBleLog('edge', 'error', `coh params write failed: ${(err as Error).message}`);
+        throw err;
+      }
+    }
+  },
+  setActiveProgram: async (p) => {
+    if (p !== null) {
+      set({ activeProgram: p, standaloneMode: null });
+    } else {
+      set({ activeProgram: null });
+    }
+    if (p !== null && edgeDevice.isConnected) {
+      try {
+        await edgeDevice.setProgram(p);
+      } catch (err) {
+        appendBleLog('edge', 'error', `setProgram(${p}) failed: ${(err as Error).message}`);
+        throw err;
+      }
+    }
+  },
+  setStandaloneMode: async (mode, dutyPct) => {
+    if (mode !== null) {
+      set({ standaloneMode: mode, activeProgram: null });
+    } else {
+      set({ standaloneMode: null });
+    }
+    if (mode === null || !edgeDevice.isConnected) return;
+    try {
+      switch (mode) {
+        case 'static':
+          await edgeDevice.setStandaloneStatic(dutyPct ?? 50);
+          break;
+        case 'strobe':
+          await edgeDevice.setStandaloneStrobe();
+          break;
+        case 'breathe':
+          await edgeDevice.setStandaloneBreathe();
+          break;
+        case 'pulse':
+          await edgeDevice.setStandalonePulseOnBeat();
+          break;
+      }
+    } catch (err) {
+      appendBleLog('edge', 'error', `setStandalone(${mode}) failed: ${(err as Error).message}`);
+      throw err;
+    }
+  },
+  setUiMode: (mode) => {
+    set({ uiMode: mode });
+    saveUiMode(mode);
   },
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
@@ -406,6 +601,7 @@ narbisDevice.addEventListener('beatReceived', (e) => {
   pending.beats += 1;
   pending.lastBeat = beat;
   scheduleCounterFlush();
+  setState({ lastBeatAt: beat.timestamp });
 });
 
 narbisDevice.addEventListener('sqiReceived', (e) => {
@@ -538,6 +734,29 @@ narbisDevice.addEventListener('diagnosticReceived', (e) => {
   }
 });
 
+/* When H10 connects and there is no earclip in the picture, auto-route
+ * the dashboard so the user doesn't have to flip switches: pick H10 as
+ * the IBI source for the glasses and kick off Program 1 (heartbeat).
+ * No-op if the earclip is already connected (the user clearly intends
+ * the earclip path then) or if Edge isn't connected yet (auto trigger
+ * will retry from the edge 'connected' listener). */
+function autoStartH10IfApplicable(reason: string): void {
+  const s = useDashboardStore.getState();
+  if (s.connection.polar.state !== 'connected') return;
+  if (s.connection.narbis.state === 'connected') return;
+  if (s.connection.edge.state !== 'connected') return;
+
+  if (s.hrSourceForGlasses !== 'h10') {
+    s.setHrSourceForGlasses('h10');
+    appendBleLog('system', 'info', `auto-select HR source = h10 (${reason})`);
+  }
+  if (s.activeProgram !== 1) {
+    void s.setActiveProgram(1).then(() => {
+      appendBleLog('system', 'info', `auto-start Program 1 (${reason})`);
+    }).catch(() => { /* setActiveProgram already logs */ });
+  }
+}
+
 polarH10.addEventListener('connected', (e) => {
   const { name } = (e as CustomEvent<{ name: string }>).detail;
   setState((s) => ({
@@ -546,6 +765,8 @@ polarH10.addEventListener('connected', (e) => {
       polar: { state: 'connected', deviceName: name },
     },
   }));
+  appendBleLog('polar', 'info', `connected to ${name}`);
+  autoStartH10IfApplicable('h10 connected');
 });
 
 polarH10.addEventListener('disconnected', (e) => {
@@ -558,20 +779,57 @@ polarH10.addEventListener('disconnected', (e) => {
         deviceName: polarH10.status === 'reconnecting' ? s.connection.polar.deviceName : null,
       },
     },
+    /* Drop the cached beat on real disconnect; keep it across reconnects
+     * so the Basic-mode HR card doesn't blink. */
+    lastPolarBeat: polarH10.status === 'reconnecting' ? s.lastPolarBeat : null,
     lastError: reason === 'error' && error ? error.message : s.lastError,
   }));
+  appendBleLog(
+    'polar',
+    reason === 'error' ? 'error' : 'info',
+    polarH10.status === 'reconnecting'
+      ? `disconnected (${reason}) - reconnecting`
+      : `disconnected (${reason})${error ? `: ${error.message}` : ''}`,
+  );
 });
 
 polarH10.addEventListener('error', (e) => {
   const { error, phase } = (e as CustomEvent<PolarErrorDetail>).detail;
   setState({ lastError: `polar/${phase}: ${error.message}` });
+  appendBleLog('polar', 'error', `${phase}: ${error.message}`);
 });
+
+/* H10 → glasses IBI forwarding (0xCA INJECT_IBI). Sanity-bound to the
+ * physiological range; same window the firmware's beat validator uses
+ * implicitly (240..30 BPM). RRs outside this band almost always mean a
+ * detection glitch on the strap and would corrupt the coherence FFT.
+ * The firmware also drops conf<50 / ARTIFACT, so we keep the conservative
+ * defaults (conf=100, flags=0) — H10's strap-side detector is solid. */
+const H10_RR_MIN_MS = 250;
+const H10_RR_MAX_MS = 2000;
+function forwardH10BeatsToGlasses(rrs: number[]): void {
+  if (rrs.length === 0) return;
+  if (!edgeDevice.isConnected) return;
+  for (const rr of rrs) {
+    if (!Number.isFinite(rr) || rr < H10_RR_MIN_MS || rr > H10_RR_MAX_MS) continue;
+    void edgeDevice.injectIbi(rr).catch((err) => {
+      appendBleLog('edge', 'error', `injectIbi failed: ${(err as Error).message}`);
+    });
+  }
+}
 
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
-  liveBuffers.polarBeats.push(beat.timestamp, { bpm: beat.bpm, rr: beat.rrIntervals_ms });
+  const record: PolarBeatRecord = { bpm: beat.bpm, rr: beat.rrIntervals_ms };
+  liveBuffers.polarBeats.push(beat.timestamp, record);
   pending.polarBeats += 1;
   scheduleCounterFlush();
+  /* Stash the freshest beat for Basic-mode HR readout. setState is
+   * coarse-grained (one per beat, ~1 Hz) so we don't need RAF batching. */
+  setState({ lastPolarBeat: record, lastBeatAt: beat.timestamp });
+  if (useDashboardStore.getState().hrSourceForGlasses === 'h10') {
+    forwardH10BeatsToGlasses(beat.rrIntervals_ms);
+  }
 });
 
 // ---------- Edge glasses ----------
@@ -597,6 +855,22 @@ edgeDevice.addEventListener('connected', (e) => {
   void edgeDevice.setRawRelayEnabled(true).catch((err) => {
     appendBleLog('edge', 'error', `auto-enable raw relay failed: ${(err as Error).message}`);
   });
+  /* Push the dashboard's stored coherence params to the glasses so the
+   * firmware's NVS-loaded values are overridden by the user's most
+   * recent tuning intent. Skipped silently if params equal compile-time
+   * defaults (no point burning a BLE round-trip just to confirm). */
+  const stored = useDashboardStore.getState().coherenceParams;
+  const isDefault = (Object.keys(NARBIS_COH_PARAMS_DEFAULTS) as (keyof NarbisCoherenceParams)[])
+    .every((k) => stored[k] === NARBIS_COH_PARAMS_DEFAULTS[k]);
+  if (!isDefault) {
+    void edgeDevice.writeCoherenceParams(stored).catch((err) => {
+      appendBleLog('edge', 'error', `auto-push coh params failed: ${(err as Error).message}`);
+    });
+  }
+  /* If H10 was already connected when Edge came up, fire the same auto
+   * trigger we'd run from the polar 'connected' listener — covers the
+   * connect-order H10-first-then-glasses. */
+  autoStartH10IfApplicable('edge connected with h10 ready');
 });
 
 edgeDevice.addEventListener('disconnected', (e) => {
@@ -611,6 +885,9 @@ edgeDevice.addEventListener('disconnected', (e) => {
         earclipRelay: edgeDevice.status === 'reconnecting' ? s.connection.edge.earclipRelay : null,
       },
     },
+    /* Drop the cached firmware-coherence frame on a real disconnect
+     * (keep it across transient reconnects so the readout doesn't blink). */
+    lastEdgeCoherence: edgeDevice.status === 'reconnecting' ? s.lastEdgeCoherence : null,
     lastError: reason === 'error' && error ? error.message : s.lastError,
   }));
   appendBleLog(
@@ -657,6 +934,27 @@ edgeDevice.addEventListener('ctrlSent', (e) => {
   );
 });
 
+/* 0xF2 firmware HRV/coherence — feed the dedicated ring so charts can
+ * overlay the on-glasses coherence trace against the dashboard's local
+ * firmwareCoherence port. This is the validation loop for the algorithm
+ * port and also the live signal when only the glasses are connected
+ * (no dashboard-side beat source). */
+edgeDevice.addEventListener('edgeCoherence', (e) => {
+  const f = (e as CustomEvent<EdgeCoherenceFrame>).detail;
+  edgeCoherenceBuffers.live.push(f.timestamp, {
+    coh: f.coh,
+    respMhz: f.respMhz,
+    lf: f.lf,
+    hf: f.hf,
+    lfNorm: f.lfNorm,
+    hfNorm: f.hfNorm,
+    lfHf: f.lfHf,
+    nIbis: f.nIbis,
+    pacerBpm: f.pacerBpm,
+  });
+  setState({ lastEdgeCoherence: f });
+});
+
 /* Relayed earclip data through the glasses. The glasses' main.c forwards
  * IBI / battery via ble_log() text frames; edgeDevice parses them and
  * fires these events. We feed them into the same buffers the direct-
@@ -683,6 +981,7 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
   };
   liveBuffers.narbisBeats.push(beat.timestamp, beat);
   pending.beats += 1;
+  setState({ lastBeatAt: beat.timestamp });
   pending.lastBeat = beat;
   scheduleCounterFlush();
 });

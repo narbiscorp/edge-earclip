@@ -14,12 +14,22 @@ import {
   computeResonanceCoherence,
   type CoherenceResult,
 } from '../metrics/coherence';
+import { computeFirmwareCoherence } from '../metrics/firmwareCoherence';
+import type { NarbisCoherenceParams } from '../../../protocol/narbis_protocol';
 
 export interface MetricsRequest {
   type: 'compute';
   requestId: number;
   times_s: Float64Array;
   ibis_ms: Float64Array;
+  /** Absolute beat-end timestamps in ms (sorted). Required for the
+   * firmware-mirror coherence — it needs the same wall-clock anchors
+   * the firmware uses to time-restrict the 64-second window. */
+  beat_ms: Float64Array;
+  /** Runtime-tunable coherence params. Caller should pass the SAME values
+   * it last pushed to the glasses via 0xE0; otherwise the dashboard's
+   * local trace will not match the glasses' 0xF2 stream. */
+  coh_params?: NarbisCoherenceParams;
 }
 
 export interface MetricsResult {
@@ -32,6 +42,12 @@ export interface MetricsResult {
   resonancePower: number;
   hmCoherence: CoherenceResult;
   resonanceCoherence: CoherenceResult;
+  /** Firmware-mirror coherence (0..100). null if fewer than 20 beats in
+   * the trailing 64-second window. */
+  firmwareCoherence: number | null;
+  /** Firmware-mirror LF resonance peak frequency in Hz. null when
+   * firmwareCoherence is null. */
+  firmwareRespFreq_hz: number | null;
 }
 
 const VLF_BAND: [number, number] = [0.0033, 0.04];
@@ -45,7 +61,7 @@ ctx.addEventListener('message', (ev: MessageEvent<MetricsRequest>) => {
   const msg = ev.data;
   if (msg.type !== 'compute') return;
 
-  const { times_s, ibis_ms, requestId } = msg;
+  const { times_s, ibis_ms, beat_ms, coh_params, requestId } = msg;
   const n = times_s.length;
 
   const time = computeTimeDomain(ibis_ms);
@@ -69,6 +85,20 @@ ctx.addEventListener('message', (ev: MessageEvent<MetricsRequest>) => {
     resonancePower = integrateBand(psd, [lo, hi]);
   }
 
+  let firmwareCoherence: number | null = null;
+  let firmwareRespFreq_hz: number | null = null;
+  if (beat_ms && beat_ms.length === ibis_ms.length) {
+    const fw = computeFirmwareCoherence({
+      beat_ms,
+      ibi_ms: ibis_ms,
+      params: coh_params,
+    });
+    if (fw) {
+      firmwareCoherence = fw.coherence;
+      firmwareRespFreq_hz = fw.resp_peak_mhz / 1000;
+    }
+  }
+
   const result: MetricsResult = {
     type: 'result',
     requestId,
@@ -79,6 +109,8 @@ ctx.addEventListener('message', (ev: MessageEvent<MetricsRequest>) => {
     resonancePower,
     hmCoherence,
     resonanceCoherence,
+    firmwareCoherence,
+    firmwareRespFreq_hz,
   };
   ctx.postMessage(result);
 });

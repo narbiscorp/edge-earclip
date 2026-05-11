@@ -4,6 +4,7 @@ import { useDashboardStore, type BleLogEntry, type BleLogSource, type BleLogLeve
 const sourceColor: Record<BleLogSource, string> = {
   earclip: 'text-cyan-300',
   edge:    'text-fuchsia-300',
+  polar:   'text-pink-300',
   system:  'text-slate-400',
 };
 
@@ -113,6 +114,7 @@ export default function BleEventLog() {
         <FilterChip current={filter} value="all"     label="all"     onSelect={setFilter} />
         <FilterChip current={filter} value="earclip" label="earclip" onSelect={setFilter} />
         <FilterChip current={filter} value="edge"    label="edge"    onSelect={setFilter} />
+        <FilterChip current={filter} value="polar"   label="polar"   onSelect={setFilter} />
         <FilterChip current={filter} value="system"  label="system"  onSelect={setFilter} />
         <button
           className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5"
