@@ -6,12 +6,35 @@ import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
 
-export default function BeatChart() {
+interface BeatChartProps {
+  /** Initial smoothing window (samples). Defaults to 0 (off). */
+  defaultSmoothN?: number;
+  /** Initial line shape. Defaults to 'spline'. */
+  defaultShape?: LineShape;
+  /** When true, hides the chart-controls bar in the header. Used by
+   * Basic mode where the user shouldn't fiddle with window/smooth/shape. */
+  compact?: boolean;
+}
+
+export default function BeatChart({
+  defaultSmoothN = 0,
+  defaultShape = 'spline',
+  compact = false,
+}: BeatChartProps = {}) {
   const windowSec = useDashboardStore((s) => s.windowSec);
   const setWindowSec = useDashboardStore((s) => s.setWindowSec);
-  const [smoothN, setSmoothN] = useState(0);
+  /* Live respiration peak from the glasses' 0xF2 coherence packet, in
+   * milli-Hz. This is the value that feeds the adaptive-pacer ring on
+   * the glasses, so it doubles as a sanity readout: with Programs 2 / 4
+   * adaptive ON, the lens-cycle BPM should track whatever this shows.
+   * Updates at 1 Hz (firmware coherence_task rate). */
+  const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
+  const respBpm = lastEdgeCoh != null && lastEdgeCoh.respMhz > 0
+    ? (lastEdgeCoh.respMhz * 60) / 1000
+    : null;
+  const [smoothN, setSmoothN] = useState(defaultSmoothN);
   const [rescaleSec, setRescaleSec] = useState(0);
-  const [shape, setShape] = useState<LineShape>('spline');
+  const [shape, setShape] = useState<LineShape>(defaultShape);
 
   const windowSecRef = useRef(windowSec);
   windowSecRef.current = windowSec;
@@ -165,19 +188,38 @@ export default function BeatChart() {
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
         <span className="text-xs font-medium text-slate-300">
           IBI tachogram ({formatWindow(windowSec)})
+          <span
+            className={`ml-3 tabular-nums ${
+              respBpm != null ? 'text-pink-300' : 'text-slate-500'
+            }`}
+          >
+            Resp:{' '}
+            {respBpm != null
+              ? `${respBpm.toFixed(2)} BPM`
+              : lastEdgeCoh == null
+                ? '— (no 0xF2 yet)'
+                : '— (waiting for resonance peak)'}
+          </span>
+          {lastEdgeCoh != null && lastEdgeCoh.pacerBpm > 0 && (
+            <span className="ml-3 tabular-nums text-amber-300">
+              Pacer: {lastEdgeCoh.pacerBpm} BPM
+            </span>
+          )}
         </span>
-        <ChartControls
-          windowSec={windowSec}
-          onWindowChange={onWindowChange}
-          smoothN={smoothN}
-          onSmoothChange={onSmoothChange}
-          shape={shape}
-          onShapeChange={setShape}
-          rescaleSec={rescaleSec}
-          onRescaleChange={onRescaleChange}
-        >
-          <span className="text-[10px] text-slate-500 ml-2">earclip + Polar H10</span>
-        </ChartControls>
+        {!compact && (
+          <ChartControls
+            windowSec={windowSec}
+            onWindowChange={onWindowChange}
+            smoothN={smoothN}
+            onSmoothChange={onSmoothChange}
+            shape={shape}
+            onShapeChange={setShape}
+            rescaleSec={rescaleSec}
+            onRescaleChange={onRescaleChange}
+          >
+            <span className="text-[10px] text-slate-500 ml-2">earclip + Polar H10</span>
+          </ChartControls>
+        )}
       </div>
       <div ref={divRef} className="flex-1 min-h-0" />
     </div>

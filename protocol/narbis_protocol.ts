@@ -292,6 +292,79 @@ export interface NarbisRuntimeConfig {
   refractory_ibi_pct: number;
 }
 
+// =============================================================
+// Edge glasses coherence-pipeline tuning (mirror of narbis_coh_params_t)
+// =============================================================
+
+export interface NarbisCoherenceParams {
+  min_ibis: number;
+  conf_threshold: number;
+  vlf_band_lo: number;
+  vlf_band_hi: number;
+  lf_band_lo: number;
+  lf_band_hi: number;
+  hf_band_lo: number;
+  hf_band_hi: number;
+  lf_peak_lo: number;
+  lf_peak_hi: number;
+  peak_halfwidth: number;
+  coh_multiplier: number;
+}
+
+export const NARBIS_COH_PARAMS_WIRE_SIZE = 12;
+
+export const NARBIS_COH_PARAMS_DEFAULTS: NarbisCoherenceParams = {
+  min_ibis: 20,
+  conf_threshold: 50,
+  vlf_band_lo: 1,
+  vlf_band_hi: 2,
+  lf_band_lo: 3,
+  lf_band_hi: 9,
+  hf_band_lo: 10,
+  hf_band_hi: 25,
+  lf_peak_lo: 3,
+  lf_peak_hi: 9,
+  peak_halfwidth: 0,
+  coh_multiplier: 100,
+};
+
+export function serializeCoherenceParams(p: NarbisCoherenceParams): Uint8Array {
+  const buf = new Uint8Array(NARBIS_COH_PARAMS_WIRE_SIZE);
+  buf[0]  = p.min_ibis        & 0xff;
+  buf[1]  = p.conf_threshold  & 0xff;
+  buf[2]  = p.vlf_band_lo     & 0xff;
+  buf[3]  = p.vlf_band_hi     & 0xff;
+  buf[4]  = p.lf_band_lo      & 0xff;
+  buf[5]  = p.lf_band_hi      & 0xff;
+  buf[6]  = p.hf_band_lo      & 0xff;
+  buf[7]  = p.hf_band_hi      & 0xff;
+  buf[8]  = p.lf_peak_lo      & 0xff;
+  buf[9]  = p.lf_peak_hi      & 0xff;
+  buf[10] = p.peak_halfwidth  & 0xff;
+  buf[11] = p.coh_multiplier  & 0xff;
+  return buf;
+}
+
+export function deserializeCoherenceParams(buf: Uint8Array): NarbisCoherenceParams {
+  if (buf.length < NARBIS_COH_PARAMS_WIRE_SIZE) {
+    throw new Error(`coh params buffer too small: ${buf.length}`);
+  }
+  return {
+    min_ibis:        buf[0],
+    conf_threshold:  buf[1],
+    vlf_band_lo:     buf[2],
+    vlf_band_hi:     buf[3],
+    lf_band_lo:      buf[4],
+    lf_band_hi:      buf[5],
+    hf_band_lo:      buf[6],
+    hf_band_hi:      buf[7],
+    lf_peak_lo:      buf[8],
+    lf_peak_hi:      buf[9],
+    peak_halfwidth:  buf[10],
+    coh_multiplier:  buf[11],
+  };
+}
+
 // Diagnostics stream IDs — bit positions in NarbisRuntimeConfig.diagnostics_mask.
 export const NARBIS_DIAG_STREAM_PRE_FILTER     = 1 << 0;
 export const NARBIS_DIAG_STREAM_POST_FILTER    = 1 << 1;

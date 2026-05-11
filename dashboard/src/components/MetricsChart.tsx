@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
-import { metricsBuffers, type MetricsSnapshot } from '../state/metricsBuffer';
+import {
+  metricsBuffers,
+  edgeCoherenceBuffers,
+  type MetricsSnapshot,
+  type EdgeCoherenceSnapshot,
+} from '../state/metricsBuffer';
 import { useDashboardStore } from '../state/store';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
@@ -99,7 +104,11 @@ export default function MetricsChart() {
     pull: () => {
       const source = useDashboardStore.getState().dataSource;
       const buf = source === 'replay' ? metricsBuffers.replay : metricsBuffers.live;
-      const seq = buf.seq;
+      const edgeBuf = source === 'replay' ? edgeCoherenceBuffers.replay : edgeCoherenceBuffers.live;
+      /* Compose a refresh sequence across both buffers — the firmware
+       * coherence trace is fed from edgeBuf independently of the metrics
+       * runner, so we have to react to either source advancing. */
+      const seq = buf.seq * 10000 + (edgeBuf.seq & 0xffff);
       const rmssd = emptySeries();
       const sdnn = emptySeries();
       const hr = emptySeries();
@@ -108,6 +117,10 @@ export default function MetricsChart() {
       const lfhf = emptySeries();
       const hm = emptySeries();
       const resonance = emptySeries();
+      /* Dashboard-local firmware-mirror coherence — same algorithm the
+       * glasses run on the same beats. Scaled ÷10 to share the existing
+       * 0..10 coherence y2 axis with the resonance/HM traces. */
+      const firmwareCoh = emptySeries();
       buf.forEachInWindow(windowSecRef.current, (ts, v: MetricsSnapshot) => {
         rmssd.x.push(ts); rmssd.y.push(v.rmssd);
         sdnn.x.push(ts); sdnn.y.push(v.sdnn);
@@ -117,6 +130,19 @@ export default function MetricsChart() {
         lfhf.x.push(ts); lfhf.y.push(v.lfHfRatio);
         hm.x.push(ts); hm.y.push(v.hmCoherence);
         resonance.x.push(ts); resonance.y.push(v.resonanceCoherence);
+        if (v.firmwareCoherence !== null) {
+          firmwareCoh.x.push(ts);
+          firmwareCoh.y.push(v.firmwareCoherence / 10);
+        }
+      });
+      /* On-glasses firmware coherence — separate buffer because it arrives
+       * via BLE 0xF2 independently of the dashboard's beat stream. Lets
+       * the user visually verify the dashboard's local port matches what
+       * the firmware is actually computing on the same beats. */
+      const edgeCoh = emptySeries();
+      edgeBuf.forEachInWindow(windowSecRef.current, (ts, v: EdgeCoherenceSnapshot) => {
+        edgeCoh.x.push(ts);
+        edgeCoh.y.push(v.coh / 10);
       });
 
       const n = smoothNRef.current;
@@ -129,13 +155,15 @@ export default function MetricsChart() {
       const lfhfY = smooth(lfhf.y);
       const resonanceY = smooth(resonance.y);
       const hmY = smooth(hm.y);
+      const firmwareCohY = smooth(firmwareCoh.y);
+      const edgeCohY = smooth(edgeCoh.y);
 
       // Two y-axes: y holds ms/bpm scale (HR, rMSSD, SDNN, LF, HF),
       // y2 holds ratio/coherence (LF/HF, both coherence traces).
       const layoutPatch: Partial<Layout> = {};
       if (rescaleSecRef.current > 0) {
         const yVals = hrY.concat(rmssdY, sdnnY, lfY, hfY);
-        const y2Vals = lfhfY.concat(resonanceY, hmY);
+        const y2Vals = lfhfY.concat(resonanceY, hmY, firmwareCohY, edgeCohY);
         if (yVals.length > 0) {
           const yRange = yLatch.compute(yVals, rescaleSecRef.current * 1000);
           if (yRange) layoutPatch.yaxis = { ...yaxisStyle, range: yRange, autorange: false };
@@ -217,6 +245,28 @@ export default function MetricsChart() {
           line: { color: CHART_COLORS.hm, width: 1.5, shape: lineShape, dash: 'dot' },
           yaxis: 'y2',
           visible: vis('Coherence (HeartMath)', 'legendonly'),
+        },
+        /* Dashboard's local port of the firmware coherence_task. Same
+         * 4 Hz × 256 FFT pipeline, same band bins, on the same beats the
+         * Lomb-Scargle traces use. Plotted ÷10 so the 0..100 firmware
+         * scale lines up with the 0..10 HM/resonance scale. */
+        {
+          x: firmwareCoh.x, y: firmwareCohY, name: 'Coherence (firmware-port ÷10)',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.firmwareCoh, width: 2, shape: lineShape },
+          yaxis: 'y2',
+          visible: vis('Coherence (firmware-port ÷10)', true),
+        },
+        /* On-glasses firmware coherence — what the lens is actually
+         * reacting to. Should overlay the local port within float
+         * rounding when both have the same beat input; divergence
+         * indicates either a port bug or a different beat source. */
+        {
+          x: edgeCoh.x, y: edgeCohY, name: 'Coherence (glasses ÷10)',
+          type: traceType, mode: 'lines',
+          line: { color: CHART_COLORS.edgeCoh, width: 1.5, shape: lineShape, dash: 'dash' },
+          yaxis: 'y2',
+          visible: vis('Coherence (glasses ÷10)', true),
         },
       ];
       return { traces, layoutPatch, seq };

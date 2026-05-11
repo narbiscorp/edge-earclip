@@ -348,21 +348,25 @@ export async function recomputeMetrics(
     }
   });
 
-  function compute(times_s: Float64Array, ibis_ms: Float64Array): Promise<MetricsResult> {
+  function compute(
+    times_s: Float64Array,
+    ibis_ms: Float64Array,
+    beat_ms: Float64Array,
+  ): Promise<MetricsResult> {
     const requestId = nextRequestId++;
     return new Promise((resolve, reject) => {
       pending.set(requestId, { resolve, reject });
-      const msg: MetricsRequest = { type: 'compute', requestId, times_s, ibis_ms };
-      worker.postMessage(msg, [times_s.buffer, ibis_ms.buffer]);
+      const msg: MetricsRequest = { type: 'compute', requestId, times_s, ibis_ms, beat_ms };
+      worker.postMessage(msg, [times_s.buffer, ibis_ms.buffer, beat_ms.buffer]);
     });
   }
 
   try {
     const beatEvents = session.beats.map(beatRecordToEvent);
     for (let t = start + windowSec * 1000; t <= end; t += stepSec * 1000) {
-      const { times_s, ibis_ms } = extractIbiWindow(beatEvents, windowSec, t);
+      const { times_s, ibis_ms, beat_ms } = extractIbiWindow(beatEvents, windowSec, t);
       if (times_s.length < 4) continue;
-      const result = await compute(times_s, ibis_ms);
+      const result = await compute(times_s, ibis_ms, beat_ms);
       metricsBuffers.replay.push(t, snapshotFromResult(result));
     }
   } finally {

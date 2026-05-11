@@ -5,6 +5,10 @@ import {
   type CoherenceDifficulty,
   type PpgProgram,
 } from '../ble/edgeDevice';
+import {
+  NARBIS_COH_PARAMS_DEFAULTS,
+  type NarbisCoherenceParams,
+} from '../../../protocol/narbis_protocol';
 
 /* EdgeControls
  *
@@ -19,11 +23,18 @@ export default function EdgeControls() {
   const connected = edgeState === 'connected';
   const jitter    = useDashboardStore((s) => s.pcJitterSmoothing);
   const setJitter = useDashboardStore((s) => s.setPcJitterSmoothing);
+  const hrSource = useDashboardStore((s) => s.hrSourceForGlasses);
+  const setHrSource = useDashboardStore((s) => s.setHrSourceForGlasses);
+  const polarState = useDashboardStore((s) => s.connection.polar.state);
+  const polarConnected = polarState === 'connected';
+  const cohParams = useDashboardStore((s) => s.coherenceParams);
+  const setCohParams = useDashboardStore((s) => s.setCoherenceParams);
+  const program = useDashboardStore((s) => s.activeProgram);
+  const setActiveProgram = useDashboardStore((s) => s.setActiveProgram);
 
   // Local UI state — these mirror what we last pushed to the firmware.
   // We don't have a read-back path for most, so they default sensibly
   // and the user adjusts. Persisted-on-firmware values survive reboot.
-  const [program, setProgram]       = useState<PpgProgram | null>(null);
   const [standalone, setStandalone] = useState<'static' | 'strobe' | 'breathe' | 'pulse' | null>(null);
   const [staticDuty, setStaticDuty] = useState(50);
   const [difficulty, setDifficulty] = useState<CoherenceDifficulty>('easy');
@@ -63,6 +74,35 @@ export default function EdgeControls() {
         {busy && <span className="text-slate-500 text-[10px]">{busy}…</span>}
       </div>
 
+      {/* HR source for the glasses' coherence pipeline. 'earclip' is the
+          original path — the glasses' BLE central pulls IBI from the
+          paired Narbis earclip. 'h10' makes the dashboard forward each
+          Polar H10 R-R interval via the new 0xCA INJECT_IBI opcode, so
+          Programs 1–4 react to H10-derived beats. Disabled unless H10 is
+          connected. */}
+      <Section
+        label="HR source for glasses"
+        hint="Which heart-rate stream drives the glasses' coherence pipeline. H10 forwards R-R intervals through the dashboard via opcode 0xCA."
+      >
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            disabled={!connected}
+            onClick={() => setHrSource('earclip')}
+            className={btnClass(hrSource === 'earclip')}
+          >
+            Earclip
+          </button>
+          <button
+            disabled={!connected || !polarConnected}
+            onClick={() => setHrSource('h10')}
+            className={btnClass(hrSource === 'h10')}
+            title={!polarConnected ? 'Connect a Polar H10 first' : undefined}
+          >
+            Polar H10 {!polarConnected && '(not connected)'}
+          </button>
+        </div>
+      </Section>
+
       {/* Sensor-training programs — require an earclip paired with the
           glasses (or the on-glasses ADC pin). Without a beat source the
           glasses just sit in training mode and produce no lens output. */}
@@ -76,9 +116,8 @@ export default function EdgeControls() {
               key={p}
               disabled={!connected}
               onClick={guard('program', async () => {
-                setProgram(p);
                 setStandalone(null);
-                await edgeDevice.setProgram(p);
+                await setActiveProgram(p);
               })}
               className={btnClass(program === p)}
             >
@@ -103,7 +142,7 @@ export default function EdgeControls() {
             disabled={!connected}
             onClick={guard('standalone strobe', async () => {
               setStandalone('strobe');
-              setProgram(null);
+              void setActiveProgram(null);
               await edgeDevice.setStandaloneStrobe();
             })}
             className={btnClass(standalone === 'strobe')}
@@ -114,7 +153,7 @@ export default function EdgeControls() {
             disabled={!connected}
             onClick={guard('standalone breathe', async () => {
               setStandalone('breathe');
-              setProgram(null);
+              void setActiveProgram(null);
               await edgeDevice.setStandaloneBreathe();
             })}
             className={btnClass(standalone === 'breathe')}
@@ -125,7 +164,7 @@ export default function EdgeControls() {
             disabled={!connected}
             onClick={guard('standalone pulse', async () => {
               setStandalone('pulse');
-              setProgram(null);
+              void setActiveProgram(null);
               await edgeDevice.setStandalonePulseOnBeat();
             })}
             className={btnClass(standalone === 'pulse')}
@@ -136,7 +175,7 @@ export default function EdgeControls() {
             disabled={!connected}
             onClick={guard('standalone static', async () => {
               setStandalone('static');
-              setProgram(null);
+              void setActiveProgram(null);
               await edgeDevice.setStandaloneStatic(staticDuty);
             })}
             className={btnClass(standalone === 'static')}
@@ -237,6 +276,17 @@ export default function EdgeControls() {
         onCommit={(v) => edgeDevice.setBreathInhalePct(v).catch(console.error)}
         disabled={!connected}
         help={`Inhale fraction; ${inhalePct}% inhale / ${100 - inhalePct}% exhale.`}
+      />
+
+      {/* Coherence-algorithm tuning (0xE0). Live-tunes the FFT band ranges,
+          LF peak window, score multiplier, IBI gate, and minimum-beats
+          threshold. The dashboard's local firmware-mirror coherence reads
+          from the same struct so the parity trace on MetricsChart stays
+          aligned with the glasses' 0xF2 output. */}
+      <CoherenceParamsSection
+        connected={connected}
+        params={cohParams}
+        onCommit={setCohParams}
       />
 
       {/* Adaptive pacer */}
@@ -375,6 +425,155 @@ function Slider({
       />
       {help && <div className="text-[10px] text-slate-500 mt-0.5">{help}</div>}
     </div>
+  );
+}
+
+/* Coherence-params editor. Holds a local "edit" struct so slider drags
+ * don't fire one BLE write per pixel; commits the full struct on release.
+ * Frequency labels under each bin slider make the abstract bin indices
+ * legible (df = 4/256 = 0.015625 Hz/bin). */
+function CoherenceParamsSection({
+  connected, params, onCommit,
+}: {
+  connected: boolean;
+  params: NarbisCoherenceParams;
+  onCommit: (p: NarbisCoherenceParams) => Promise<void>;
+}) {
+  const [edit, setEdit] = useState<NarbisCoherenceParams>(params);
+  // Re-sync when the underlying store value changes (e.g. localStorage
+  // hydration on mount, or a remote setter from elsewhere).
+  useEffect(() => { setEdit(params); }, [params]);
+
+  const NYQUIST_BIN = 127;
+  const HZ_PER_BIN = 4 / 256;
+  const binToHz = (b: number): string => (b * HZ_PER_BIN).toFixed(3);
+
+  const updateField = <K extends keyof NarbisCoherenceParams>(field: K, value: NarbisCoherenceParams[K]) => {
+    setEdit((prev) => ({ ...prev, [field]: value }));
+  };
+  const commitField = <K extends keyof NarbisCoherenceParams>(field: K, value: NarbisCoherenceParams[K]) => {
+    const next = { ...edit, [field]: value };
+    setEdit(next);
+    void onCommit(next).catch(console.error);
+  };
+  const resetDefaults = (): void => {
+    setEdit({ ...NARBIS_COH_PARAMS_DEFAULTS });
+    void onCommit({ ...NARBIS_COH_PARAMS_DEFAULTS }).catch(console.error);
+  };
+
+  return (
+    <Section
+      label="Coherence Algorithm Tuning (0xE0)"
+      hint={
+        'Live-tunes the FFT band ranges, LF peak window, and score multiplier. ' +
+        'Changes take effect ≤1 s and persist on the glasses (NVS) + dashboard (localStorage). ' +
+        `Bin width: ${HZ_PER_BIN.toFixed(4)} Hz/bin.`
+      }
+    >
+      <Slider
+        label="LF peak: low bin"
+        unit={`bin (${binToHz(edit.lf_peak_lo)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.lf_peak_lo}
+        onChange={(v) => updateField('lf_peak_lo', v)}
+        onCommit={(v) => commitField('lf_peak_lo', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="LF peak: high bin"
+        unit={`bin (${binToHz(edit.lf_peak_hi)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.lf_peak_hi}
+        onChange={(v) => updateField('lf_peak_hi', v)}
+        onCommit={(v) => commitField('lf_peak_hi', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="Peak halfwidth (±bins around argmax)"
+        unit="bins"
+        min={0} max={8} step={1}
+        value={edit.peak_halfwidth}
+        onChange={(v) => updateField('peak_halfwidth', v)}
+        onCommit={(v) => commitField('peak_halfwidth', v)}
+        disabled={!connected}
+        help="0 = single-bin peak (firmware default). 1 = ±1 bin (3 bins summed). Wider = forgives broad resonance peaks."
+      />
+      <Slider
+        label="LF band: low bin"
+        unit={`bin (${binToHz(edit.lf_band_lo)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.lf_band_lo}
+        onChange={(v) => updateField('lf_band_lo', v)}
+        onCommit={(v) => commitField('lf_band_lo', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="LF band: high bin"
+        unit={`bin (${binToHz(edit.lf_band_hi)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.lf_band_hi}
+        onChange={(v) => updateField('lf_band_hi', v)}
+        onCommit={(v) => commitField('lf_band_hi', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="HF band: low bin"
+        unit={`bin (${binToHz(edit.hf_band_lo)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.hf_band_lo}
+        onChange={(v) => updateField('hf_band_lo', v)}
+        onCommit={(v) => commitField('hf_band_lo', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="HF band: high bin"
+        unit={`bin (${binToHz(edit.hf_band_hi)} Hz)`}
+        min={1} max={NYQUIST_BIN} step={1}
+        value={edit.hf_band_hi}
+        onChange={(v) => updateField('hf_band_hi', v)}
+        onCommit={(v) => commitField('hf_band_hi', v)}
+        disabled={!connected}
+      />
+      <Slider
+        label="Coherence multiplier (peak/total × N)"
+        unit=""
+        min={10} max={255} step={1}
+        value={edit.coh_multiplier}
+        onChange={(v) => updateField('coh_multiplier', v)}
+        onCommit={(v) => commitField('coh_multiplier', v)}
+        disabled={!connected}
+        help="100 = post-v4.14.31 default. 250 = pre-v4.14.31 (saturates faster, useful for beginner sessions)."
+      />
+      <Slider
+        label="IBI confidence threshold"
+        unit="%"
+        min={0} max={100} step={1}
+        value={edit.conf_threshold}
+        onChange={(v) => updateField('conf_threshold', v)}
+        onCommit={(v) => commitField('conf_threshold', v)}
+        disabled={!connected}
+        help="Drop beats with confidence below this. Applies to both earclip-relayed and H10-injected IBI."
+      />
+      <Slider
+        label="Minimum beats to compute"
+        unit="beats"
+        min={5} max={120} step={1}
+        value={edit.min_ibis}
+        onChange={(v) => updateField('min_ibis', v)}
+        onCommit={(v) => commitField('min_ibis', v)}
+        disabled={!connected}
+      />
+      <div className="flex justify-end pt-1">
+        <button
+          className="rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-2 py-1 text-[11px]"
+          disabled={!connected}
+          onClick={resetDefaults}
+          title="Push compile-time defaults to glasses + dashboard"
+        >
+          Reset to defaults
+        </button>
+      </div>
+    </Section>
   );
 }
 

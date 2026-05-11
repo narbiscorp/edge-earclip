@@ -2279,6 +2279,21 @@ static uint8_t adapt_resp_bpm_avg(void) {
 #define KEY_COH_DIFFICULTY     "coh_diff"
 #define KEY_COH_ADAPTIVE       "coh_adapt"   /* v4.14.32 */
 
+/* Coherence-pipeline tuning (live-settable via 0xE0 COH_PARAMS).
+ * One u8 per field for simplicity; matches the existing prefs_get_u8 path. */
+#define KEY_COH_MINIBIS        "coh_minibi"
+#define KEY_COH_CONFTH         "coh_confth"
+#define KEY_COH_VLF_LO         "coh_vlf_lo"
+#define KEY_COH_VLF_HI         "coh_vlf_hi"
+#define KEY_COH_LF_LO          "coh_lf_lo"
+#define KEY_COH_LF_HI          "coh_lf_hi"
+#define KEY_COH_HF_LO          "coh_hf_lo"
+#define KEY_COH_HF_HI          "coh_hf_hi"
+#define KEY_COH_PK_LO          "coh_pk_lo"
+#define KEY_COH_PK_HI          "coh_pk_hi"
+#define KEY_COH_PK_HW          "coh_pk_hw"
+#define KEY_COH_MULT           "coh_mult"
+
 /* Read a u8 preference. Returns the stored value if present, or
  * `default_val` if the key does not exist or read fails. */
 static uint8_t prefs_get_u8(const char *key, uint8_t default_val) {
@@ -2347,6 +2362,14 @@ static void ppg_reset_detector(void);
  * trips. */
 static void coh_clear(void);
 
+/* Forward declaration for coh_push_ibi — defined with the coherence
+ * module at file-bottom, but called from on_earclip_ibi (also further
+ * down — fine, same scope) AND from the 0xCA INJECT_IBI handler inside
+ * process_command, which appears earlier in the file. Without this
+ * forward decl, GCC implicitly declares it as int(...) and then errors
+ * on the static-vs-non-static linkage mismatch at the real definition. */
+static void coh_push_ibi(uint32_t beat_ms, uint16_t ibi_ms);
+
 /* v4.14.0 forward declaration. coh_state lives with the coherence module
  * at the bottom of the file, but led_task (defined earlier) needs to read
  * the latest coherence score to modulate the coherence-breathing duty.
@@ -2382,6 +2405,21 @@ static volatile uint8_t breathe_hold_top   = 0;    /* 0-50, units of 100ms */
 static volatile uint8_t breathe_hold_bot   = 0;    /* 0-50, units of 100ms */
 static volatile uint8_t breathe_wave       = 0;    /* 0=sine, 1=linear */
 
+/* Coherence-pipeline tuning struct. Read by coh_compute (bottom of file)
+ * and the on_earclip_ibi / 0xCA injectIbi confidence gate; written by the
+ * 0xE0 CTRL opcode. Loaded from NVS at boot via prefs_load. Single writer
+ * (process_command), single reader per field per task tick — atomicity of
+ * individual u8 fields is sufficient. */
+static narbis_coh_params_t g_coh_params = NARBIS_COH_PARAMS_DEFAULTS_INIT;
+
+/* Current adaptive-pacer cycle BPM (Programs 2 & 4). Written by led_task
+ * when the cycle duration changes (entry, boundary). Read by
+ * coh_emit_packet so the dashboard can show what BPM the pacer actually
+ * adopted vs. the instantaneous resp_peak_mhz (which may differ by a few
+ * BPM until adapt_resp_bpm_avg's 15s ring converges). u8 access is
+ * atomic on ESP32 — no mutex needed. 0 = no breathing program running. */
+static volatile uint8_t coh_pacer_current_bpm = 0;
+
 /*******************************************************************************
  * PERSISTENT PREFERENCES LOADER (v4.14.35)
  *
@@ -2404,10 +2442,34 @@ static void prefs_load(void) {
     breathe_wave        = prefs_get_u8 (KEY_BREATHE_WAVE,     0);
     coh_difficulty      = prefs_get_u8 (KEY_COH_DIFFICULTY,   0);
     coh_pacer_adaptive  = prefs_get_u8 (KEY_COH_ADAPTIVE,     1);  /* v4.14.32: default ON */
+
+    /* Coherence-pipeline tuning — loaded into g_coh_params. Defaults
+     * mirror NARBIS_COH_PARAMS_DEFAULTS_INIT so a fresh NVS or a missing
+     * key both land on the same algorithm shape that's compiled in. */
+    g_coh_params.min_ibis       = prefs_get_u8(KEY_COH_MINIBIS, 20);
+    g_coh_params.conf_threshold = prefs_get_u8(KEY_COH_CONFTH,  50);
+    g_coh_params.vlf_band_lo    = prefs_get_u8(KEY_COH_VLF_LO,  1);
+    g_coh_params.vlf_band_hi    = prefs_get_u8(KEY_COH_VLF_HI,  2);
+    g_coh_params.lf_band_lo     = prefs_get_u8(KEY_COH_LF_LO,   3);
+    g_coh_params.lf_band_hi     = prefs_get_u8(KEY_COH_LF_HI,   9);
+    g_coh_params.hf_band_lo     = prefs_get_u8(KEY_COH_HF_LO,   10);
+    g_coh_params.hf_band_hi     = prefs_get_u8(KEY_COH_HF_HI,   25);
+    g_coh_params.lf_peak_lo     = prefs_get_u8(KEY_COH_PK_LO,   3);
+    g_coh_params.lf_peak_hi     = prefs_get_u8(KEY_COH_PK_HI,   9);
+    g_coh_params.peak_halfwidth = prefs_get_u8(KEY_COH_PK_HW,   0);
+    g_coh_params.coh_multiplier = prefs_get_u8(KEY_COH_MULT,    100);
+
     ESP_LOGI(TAG, "prefs: brt=%d sess=%lumin strb=%dHz/%d%% brth=%dBPM/%d%% coh_diff=%d adapt=%d",
              brightness, (unsigned long)(session_duration_ms/60000),
              strobe_dhz/10, strobe_duty_pct,
              breathe_bpm, breathe_inhale_pct, coh_difficulty, coh_pacer_adaptive);
+    ESP_LOGI(TAG, "coh_params: minibi=%u confth=%u vlf=[%u..%u] lf=[%u..%u] hf=[%u..%u] pk=[%u..%u]±%u mult=%u",
+             g_coh_params.min_ibis, g_coh_params.conf_threshold,
+             g_coh_params.vlf_band_lo, g_coh_params.vlf_band_hi,
+             g_coh_params.lf_band_lo,  g_coh_params.lf_band_hi,
+             g_coh_params.hf_band_lo,  g_coh_params.hf_band_hi,
+             g_coh_params.lf_peak_lo,  g_coh_params.lf_peak_hi,
+             g_coh_params.peak_halfwidth, g_coh_params.coh_multiplier);
 }
 
 /* AC drive state - shared between tasks */
@@ -3333,6 +3395,7 @@ static void led_task(void *param) {
                  * and start this cycle fresh at now. */
                 cb_cycle_ms = 60000 / ADAPT_BPM_START;
                 cb_cycle_start_tick = now_tick;
+                coh_pacer_current_bpm = ADAPT_BPM_START;
             }
             cb_prev_mode = led_mode;
 
@@ -3346,12 +3409,16 @@ static void led_task(void *param) {
                     uint8_t measured_bpm = adapt_resp_bpm_avg();
                     if (measured_bpm > 0) {
                         cb_cycle_ms = 60000 / measured_bpm;
+                        coh_pacer_current_bpm = measured_bpm;
                     }
                     /* If measured_bpm is 0 (ring empty), keep previous
-                     * cycle — don't reset to BPM_START mid-session. */
+                     * cycle — don't reset to BPM_START mid-session.
+                     * coh_pacer_current_bpm also stays so the dashboard
+                     * keeps showing the last adopted value. */
                 } else {
                     /* Disabled: force back to 6 BPM each cycle. Idempotent. */
                     cb_cycle_ms = 60000 / ADAPT_BPM_START;
+                    coh_pacer_current_bpm = ADAPT_BPM_START;
                 }
                 cb_cycle_start_tick = now_tick;
                 elapsed_ms = 0;
@@ -3921,13 +3988,30 @@ static void process_command(uint8_t *data, uint16_t len) {
             break;
             
         /* ── STROBE PARAMS ─────────────────────────────────── */
-        case 0xAB:  /* Set strobe frequency */
-            if (arg < MIN_STROBE_HZ) arg = MIN_STROBE_HZ;
-            if (arg > MAX_STROBE_HZ) arg = MAX_STROBE_HZ;
-            strobe_dhz = arg * 10;
-            strobe_update();
-            prefs_set_u8(KEY_STROBE_DHZ, arg);
-            ESP_LOGI(TAG, "Strobe freq: %dHz (saved)", arg);
+        case 0xAB:  /* Set strobe frequency. Two wire forms:
+                     *   len==2: [0xAB][Hz u8]      — integer Hz (legacy)
+                     *   len==3: [0xAB][deci-Hz LE] — 0.1 Hz precision (new)
+                     * 0.1 Hz precision matters for brainwave-entrainment
+                     * presets (13.5 Hz alpha-beta edge, 17.5 Hz beta, etc.)
+                     * where the integer rounding loses the targeted band. */
+            {
+                uint16_t dhz;
+                if (len >= 3) {
+                    dhz = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
+                } else {
+                    dhz = (uint16_t)arg * 10;
+                }
+                if (dhz < (uint16_t)(MIN_STROBE_HZ * 10)) dhz = MIN_STROBE_HZ * 10;
+                if (dhz > (uint16_t)(MAX_STROBE_HZ * 10)) dhz = MAX_STROBE_HZ * 10;
+                strobe_dhz = dhz;
+                strobe_update();
+                /* Persist as the existing u8 Hz key for backwards-compat
+                 * with the prefs_load path. We lose the 0.1 Hz across a
+                 * reboot — acceptable for v1; if it matters, a follow-up
+                 * adds a u16 deci-Hz NVS key alongside. */
+                prefs_set_u8(KEY_STROBE_DHZ, (uint8_t)((dhz + 5) / 10));
+                ESP_LOGI(TAG, "Strobe freq: %u.%uHz (saved)", dhz / 10, dhz % 10);
+            }
             break;
             
         case 0xAC:  /* Set strobe duty cycle */
@@ -4178,6 +4262,105 @@ static void process_command(uint8_t *data, uint16_t len) {
             bool on = (arg != 0);
             esp_err_t err = narbis_central_set_raw_enabled(on);
             ble_log("0xC4 raw=%d rc=%d", on ? 1 : 0, err);
+            break;
+        }
+
+        case 0xCA: {  /* External-IBI injection (dashboard / Polar H10 path).
+                       * Lets the dashboard drive the same coherence pipeline
+                       * the earclip would, when the user picks H10 as the
+                       * HR source. Mirrors on_earclip_ibi (see main.c near
+                       * the bottom of this file) exactly so all four PPG
+                       * programs respond identically regardless of source.
+                       *
+                       * Wire format (5 B total including opcode):
+                       *   [0]    = 0xCA
+                       *   [1..2] = ibi_ms u16 LE
+                       *   [3]    = confidence 0..100 (drop if < 50)
+                       *   [4]    = flags (NARBIS_BEAT_FLAG_*, drop ARTIFACT)
+                       */
+            if (len < 5) {
+                ble_log("0xCA short len=%u (need 5)", len);
+                break;
+            }
+            uint16_t ibi_ms = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
+            uint8_t  conf   = data[3];
+            uint8_t  flags  = data[4];
+            if (conf < g_coh_params.conf_threshold || (flags & NARBIS_BEAT_FLAG_ARTIFACT)) break;
+            beat_pulse_start_tick = xTaskGetTickCount();  /* Program 1 flash */
+            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            if (ibi_ms > 0) coh_push_ibi(now_ms, ibi_ms);
+            break;
+        }
+
+        case 0xE0: {  /* Coherence-pipeline tuning (live update of g_coh_params).
+                       * Lets the dashboard tweak LF peak window, band ranges,
+                       * confidence gate, and score multiplier without a reflash.
+                       *
+                       * Wire format: opcode + packed narbis_coh_params_t
+                       *   [0]    = 0xE0
+                       *   [1..12]= narbis_coh_params_t (12 B, see protocol/narbis_protocol.h)
+                       * Total 13 B. Validation rejects out-of-grid bins and
+                       * inverted lo/hi pairs so a buggy dashboard write can't
+                       * lock the algorithm in a non-recoverable state.
+                       *
+                       * On success, the new params apply on the next coherence
+                       * compute (≤1 s) and persist to NVS. */
+            const uint16_t need = 1 + NARBIS_COH_PARAMS_WIRE_SIZE;
+            if (len < need) {
+                ble_log("0xE0 short len=%u (need %u)", len, need);
+                break;
+            }
+            narbis_coh_params_t p;
+            p.min_ibis       = data[1];
+            p.conf_threshold = data[2];
+            p.vlf_band_lo    = data[3];
+            p.vlf_band_hi    = data[4];
+            p.lf_band_lo     = data[5];
+            p.lf_band_hi     = data[6];
+            p.hf_band_lo     = data[7];
+            p.hf_band_hi     = data[8];
+            p.lf_peak_lo     = data[9];
+            p.lf_peak_hi     = data[10];
+            p.peak_halfwidth = data[11];
+            p.coh_multiplier = data[12];
+
+            /* Bounds + sanity checks. Bins are at df = 4/256 Hz; bin 127
+             * is the Nyquist edge (COH_GRID_N/2 - 1; the macro is defined
+             * lower in the file). Reject inverted ranges and out-of-grid. */
+            const uint8_t NYQUIST_BIN = 127;
+            if (p.min_ibis < 5 || p.min_ibis > 120 ||
+                p.conf_threshold > 100 ||
+                p.vlf_band_lo > p.vlf_band_hi || p.vlf_band_hi > NYQUIST_BIN ||
+                p.lf_band_lo  > p.lf_band_hi  || p.lf_band_hi  > NYQUIST_BIN ||
+                p.hf_band_lo  > p.hf_band_hi  || p.hf_band_hi  > NYQUIST_BIN ||
+                p.lf_peak_lo  > p.lf_peak_hi  || p.lf_peak_hi  > NYQUIST_BIN ||
+                p.peak_halfwidth > 8 ||
+                p.coh_multiplier < 10) {
+                ble_log("0xE0 reject: out-of-range");
+                break;
+            }
+
+            /* Apply atomically (field-by-field write; the struct only holds
+             * u8 fields so each is atomic against the coherence task read). */
+            g_coh_params = p;
+
+            /* Persist each field. 12 NVS writes — small one-shot cost. */
+            prefs_set_u8(KEY_COH_MINIBIS, p.min_ibis);
+            prefs_set_u8(KEY_COH_CONFTH,  p.conf_threshold);
+            prefs_set_u8(KEY_COH_VLF_LO,  p.vlf_band_lo);
+            prefs_set_u8(KEY_COH_VLF_HI,  p.vlf_band_hi);
+            prefs_set_u8(KEY_COH_LF_LO,   p.lf_band_lo);
+            prefs_set_u8(KEY_COH_LF_HI,   p.lf_band_hi);
+            prefs_set_u8(KEY_COH_HF_LO,   p.hf_band_lo);
+            prefs_set_u8(KEY_COH_HF_HI,   p.hf_band_hi);
+            prefs_set_u8(KEY_COH_PK_LO,   p.lf_peak_lo);
+            prefs_set_u8(KEY_COH_PK_HI,   p.lf_peak_hi);
+            prefs_set_u8(KEY_COH_PK_HW,   p.peak_halfwidth);
+            prefs_set_u8(KEY_COH_MULT,    p.coh_multiplier);
+
+            ble_log("0xE0 ok: lf=[%u..%u] hf=[%u..%u] pk=[%u..%u]±%u mult=%u",
+                    p.lf_band_lo, p.lf_band_hi, p.hf_band_lo, p.hf_band_hi,
+                    p.lf_peak_lo, p.lf_peak_hi, p.peak_halfwidth, p.coh_multiplier);
             break;
         }
 
@@ -5336,7 +5519,21 @@ static void coh_compute(void) {
     }
     portEXIT_CRITICAL(&coh_mux);
 
-    if (snap_count < COH_MIN_IBIS) return;
+    /* Snapshot runtime-tunable knobs once at the top so a concurrent
+     * 0xE0 write doesn't change band boundaries mid-compute. */
+    const uint8_t coh_min_ibis    = g_coh_params.min_ibis;
+    const uint8_t coh_vlf_lo      = g_coh_params.vlf_band_lo;
+    const uint8_t coh_vlf_hi      = g_coh_params.vlf_band_hi;
+    const uint8_t coh_lf_lo       = g_coh_params.lf_band_lo;
+    const uint8_t coh_lf_hi       = g_coh_params.lf_band_hi;
+    const uint8_t coh_hf_lo       = g_coh_params.hf_band_lo;
+    const uint8_t coh_hf_hi       = g_coh_params.hf_band_hi;
+    const uint8_t coh_pk_lo       = g_coh_params.lf_peak_lo;
+    const uint8_t coh_pk_hi       = g_coh_params.lf_peak_hi;
+    const uint8_t coh_pk_hw       = g_coh_params.peak_halfwidth;
+    const uint8_t coh_mult        = g_coh_params.coh_multiplier;
+
+    if (snap_count < coh_min_ibis) return;
 
     /* Restrict to last COH_WINDOW_S seconds — the FFT grid covers only
      * this duration. Older beats would wrap the grid or be unused. */
@@ -5349,7 +5546,7 @@ static void coh_compute(void) {
         first_in_window++;
     }
     int n_used = snap_count - first_in_window;
-    if (n_used < COH_MIN_IBIS) return;
+    if (n_used < coh_min_ibis) return;
 
     /* Interpolate onto uniform grid */
     coh_resample(&snap_beat_ms[first_in_window], &snap_ibi_ms[first_in_window],
@@ -5392,9 +5589,9 @@ static void coh_compute(void) {
      * Nyquist at 2 Hz), which is 2-3× larger and systematically drove
      * coherence down. Now matches client. */
     float vlf = 0.0f, lf = 0.0f, hf = 0.0f;
-    for (int i = 1; i <= 2; i++)  vlf += psd[i];  /* skip DC bin 0 */
-    for (int i = 3; i <= 9; i++)   lf += psd[i];
-    for (int i = 10; i <= 25; i++) hf += psd[i];
+    for (int i = coh_vlf_lo; i <= coh_vlf_hi; i++) vlf += psd[i];  /* skip DC bin 0 by default (vlf_lo=1) */
+    for (int i = coh_lf_lo;  i <= coh_lf_hi;  i++) lf  += psd[i];
+    for (int i = coh_hf_lo;  i <= coh_hf_hi;  i++) hf  += psd[i];
     float total = vlf + lf + hf;
 
     /* LF resonance peak (Lehrer/Vaschillo method, matches client v13.10):
@@ -5414,14 +5611,31 @@ static void coh_compute(void) {
      * matching HeartMath's 0.032-0.26Hz range (close enough). Raw score
      * is no longer deflated — it stays comparable across all difficulty
      * levels. Difficulty now only affects the COHERENCE_LENS opacity
-     * mapping curve (see led_task) and the dashboard zone thresholds. */
-    int peak_bin = 3;
-    float peak_pow = psd[3];
-    for (int i = 4; i <= 9; i++) {
-        if (psd[i] > peak_pow) {
-            peak_pow = psd[i];
+     * mapping curve (see led_task) and the dashboard zone thresholds.
+     *
+     * Range and ±halfwidth are runtime-tunable via 0xE0. halfwidth=0
+     * matches the historical single-bin-peak behavior (firmware v4.13.7
+     * fix). halfwidth>0 sums psd[peak_bin-hw..peak_bin+hw] as the
+     * numerator, which approximates the HeartMath "spectral peak +
+     * neighbors" notion when the resonance is broad. */
+    int peak_bin = coh_pk_lo;
+    float peak_argmax_pow = psd[coh_pk_lo];
+    for (int i = (int)coh_pk_lo + 1; i <= (int)coh_pk_hi; i++) {
+        if (psd[i] > peak_argmax_pow) {
+            peak_argmax_pow = psd[i];
             peak_bin = i;
         }
+    }
+    float peak_pow;
+    if (coh_pk_hw == 0) {
+        peak_pow = peak_argmax_pow;
+    } else {
+        int lo_b = peak_bin - (int)coh_pk_hw;
+        int hi_b = peak_bin + (int)coh_pk_hw;
+        if (lo_b < 0) lo_b = 0;
+        if (hi_b > (COH_GRID_N / 2 - 1)) hi_b = COH_GRID_N / 2 - 1;
+        peak_pow = 0.0f;
+        for (int i = lo_b; i <= hi_b; i++) peak_pow += psd[i];
     }
 
     float coherence = 0.0f;
@@ -5434,8 +5648,13 @@ static void coh_compute(void) {
          * breathers, and perfect breathers all saw "100." Now the
          * multiplier produces a 0-100 score that tracks the raw ratio
          * directly, and saturating at 100 requires a ratio of 1.0
-         * (all power in one peak, physically near-impossible). */
-        coherence = ratio * 100.0f;
+         * (all power in one peak, physically near-impossible).
+         *
+         * Multiplier is runtime-tunable via 0xE0. Bump it back to 250
+         * (or anywhere in between) for an "easier" score that saturates
+         * sooner, useful when a beginner wants visible progress on the
+         * lens. */
+        coherence = ratio * (float)coh_mult;
         if (coherence > 100.0f) coherence = 100.0f;
         if (coherence < 0.0f) coherence = 0.0f;
     }
@@ -5474,6 +5693,12 @@ static void coh_compute(void) {
 /* Emit coherence packet on 0xFF03 status characteristic.
  * 0xF2 type, 18 bytes total. Dashboard v13.10+ parses.
  *
+ * v4.14.40: byte 17 repurposed from `reserved 0` → current adaptive-pacer
+ * cycle BPM (Programs 2 & 4). Older dashboards that ignored byte 17 are
+ * unaffected; newer dashboards (the one updated alongside this change)
+ * display "Pacer: N BPM" alongside "Resp: N.NN BPM" so the user can see
+ * whether the pacer has converged to the detected breathing rate.
+ *
  * [0]   type = 0xF2
  * [1]   coherence 0-100
  * [2-3] resp peak freq in mHz (LF resonance peak)
@@ -5508,7 +5733,7 @@ static void coh_emit_packet(void) {
     pkt[14] = (uint8_t)(coh_state.lf_hf_fp88 & 0xFF);
     pkt[15] = (uint8_t)((coh_state.lf_hf_fp88 >> 8) & 0xFF);
     pkt[16] = coh_state.n_ibis_used;
-    pkt[17] = 0;
+    pkt[17] = coh_pacer_current_bpm;  /* v4.14.40: current pacer cycle BPM */
     esp_err_t err = esp_ble_gatts_send_indicate(gatts_if_global, conn_id_global,
                                                 status_char_handle, sizeof(pkt), pkt, false);
     if (err != ESP_OK) ble_send_errors++;
@@ -5804,8 +6029,8 @@ static void on_earclip_ibi(uint16_t ibi_ms, uint8_t conf, uint8_t flags) {
      *   1. LED_MODE_PULSE_ON_BEAT — flash lens once per beat
      *   2. coh_state IBI ring — drives the coherence/breathing pacer
      * Skip low-confidence / artifact-flagged beats so noise doesn't
-     * corrupt either path. */
-    if (conf < 50 || (flags & NARBIS_BEAT_FLAG_ARTIFACT)) return;
+     * corrupt either path. Threshold is runtime-tunable via 0xE0. */
+    if (conf < g_coh_params.conf_threshold || (flags & NARBIS_BEAT_FLAG_ARTIFACT)) return;
     beat_pulse_start_tick = xTaskGetTickCount();
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     if (ibi_ms > 0) {
