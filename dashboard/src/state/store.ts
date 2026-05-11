@@ -381,6 +381,16 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setHrSourceForGlasses: (source) => {
     set({ hrSourceForGlasses: source });
     saveHrSourceForGlasses(source);
+    /* Tell the glasses to pause its earclip central scan when source=h10
+     * (no point hunting for an earclip that's not the active feed), or
+     * resume when source=earclip. Fire-and-forget; the BLE write may
+     * fail if glasses aren't connected — that's fine, it'll be re-sent
+     * on the next connect via the existing auto-push path. */
+    if (edgeDevice.isConnected) {
+      void edgeDevice.setHrSource(source).catch((err) => {
+        appendBleLog('edge', 'error', `setHrSource(${source}) failed: ${(err as Error).message}`);
+      });
+    }
   },
   setCoherenceParams: async (params) => {
     set({ coherenceParams: params });
@@ -784,6 +794,17 @@ polarH10.addEventListener('disconnected', (e) => {
     lastPolarBeat: polarH10.status === 'reconnecting' ? s.lastPolarBeat : null,
     lastError: reason === 'error' && error ? error.message : s.lastError,
   }));
+  /* On real (not reconnecting) polar disconnect while source=h10, flip
+   * the dashboard back to earclip so the glasses resume scanning. The
+   * setter fires 0xCB to the glasses. Skipped during reconnecting state
+   * so a brief drop doesn't churn the glasses' central. */
+  if (polarH10.status === 'disconnected') {
+    const st = useDashboardStore.getState();
+    if (st.hrSourceForGlasses === 'h10') {
+      st.setHrSourceForGlasses('earclip');
+      appendBleLog('system', 'info', 'h10 disconnected → reverting HR source to earclip');
+    }
+  }
   appendBleLog(
     'polar',
     reason === 'error' ? 'error' : 'info',
@@ -867,6 +888,13 @@ edgeDevice.addEventListener('connected', (e) => {
       appendBleLog('edge', 'error', `auto-push coh params failed: ${(err as Error).message}`);
     });
   }
+  /* Re-assert the current HR source on every connect so the glasses'
+   * central halts (h10) or runs (earclip) per dashboard state. The
+   * firmware doesn't persist this — it defaults to 'earclip' on boot. */
+  const currentSource = useDashboardStore.getState().hrSourceForGlasses;
+  void edgeDevice.setHrSource(currentSource).catch((err) => {
+    appendBleLog('edge', 'error', `auto-push hr_source failed: ${(err as Error).message}`);
+  });
   /* If H10 was already connected when Edge came up, fire the same auto
    * trigger we'd run from the polar 'connected' listener — covers the
    * connect-order H10-first-then-glasses. */

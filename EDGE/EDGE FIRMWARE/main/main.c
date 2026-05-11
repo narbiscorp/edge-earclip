@@ -4265,6 +4265,22 @@ static void process_command(uint8_t *data, uint16_t len) {
             break;
         }
 
+        case 0xCB:  /* Set HR source. Tells the BLE central to scan/connect
+                     * to the earclip (default) or pause entirely (the
+                     * dashboard is forwarding H10 R-R intervals via 0xCA).
+                     *   arg = 0 → earclip (resume central scan)
+                     *   arg = 1 → h10  (pause central — no more scanning)
+                     * No NVS persistence — the dashboard re-asserts the
+                     * source on every glasses connect. */
+            if (arg == 0) {
+                esp_err_t err = narbis_central_start();
+                ble_log("hr_src=earclip rc=%d", err);
+            } else {
+                esp_err_t err = narbis_central_stop();
+                ble_log("hr_src=h10 rc=%d", err);
+            }
+            break;
+
         case 0xCA: {  /* External-IBI injection (dashboard / Polar H10 path).
                        * Lets the dashboard drive the same coherence pipeline
                        * the earclip would, when the user picks H10 as the
