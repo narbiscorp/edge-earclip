@@ -42,6 +42,13 @@ esp_err_t narbis_central_init(narbis_central_ibi_cb_t     ibi_cb,
 
 esp_err_t narbis_central_start(void);
 
+/* Pause the central — closes any active connection, stops scans, halts
+ * the backoff timer, and gates the disconnect-event auto-restart. NVS
+ * pairing is preserved; narbis_central_start() resumes directed scan to
+ * the same earclip. Used when the dashboard sets HR source = H10 so the
+ * glasses stop hunting for the earclip (saves power + radio time). */
+esp_err_t narbis_central_stop(void);
+
 esp_err_t narbis_central_forget(void);
 
 bool      narbis_central_is_connected(void);

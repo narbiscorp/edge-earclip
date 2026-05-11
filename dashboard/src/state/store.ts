@@ -381,6 +381,16 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setHrSourceForGlasses: (source) => {
     set({ hrSourceForGlasses: source });
     saveHrSourceForGlasses(source);
+    /* Tell the glasses to pause its earclip central scan when source=h10
+     * (no point hunting for an earclip that's not the active feed), or
+     * resume when source=earclip. Fire-and-forget; the BLE write may
+     * fail if glasses aren't connected — that's fine, it'll be re-sent
+     * on the next connect via the existing auto-push path. */
+    if (edgeDevice.isConnected) {
+      void edgeDevice.setHrSource(source).catch((err) => {
+        appendBleLog('edge', 'error', `setHrSource(${source}) failed: ${(err as Error).message}`);
+      });
+    }
   },
   setCoherenceParams: async (params) => {
     set({ coherenceParams: params });
@@ -735,12 +745,12 @@ narbisDevice.addEventListener('diagnosticReceived', (e) => {
 });
 
 /* When H10 connects and there is no earclip in the picture, auto-route
- * the dashboard so the user doesn't have to flip switches: pick H10 as
- * the IBI source for the glasses and kick off Program 1 (heartbeat).
- * No-op if the earclip is already connected (the user clearly intends
- * the earclip path then) or if Edge isn't connected yet (auto trigger
- * will retry from the edge 'connected' listener). */
-function autoStartH10IfApplicable(reason: string): void {
+ * the HR source so the glasses' coherence pipeline gets fed without the
+ * user having to flip a toggle. Pure source-select — program auto-start
+ * is handled separately by the edge-connect delayed timer below.
+ * No-op if the earclip is already connected (user clearly intends the
+ * earclip path then) or if Edge isn't connected yet. */
+function autoSelectHrSourceIfApplicable(reason: string): void {
   const s = useDashboardStore.getState();
   if (s.connection.polar.state !== 'connected') return;
   if (s.connection.narbis.state === 'connected') return;
@@ -750,11 +760,40 @@ function autoStartH10IfApplicable(reason: string): void {
     s.setHrSourceForGlasses('h10');
     appendBleLog('system', 'info', `auto-select HR source = h10 (${reason})`);
   }
-  if (s.activeProgram !== 1) {
-    void s.setActiveProgram(1).then(() => {
-      appendBleLog('system', 'info', `auto-start Program 1 (${reason})`);
-    }).catch(() => { /* setActiveProgram already logs */ });
-  }
+}
+
+/* Auto-start Program 2 (Breathing Guide) shortly after the Edge glasses
+ * connect. The delay (~1.5 s) lets the post-connect BLE pipeline settle
+ * — coh-params auto-push, raw-relay enable, hr-source assertion all fire
+ * synchronously on connect; spacing the program write avoids stacking
+ * five GATT writes back-to-back which has caused write-already-in-flight
+ * errors on Windows BLE.
+ *
+ * Skipped if the user has already picked a program or standalone in the
+ * meantime — auto-start is a "default if nothing else was chosen" only. */
+const AUTO_START_DELAY_MS = 1500;
+const AUTO_START_PROGRAM: PpgProgram = 2;
+let autoStartTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleAutoStartProgram(reason: string): void {
+  if (autoStartTimer) clearTimeout(autoStartTimer);
+  autoStartTimer = setTimeout(() => {
+    autoStartTimer = null;
+    if (!edgeDevice.isConnected) return;
+    const s = useDashboardStore.getState();
+    /* Honor user intent: if they've clicked a program or standalone
+     * during the delay window, leave them alone. */
+    if (s.activeProgram !== null || s.standaloneMode !== null) {
+      appendBleLog('system', 'info', `auto-start skipped — user already selected ${
+        s.activeProgram !== null ? `Program ${s.activeProgram}` : `Standalone ${s.standaloneMode}`
+      }`);
+      return;
+    }
+    void s.setActiveProgram(AUTO_START_PROGRAM)
+      .then(() => {
+        appendBleLog('system', 'info', `auto-start Program ${AUTO_START_PROGRAM} (Breathing Guide) — ${reason}`);
+      })
+      .catch(() => { /* setActiveProgram already logs */ });
+  }, AUTO_START_DELAY_MS);
 }
 
 polarH10.addEventListener('connected', (e) => {
@@ -766,7 +805,7 @@ polarH10.addEventListener('connected', (e) => {
     },
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
-  autoStartH10IfApplicable('h10 connected');
+  autoSelectHrSourceIfApplicable('h10 connected');
 });
 
 polarH10.addEventListener('disconnected', (e) => {
@@ -784,6 +823,17 @@ polarH10.addEventListener('disconnected', (e) => {
     lastPolarBeat: polarH10.status === 'reconnecting' ? s.lastPolarBeat : null,
     lastError: reason === 'error' && error ? error.message : s.lastError,
   }));
+  /* On real (not reconnecting) polar disconnect while source=h10, flip
+   * the dashboard back to earclip so the glasses resume scanning. The
+   * setter fires 0xCB to the glasses. Skipped during reconnecting state
+   * so a brief drop doesn't churn the glasses' central. */
+  if (polarH10.status === 'disconnected') {
+    const st = useDashboardStore.getState();
+    if (st.hrSourceForGlasses === 'h10') {
+      st.setHrSourceForGlasses('earclip');
+      appendBleLog('system', 'info', 'h10 disconnected → reverting HR source to earclip');
+    }
+  }
   appendBleLog(
     'polar',
     reason === 'error' ? 'error' : 'info',
@@ -867,14 +917,33 @@ edgeDevice.addEventListener('connected', (e) => {
       appendBleLog('edge', 'error', `auto-push coh params failed: ${(err as Error).message}`);
     });
   }
-  /* If H10 was already connected when Edge came up, fire the same auto
+  /* Re-assert the current HR source on every connect so the glasses'
+   * central halts (h10) or runs (earclip) per dashboard state. The
+   * firmware doesn't persist this — it defaults to 'earclip' on boot. */
+  const currentSource = useDashboardStore.getState().hrSourceForGlasses;
+  void edgeDevice.setHrSource(currentSource).catch((err) => {
+    appendBleLog('edge', 'error', `auto-push hr_source failed: ${(err as Error).message}`);
+  });
+  /* If H10 was already connected when Edge came up, fire the source
    * trigger we'd run from the polar 'connected' listener — covers the
    * connect-order H10-first-then-glasses. */
-  autoStartH10IfApplicable('edge connected with h10 ready');
+  autoSelectHrSourceIfApplicable('edge connected with h10 ready');
+  /* Schedule the default-program auto-start. Fires after a short delay
+   * so the user has time to pick something else, and so the post-connect
+   * burst of GATT writes (coh params, raw relay, hr source) doesn't
+   * collide with the program-select write. */
+  scheduleAutoStartProgram('edge connected');
 });
 
 edgeDevice.addEventListener('disconnected', (e) => {
   const { reason, error } = (e as CustomEvent<EdgeDisconnectedDetail>).detail;
+  /* Cancel a pending auto-start if the edge dropped during the delay
+   * window — firing a setProgram BLE write into a disconnected glasses
+   * would just log a failure. */
+  if (autoStartTimer) {
+    clearTimeout(autoStartTimer);
+    autoStartTimer = null;
+  }
   setState((s) => ({
     connection: {
       ...s.connection,

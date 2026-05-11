@@ -143,6 +143,12 @@ static struct {
     uint32_t notify_raw_count;
     uint32_t notify_diag_count;
     uint32_t notify_other_count;
+
+    /* When true, the central is paused (e.g. dashboard set HR source to
+     * H10 — no need to keep scanning for earclip). Stops scans/backoff
+     * timers from running and prevents disconnect-event auto-restart.
+     * Cleared by narbis_central_start(). */
+    bool paused;
 } S;
 
 /* ---- log sink + state callback helpers ------------------------------- */
@@ -289,6 +295,10 @@ static void schedule_reconnect_backoff(void) {
 
 static void backoff_timer_cb(void *arg) {
     (void)arg;
+    if (S.paused) {
+        ESP_LOGI(TAG, "central: backoff fired but paused — skipping scan");
+        return;
+    }
     if (S.earclip_known) start_scan_directed();
     else                 start_scan_general();
 }
@@ -826,8 +836,12 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
         S.notify_diag_count = S.notify_other_count = 0;
         /* Avoid re-issuing scan if forget()/start() already kicked one
          * off. Without this guard, a forced disconnect during a fresh
-         * scan would restart that scan and lose progress. */
-        if (S.state != ST_SCANNING_DIRECTED && S.state != ST_SCANNING_GENERAL) {
+         * scan would restart that scan and lose progress. Also skip
+         * entirely when paused (HR-source switched to H10) — the
+         * disconnect was intentional and we shouldn't reconnect. */
+        if (S.paused) {
+            S.state = ST_IDLE;
+        } else if (S.state != ST_SCANNING_DIRECTED && S.state != ST_SCANNING_GENERAL) {
             if (S.earclip_known) start_scan_directed();
             else                 start_scan_general();
         }
@@ -871,6 +885,13 @@ esp_err_t narbis_central_init(narbis_central_ibi_cb_t     ibi_cb,
 }
 
 esp_err_t narbis_central_start(void) {
+    /* Clear paused state in case we're resuming after a stop() — the
+     * dashboard flipped HR source back to earclip. Idempotent if already
+     * unpaused. */
+    if (S.paused) {
+        ESP_LOGI(TAG, "central: resuming (was paused)");
+        S.paused = false;
+    }
     uint8_t mac[6];
     if (nvs_read_earclip(mac) == ESP_OK) {
         memcpy(S.earclip_mac, mac, 6);
@@ -883,6 +904,27 @@ esp_err_t narbis_central_start(void) {
         ESP_LOGI(TAG, "central: no paired earclip — general scan");
         start_scan_general();
     }
+    return ESP_OK;
+}
+
+esp_err_t narbis_central_stop(void) {
+    ESP_LOGI(TAG, "central: stop (HR source switched away from earclip)");
+    S.paused = true;
+    /* Close any active connection; the DISCONNECT_EVT handler sees
+     * S.paused=true and skips the auto-restart-scan. */
+    if (S.conn_id) {
+        esp_ble_gattc_close(S.gattc_if, S.conn_id);
+    }
+    /* Cancel any in-flight scan. */
+    if (S.state == ST_SCANNING_DIRECTED || S.state == ST_SCANNING_GENERAL) {
+        esp_ble_gap_stop_scanning();
+    }
+    /* Drop the backoff timer so a pending tick doesn't relaunch a scan. */
+    if (S.backoff_timer) esp_timer_stop(S.backoff_timer);
+    S.scan_attempts = 0;
+    /* Leave earclip_known + earclip_mac intact so a subsequent
+     * narbis_central_start() can resume directed scan to the same earclip
+     * without re-pairing. */
     return ESP_OK;
 }
 

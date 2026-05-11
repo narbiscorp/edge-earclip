@@ -158,6 +158,7 @@ export const CTRL = {
   FACTORY_RESET:    0xBF,  // 0x00 wipe ALL stored prefs
   NARBIS_FORGET:    0xC1,  // 0x00 wipe paired earclip + rescan (Path B)
   INJECT_IBI:       0xCA,  // [ibi_lo, ibi_hi, conf, flags] feed external HR (H10) into coherence
+  SET_HR_SOURCE:    0xCB,  // 0=earclip (resume central scan), 1=h10 (pause central scan)
   COH_PARAMS:       0xE0,  // 12-byte narbis_coh_params_t — live algorithm tuning
   DETECTOR_RESET:   0xD0,  // 0x00 reset client/dashboard detector state
 } as const;
@@ -402,6 +403,16 @@ export class EdgeDevice extends EventTarget {
       throw new Error(`coh params size mismatch: ${payload.length} vs ${NARBIS_COH_PARAMS_WIRE_SIZE}`);
     }
     await this.sendCtrlCommand(CTRL.COH_PARAMS, payload);
+  }
+
+  /** Tell the glasses which HR source the dashboard is using. When set
+   * to 'h10', the glasses' BLE central halts its earclip scan/reconnect
+   * loop — saves power and radio time, prevents stale earclip notifies
+   * from racing the dashboard-injected RR stream. Resumes the scan when
+   * set back to 'earclip'. */
+  async setHrSource(source: 'earclip' | 'h10'): Promise<void> {
+    const arg = source === 'h10' ? 1 : 0;
+    await this.sendCtrlCommand(CTRL.SET_HR_SOURCE, new Uint8Array([arg]));
   }
 
   /** Inject an external IBI (e.g. from a Polar H10) into the glasses'

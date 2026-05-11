@@ -468,14 +468,24 @@ function GlassesVisual() {
         const coh = lastEdgeCoh?.coh ?? 0;
         const cohScale = 1 - (coh / 100) * 0.80;
         target = frac * cohScale;
+        /* Program 4 = breathing × strobe. The firmware strobes at 10 Hz+
+         * which is unsafe to render in a browser; modulate the breath
+         * envelope by a calm ~3 Hz square so the visual clearly shows
+         * "this program is strobing" without inducing seizures. */
+        if (program === 4) {
+          const strobePhase = Math.floor(now / 167) % 2;  /* ~3 Hz */
+          target = strobePhase ? target : target * 0.15;
+        }
       } else if (program === 3) {
         const coh = lastEdgeCoh?.coh ?? 0;
         target = (100 - coh) / 100;
       }
 
       /* Light low-pass so the SVG re-render isn't noisy. Single-pole IIR.
-       * Higher α for strobe so the on/off transitions still pop. */
-      const alpha = standalone === 'strobe' ? 0.6 : 0.25;
+       * Strobe modes (standalone or Program 4) get a higher α so the
+       * on/off transitions still pop. */
+      const isStrobing = standalone === 'strobe' || program === 4;
+      const alpha = isStrobing ? 0.6 : 0.25;
       setOpacity((prev) => prev + (target - prev) * alpha);
       raf = requestAnimationFrame(tick);
     };
