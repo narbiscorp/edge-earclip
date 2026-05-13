@@ -43,14 +43,16 @@ static const char *TAG = "sleep_button";
 
 static void enter_deep_sleep(void) {
     ESP_LOGW(TAG, "sleep requested — release the button to enter deep sleep");
-    /* Trigger the 6-fast-pulse sleep-entry indicator so the user sees a
-     * positive confirmation that the 3 s hold registered. The animation
-     * runs concurrently with the wait-for-release loop below and auto-
-     * clears to OFF after 900 ms. 6 pulses at 75/75 ms is visually
-     * distinct from the streaming pattern (3 pulses at 100/100 ms,
-     * 60 % brightness) so the user can tell "going to sleep" from
-     * "streaming data". SLEEP_ENTRY has the highest priority (above
-     * BATTERY_CRIT) so it overrides whatever was on the LED. */
+    /* Trigger the sleep-entry indicator so the user sees a positive
+     * confirmation that the 3 s hold registered. The animation runs
+     * concurrently with the wait-for-release loop below and auto-
+     * clears to OFF after 1.28 s. Two-phase pattern: 8 sharp square-
+     * wave pulses at 60 ms cycle (~480 ms), then a solid full-bright
+     * 800 ms finale. Deliberately unlike the streaming pattern (which
+     * is soft half-sine pulses at 60 % brightness) so the user can
+     * tell "going to sleep" from "streaming data" at a glance.
+     * SLEEP_ENTRY has the highest priority (above BATTERY_CRIT) so
+     * it overrides whatever was on the LED. */
     led_status_set_state(LED_STATE_SLEEP_ENTRY);
 
     /* CRITICAL: ESP_GPIO_WAKEUP_GPIO_LOW is *level*-triggered, not edge.

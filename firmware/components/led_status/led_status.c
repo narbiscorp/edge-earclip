@@ -134,23 +134,38 @@ static uint8_t render_battery_crit(float t)
 
 static uint8_t render_sleep_entry(float t)
 {
-    /* 6 fast half-sine pulses, 75 ms on / 75 ms off, full brightness.
-     * Total 900 ms. Tells the user "you've held long enough — sleep is
-     * engaging now." 6 pulses (vs streaming's 3) at a faster cadence
-     * (75 ms vs streaming's 100 ms) make this visually unmistakable
-     * for the streaming heartbeat indicator, even at a glance. Auto-
-     * clears to OFF after the sixth pulse so the subsequent
-     * deep_sleep_start hits a quiet LED. */
-    if (t >= 0.9f) {
+    /* Two-phase sleep animation, deliberately unlike any other pattern:
+     *
+     *   Phase 1 (0..480 ms): 8 SHARP on/off pulses at a 60 ms cycle
+     *                        (30 ms full-bright + 30 ms dark). Square
+     *                        wave — no sine fade — so each pulse looks
+     *                        crisp and punchy. The fast strobe is the
+     *                        first thing the user notices and is
+     *                        completely unlike the streaming pattern
+     *                        (3 soft half-sine pulses at 60 % bright).
+     *   Phase 2 (480..1280 ms): solid full-bright "finale" — locks
+     *                           the LED on for 800 ms straight. Long
+     *                           solid bursts don't appear anywhere
+     *                           else in the LED state machine, so this
+     *                           reads unambiguously as "going to sleep
+     *                           now." Auto-clears at 1.28 s.
+     *
+     * Net result: noticeably brighter (sharp 100 % on with no sine
+     * fade), faster (60 ms cycle vs prior 150 ms), and longer
+     * (1.28 s total vs prior 900 ms) — addresses the user feedback
+     * that the 6-half-sine variant blurred together visually and
+     * still resembled the streaming heartbeat. */
+    if (t >= 1.28f) {
         led_status_set_state(LED_STATE_OFF);
         return 0;
     }
-    /* 150 ms cycle: 75 ms pulse + 75 ms gap. */
-    float c = fmodf(t, 0.15f);
-    if (c < 0.075f) {
-        return (uint8_t)(255.0f * sinf(M_PI * c / 0.075f));
+    if (t < 0.48f) {
+        /* Phase 1: 60 ms cycle, square wave (sharp 100 % / 0 %). */
+        float c = fmodf(t, 0.06f);
+        return (c < 0.03f) ? 255 : 0;
     }
-    return 0;
+    /* Phase 2: solid full-bright finale (480..1280 ms). */
+    return 255;
 }
 
 /* === Tick callback ======================================================= */
