@@ -36,6 +36,15 @@ CONFIG_MAC_BB_PD=y
 # reject the third connect even though the host expected it to fit).
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
 CONFIG_BT_LE_MAX_CONNECTIONS=3
+# Persist NimBLE's address store (and bonding/keystore) to NVS. Without
+# this, ble_hs_util_ensure_addr(0) generates a fresh random static
+# address on every boot — which defeats the glasses-central's "save
+# earclip MAC in NVS and directed-scan on the next boot" auto-reconnect
+# design (the saved MAC goes stale every time the earclip reboots, so
+# the user has to manually "Re-pair earclip" each session). With this
+# on, the random static address is generated once on first boot and
+# reused on every boot for the life of the device (or until NVS wipe).
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
 # ---------------- Power management ----------------
 # Light sleep is the only sleep mode allowed (CLAUDE.md: no deep sleep on the
