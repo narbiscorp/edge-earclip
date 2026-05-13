@@ -77,3 +77,13 @@ CONFIG_NARBIS_BATT_DIVIDER_PRESENT=y
 CONFIG_NARBIS_BATT_ADC_GPIO=1
 CONFIG_NARBIS_BATT_ADC_DIV_NUM=33
 CONFIG_NARBIS_BATT_ADC_DIV_DEN=16
+
+# ---------------- Idle deep-sleep timeout ----------------
+# Earclip enters full deep sleep after this many seconds of advertising
+# with zero BLE peers connected. Wake source is the GPIO2 / D2 button
+# (same as the manual hold-to-sleep gesture). Pinned here so a fresh
+# sdkconfig regen can't silently change the policy. Implementation is
+# the polling loop in sleep_button.c (50 ms cadence, resets the idle
+# counter whenever transport_ble_any_connected() is true). Set to 0
+# to disable the idle-sleep timer (manual button hold still works).
+CONFIG_NARBIS_IDLE_SLEEP_TIMEOUT_S=300
