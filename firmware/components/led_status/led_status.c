@@ -134,18 +134,21 @@ static uint8_t render_battery_crit(float t)
 
 static uint8_t render_sleep_entry(float t)
 {
-    /* 3 fast half-sine pulses, 100 ms on / 100 ms off, full brightness.
-     * Total 600 ms. Tells the user "you've held long enough — sleep is
-     * engaging now." Auto-clears to OFF after the third pulse so the
-     * subsequent deep_sleep_start hits a quiet LED. */
-    if (t >= 0.6f) {
+    /* 6 fast half-sine pulses, 75 ms on / 75 ms off, full brightness.
+     * Total 900 ms. Tells the user "you've held long enough — sleep is
+     * engaging now." 6 pulses (vs streaming's 3) at a faster cadence
+     * (75 ms vs streaming's 100 ms) make this visually unmistakable
+     * for the streaming heartbeat indicator, even at a glance. Auto-
+     * clears to OFF after the sixth pulse so the subsequent
+     * deep_sleep_start hits a quiet LED. */
+    if (t >= 0.9f) {
         led_status_set_state(LED_STATE_OFF);
         return 0;
     }
-    /* 200 ms cycle: 100 ms pulse + 100 ms gap. */
-    float c = fmodf(t, 0.2f);
-    if (c < 0.1f) {
-        return (uint8_t)(255.0f * sinf(M_PI * c / 0.1f));
+    /* 150 ms cycle: 75 ms pulse + 75 ms gap. */
+    float c = fmodf(t, 0.15f);
+    if (c < 0.075f) {
+        return (uint8_t)(255.0f * sinf(M_PI * c / 0.075f));
     }
     return 0;
 }
