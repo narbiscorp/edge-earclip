@@ -47,18 +47,21 @@ CONFIG_BT_LE_MAX_CONNECTIONS=3
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
 # ---------------- BLE radio TX power ----------------
-# One step above IDF's ESP32-C6 default (P9 / +9 dBm). +3 dB nets ~41%
-# more range in free space (Friis), which buys back link margin lost to
-# head/torso absorption when both centrals (dashboard + glasses) connect
-# simultaneously. Average-current penalty is ~0.1-0.3 mA at the typical
-# BLE TX duty cycle (<1%) — well inside the <=50 mA "both centrals
-# connected" target in CLAUDE.md. Peak TX current rises from ~190 mA
-# (datasheet, P9) to ~225 mA (interpolated, P12); the boost converter
-# handles the burst easily at 3.3 V. Pinned here so a fresh sdkconfig
-# regen can't silently revert to the IDF default. Going further (P15+)
-# warrants a spectrum-analyzer / RSSI sweep first — some XIAO-class
-# boards show ACPR degradation above +12 dBm.
-CONFIG_BT_LE_DFT_TX_POWER_LEVEL_P12=y
+# +15 dBm — two steps above IDF's ESP32-C6 default (P9 / +9 dBm). +6 dB
+# nets ~2x range in free space (Friis), which buys back link margin lost
+# to head/torso absorption when both centrals (dashboard + glasses)
+# connect simultaneously. Average-current penalty is ~0.3-0.4 mA at the
+# typical BLE TX duty cycle (<1%) — well inside the <=50 mA "both
+# centrals connected" target in CLAUDE.md. Peak TX current is ~261 mA
+# (interpolated between datasheet anchors P9 = 190 mA and P19 = 309 mA);
+# the boost converter handles the burst easily at 3.3 V. Pinned here so
+# a fresh sdkconfig regen can't silently revert to the IDF default.
+# Going further (P18+) warrants a spectrum-analyzer / RSSI sweep first
+# AND brownout testing on a near-empty LiPo — XIAO-class boards run
+# closer to the PA's "characterized" edge above +15 dBm, and the ~300 mA
+# peak TX bursts at P18+ can dip the rail below brownout when the cell
+# droops to ~3.4 V end-of-charge.
+CONFIG_BT_LE_DFT_TX_POWER_LEVEL_P15=y
 
 # ---------------- Power management ----------------
 # Light sleep is the only sleep mode allowed (CLAUDE.md: no deep sleep on the
