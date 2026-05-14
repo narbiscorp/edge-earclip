@@ -193,7 +193,18 @@ static void params_for_profile(uint8_t ble_profile, struct ble_gap_upd_params *p
         p->itvl_min = 40;   /* 50 ms */
         p->itvl_max = 80;   /* 100 ms */
         p->latency  = 4;
-        p->supervision_timeout = 400;
+        /* 20 s supervision timeout (was 400 = 4 s). The earclip applies
+         * this BATCHED profile immediately on every new connection,
+         * BEFORE the central has written the peer_role byte. A 4 s
+         * supervision timeout meant any hiccup during GATT discovery —
+         * Bluedroid scheduling delay on the glasses side, dashboard
+         * write contention, peer-initiated MTU first — would drop the
+         * LL link before service discovery could complete. Observed
+         * glasses-central side: c=41 d=39 mtu=34 srch=0 in ~2 min, ~3 s
+         * per cycle. Matching LOW_LATENCY's 20 s gives the central
+         * enough headroom to complete CONNECT → MTU → SEARCH →
+         * write_role → subscribe chain on any reasonable BLE scheduling. */
+        p->supervision_timeout = 2000;
     }
 }
 
