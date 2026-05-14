@@ -46,7 +46,7 @@ export default function DebugPanel() {
       />
       <Stat
         label="batt"
-        value={battery !== null ? `${battery}%` : '—'}
+        value={battery !== null ? `${battery.soc_pct}%` : '—'}
       />
     </div>
   );
