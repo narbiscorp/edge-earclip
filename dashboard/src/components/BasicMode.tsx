@@ -69,7 +69,6 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const polarConn = useDashboardStore((s) => s.connection.polar.state);
   const edgeConn = useDashboardStore((s) => s.connection.edge.state);
   const narbisConn = useDashboardStore((s) => s.connection.narbis.state);
-  const earclipRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
   const lastBeat = useDashboardStore((s) => s.lastBeat);
   const lastPolarBeat = useDashboardStore((s) => s.lastPolarBeat);
   const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
@@ -88,23 +87,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const pacerBpm = lastEdgeCoh?.pacerBpm ?? 0;
 
   const edgeConnected = edgeConn === 'connected';
-  /* Three ways to have an HR source feed Basic-mode metrics:
-   *   1. Polar H10 paired directly to the dashboard
-   *   2. Earclip paired directly to the dashboard
-   *   3. Earclip linked to the glasses (Path B relay); the dashboard sees
-   *      beats via 0xF9 / 0xF1 on the Edge link, with `earclipRelay=true`
-   *      from the 0xF6 link-state frame
-   * The original check only counted (1) and (2), so the Basic/Mobile
-   * "Heart rate" card said "no source" even with a happy relay link. */
-  const hrConnected =
-    polarConn === 'connected' ||
-    narbisConn === 'connected' ||
-    (edgeConnected && earclipRelay === true);
-  const hrLabel =
-    hrSource === 'h10' ? 'Polar H10'
-    : narbisConn === 'connected' ? 'Earclip (direct)'
-    : earclipRelay === true ? 'Earclip (via Edge)'
-    : 'Earclip';
+  const hrConnected = polarConn === 'connected' || narbisConn === 'connected';
 
   /* Local settings state — mirrored to the firmware via edgeDevice setters.
    * No read-back path from the glasses, so these default to reasonable
@@ -134,16 +117,10 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   /* Mobile mode forces a single-column layout by clamping the container
    * below the Tailwind `sm:` breakpoint (640 px) — every `sm:grid-cols-N`
    * inside this view collapses to one column on its own, no class-rewrite
-   * needed. Padding/gap also shrink so the page feels native on a phone.
-   *
-   * Basic mode uses max-w-6xl (1152 px) so the Raw PPG and IBI charts get
-   * enough horizontal room to be readable on a desktop screen — anything
-   * tighter and the IBI tachogram squashes its x-axis. Settings/mode cards
-   * stay reasonable at this width because they're inside `sm:grid-cols-N`
-   * grids that fan out, not because they stretch. */
+   * needed. Padding/gap also shrink so the page feels native on a phone. */
   const containerClass = mobile
     ? 'max-w-md mx-auto p-3 space-y-4'
-    : 'max-w-6xl mx-auto p-6 space-y-6';
+    : 'max-w-3xl mx-auto p-6 space-y-6';
 
   return (
     <div className="flex-1 overflow-auto bg-slate-950">
@@ -181,7 +158,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             value={hrBpm != null ? `${hrBpm}` : '—'}
             unit="BPM"
             colorClass="text-rose-300"
-            sub={hrConnected ? hrLabel : 'no source'}
+            sub={hrConnected ? (hrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
           />
         </div>
 
