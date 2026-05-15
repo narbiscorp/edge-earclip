@@ -117,10 +117,16 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   /* Mobile mode forces a single-column layout by clamping the container
    * below the Tailwind `sm:` breakpoint (640 px) — every `sm:grid-cols-N`
    * inside this view collapses to one column on its own, no class-rewrite
-   * needed. Padding/gap also shrink so the page feels native on a phone. */
+   * needed. Padding/gap also shrink so the page feels native on a phone.
+   *
+   * Basic mode uses max-w-6xl (1152 px) so the Raw PPG and IBI charts get
+   * enough horizontal room to be readable on a desktop screen — anything
+   * tighter and the IBI tachogram squashes its x-axis. Settings/mode cards
+   * stay reasonable at this width because they're inside `sm:grid-cols-N`
+   * grids that fan out, not because they stretch. */
   const containerClass = mobile
     ? 'max-w-md mx-auto p-3 space-y-4'
-    : 'max-w-3xl mx-auto p-6 space-y-6';
+    : 'max-w-6xl mx-auto p-6 space-y-6';
 
   return (
     <div className="flex-1 overflow-auto bg-slate-950">
