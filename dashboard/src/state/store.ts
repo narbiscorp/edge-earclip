@@ -197,7 +197,7 @@ export interface DashboardState {
    * of settings sliders. 'expert' is the full charts + sidebar layout
    * with the algorithm tuning configurator, BLE log, recording controls,
    * etc. Persisted to localStorage. */
-  uiMode: 'basic' | 'expert';
+  uiMode: 'basic' | 'expert' | 'mobile';
 
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
@@ -233,7 +233,7 @@ export interface DashboardState {
     mode: 'static' | 'strobe' | 'breathe' | 'pulse' | null,
     dutyPct?: number,
   ) => Promise<void>;
-  setUiMode: (mode: 'basic' | 'expert') => void;
+  setUiMode: (mode: 'basic' | 'expert' | 'mobile') => void;
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
   setWindowSec: (seconds: number) => void;
@@ -283,15 +283,17 @@ function saveCoherenceParams(params: NarbisCoherenceParams): void {
 }
 
 const UI_MODE_KEY = 'uiMode';
-function loadUiMode(): 'basic' | 'expert' {
+function loadUiMode(): 'basic' | 'expert' | 'mobile' {
   try {
     const v = localStorage.getItem(UI_MODE_KEY);
-    return v === 'expert' ? 'expert' : 'basic';
+    if (v === 'expert') return 'expert';
+    if (v === 'mobile') return 'mobile';
+    return 'basic';
   } catch {
     return 'basic';
   }
 }
-function saveUiMode(mode: 'basic' | 'expert'): void {
+function saveUiMode(mode: 'basic' | 'expert' | 'mobile'): void {
   try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* quota / private mode */ }
 }
 

@@ -3,6 +3,23 @@ import Plotly from 'plotly.js-dist-min';
 import type { Data, Layout, Shape } from 'plotly.js';
 import { chartSync, type ChartId } from './chartSync';
 
+/* Lock down user pan/zoom on every chart. The window picker + smoothing
+ * controls handle range/scale; pinch-zoom on touch (or accidental click-
+ * drag) only gets in the way and on mobile it traps the user in a zoomed
+ * state that doesn't reset until the page reloads. fixedrange on every
+ * axis disables drag-pan, drag-zoom, and pinch-zoom; dragmode=false
+ * additionally suppresses Plotly's drag handlers entirely so hover still
+ * works but no drag selection box appears. */
+function lockAxisRanges(layout: Partial<Layout>): Partial<Layout> {
+  const out: Record<string, unknown> = { ...layout, dragmode: false };
+  for (const key of Object.keys(out)) {
+    if (key === 'xaxis' || key === 'yaxis' || /^[xy]axis\d+$/.test(key)) {
+      out[key] = { ...(out[key] as object), fixedrange: true };
+    }
+  }
+  return out as Partial<Layout>;
+}
+
 export interface LivePlotSnapshot {
   traces: Data[];
   layoutPatch?: Partial<Layout>;
@@ -56,10 +73,11 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       ...optsRef.current.baseLayout,
       ...(initial.layoutPatch ?? {}),
     };
-    void Plotly.newPlot(div, initial.traces, baseLayout, {
+    void Plotly.newPlot(div, initial.traces, lockAxisRanges(baseLayout), {
       responsive: true,
       displayModeBar: false,
-      doubleClick: 'reset',
+      doubleClick: false,
+      scrollZoom: false,
     });
 
     let crosshair_ms: number | null = null;
@@ -144,18 +162,18 @@ export function useLivePlot(opts: UseLivePlotOptions): React.RefObject<HTMLDivEl
       }
 
       if (dataChanged) {
-        void Plotly.react(div, snap.traces, {
+        void Plotly.react(div, snap.traces, lockAxisRanges({
           ...optsRef.current.baseLayout,
           ...layoutPatch,
-        });
+        }));
       } else {
         // Traces unchanged — only layout (sliding window / crosshair /
         // external range) moved. Plotly.relayout skips the trace diff
         // entirely, which is the bulk of the cost at 30 Hz × 4 charts.
-        void Plotly.relayout(div, {
+        void Plotly.relayout(div, lockAxisRanges({
           ...optsRef.current.baseLayout,
           ...layoutPatch,
-        });
+        }));
       }
 
       prevSeq = seq ?? prevSeq;

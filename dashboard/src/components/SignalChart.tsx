@@ -6,7 +6,14 @@ import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
 
-export default function SignalChart() {
+interface SignalChartProps {
+  /** When true, hides the chart-controls bar in the header. Used by
+   * Basic / Mobile mode where the user shouldn't fiddle with window /
+   * smooth / shape. */
+  compact?: boolean;
+}
+
+export default function SignalChart({ compact = false }: SignalChartProps = {}) {
   const [paused, setPaused] = useState(false);
   // Window is global — see store.ts. Smooth/shape/rescale stay local.
   const windowSec = useDashboardStore((s) => s.windowSec);
@@ -173,24 +180,26 @@ export default function SignalChart() {
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
         <span className="text-xs font-medium text-slate-300">Raw PPG ({formatWindow(windowSec)})</span>
-        <ChartControls
-          windowSec={windowSec}
-          onWindowChange={onWindowChange}
-          smoothN={smoothN}
-          onSmoothChange={onSmoothChange}
-          shape={shape}
-          onShapeChange={setShape}
-          rescaleSec={rescaleSec}
-          onRescaleChange={onRescaleChange}
-        >
-          <button
-            type="button"
-            onClick={() => setPaused((p) => !p)}
-            className="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+        {compact ? null : (
+          <ChartControls
+            windowSec={windowSec}
+            onWindowChange={onWindowChange}
+            smoothN={smoothN}
+            onSmoothChange={onSmoothChange}
+            shape={shape}
+            onShapeChange={setShape}
+            rescaleSec={rescaleSec}
+            onRescaleChange={onRescaleChange}
           >
-            {paused ? 'Resume' : 'Pause'}
-          </button>
-        </ChartControls>
+            <button
+              type="button"
+              onClick={() => setPaused((p) => !p)}
+              className="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+            >
+              {paused ? 'Resume' : 'Pause'}
+            </button>
+          </ChartControls>
+        )}
       </div>
       <div ref={divRef} className="flex-1 min-h-0" />
     </div>

@@ -41,8 +41,10 @@ export default function App() {
             </span>
           )}
         </h1>
-        {/* Basic ↔ Expert toggle. Lay users land on Basic by default;
-            developers / tuners flip to Expert for the full charts + sidebar. */}
+        {/* Basic ↔ Mobile ↔ Expert toggle. Lay users land on Basic by
+            default; Mobile is Basic forced into a single-column layout
+            with bigger touch targets for phone screens; Expert is the
+            full charts + sidebar layout. */}
         <div className="inline-flex rounded-md border border-slate-700 overflow-hidden text-xs shrink-0">
           <button
             onClick={() => setUiMode('basic')}
@@ -55,6 +57,18 @@ export default function App() {
             title="Simple view: live metrics + program picker + a few settings"
           >
             Basic
+          </button>
+          <button
+            onClick={() => setUiMode('mobile')}
+            className={
+              'px-3 py-1 border-l border-slate-700 ' +
+              (uiMode === 'mobile'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300')
+            }
+            title="Phone-optimized view: single column, larger touch targets"
+          >
+            Mobile
           </button>
           <button
             onClick={() => setUiMode('expert')}
@@ -73,7 +87,9 @@ export default function App() {
       </header>
 
       {uiMode === 'basic' ? (
-        <BasicMode />
+        <BasicMode mobile={false} />
+      ) : uiMode === 'mobile' ? (
+        <BasicMode mobile={true} />
       ) : (
         <>
           <main className="grid grid-cols-[1fr_360px] flex-1 overflow-hidden">
