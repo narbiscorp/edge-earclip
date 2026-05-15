@@ -71,6 +71,15 @@ export default function ConnectionPanel() {
   const pairedName = getPairedDeviceName();
   const edgePairedName = getEdgePairedDeviceName();
 
+  /* When the earclip is direct-disconnected but the glasses relay is up,
+   * the 0xF8 status frame still populates connection.narbis.battery. Surface
+   * it so the user sees live SoC even without a direct dashboard↔earclip pair. */
+  const relayedBatteryShown =
+    narbis.state === 'disconnected' &&
+    edge.state === 'connected' &&
+    edge.earclipRelay === true &&
+    narbis.battery !== null;
+
   const narbisLabel =
     narbis.state === 'connected'
       ? `${narbis.deviceName ?? 'Narbis'}${formatBattery(narbis.battery)}`
@@ -80,9 +89,11 @@ export default function ConnectionPanel() {
           : 'reconnecting…'
         : narbis.state === 'connecting'
           ? 'connecting…'
-          : pairedName
-            ? `disconnected (paired: ${pairedName})`
-            : 'disconnected';
+          : relayedBatteryShown
+            ? `via Edge${formatBattery(narbis.battery)}`
+            : pairedName
+              ? `disconnected (paired: ${pairedName})`
+              : 'disconnected';
 
   /* Sub-status line under the pill: shows the current phase of the
    * connect / reconnect handshake so the user knows whether the dashboard
