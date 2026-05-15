@@ -451,12 +451,22 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             }
 
             (void)apply_profile_to_handle(g_slots[slot].handle, NARBIS_BLE_BATCHED);
+            (void)ble_gap_set_prefered_le_phy(g_slots[slot].handle,
+                                              BLE_GAP_LE_PHY_2M_MASK,
+                                              BLE_GAP_LE_PHY_2M_MASK, 0);
             start_advertising_if_room();
         } else {
             ESP_LOGW(TAG, "connect failed status=%d", event->connect.status);
             start_advertising_if_room();
         }
         break;
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        ESP_LOGI(TAG, "phy update conn=%u tx=%d rx=%d status=%d",
+                 (unsigned)event->phy_updated.conn_handle,
+                 event->phy_updated.tx_phy, event->phy_updated.rx_phy,
+                 event->phy_updated.status);
+        return 0;
 
     case BLE_GAP_EVENT_DISCONNECT: {
         uint16_t handle = event->disconnect.conn.conn_handle;
