@@ -515,6 +515,12 @@ narbisDevice.addEventListener('connected', (e) => {
     },
   }));
   appendBleLog('earclip', 'info', `connected to ${name}`);
+  /* If edge is already connected and the user hasn't picked a program,
+   * schedule an auto-start now that we have a direct earclip beat source.
+   * Covers the connect-order: earclip arrives after the glasses were already
+   * connected (the edge-connect auto-start ran earlier and skipped because
+   * there was no sensor at that point). */
+  scheduleAutoStartProgram('earclip direct connected');
 });
 
 narbisDevice.addEventListener('disconnected', (e) => {
@@ -770,15 +776,23 @@ function autoSelectHrSourceIfApplicable(reason: string): void {
   }
 }
 
-/* Auto-start Program 2 (Breathing Guide) shortly after the Edge glasses
- * connect. The delay (~1.5 s) lets the post-connect BLE pipeline settle
- * — coh-params auto-push, raw-relay enable, hr-source assertion all fire
- * synchronously on connect; spacing the program write avoids stacking
- * five GATT writes back-to-back which has caused write-already-in-flight
- * errors on Windows BLE.
+/* Auto-start Program 2 (Coh Breathe) shortly after the Edge glasses
+ * connect AND a beat source is available. The delay (~1.5 s) lets the
+ * post-connect BLE pipeline settle — coh-params auto-push, raw-relay
+ * enable, hr-source assertion all fire synchronously on connect; spacing
+ * the program write avoids stacking five GATT writes back-to-back which
+ * has caused write-already-in-flight errors on Windows BLE.
  *
- * Skipped if the user has already picked a program or standalone in the
- * meantime — auto-start is a "default if nothing else was chosen" only. */
+ * The timer fires from three places so all connect-order permutations
+ * work: edge-first+earclip-later, earclip-first+edge-later, and both
+ * already ready. Each call site re-arms the timer (debounced), so rapid
+ * successive events don't stack multiple writes.
+ *
+ * Skipped if: the user has already picked a program or standalone, OR
+ * no beat source is connected yet (earclip direct, glasses relay, or H10).
+ * "No sensor" skipping is critical — Program 2 requires IBI to do
+ * anything useful; entering it without a sensor confuses users who see the
+ * lens breathing but can't understand why the heartbeat program is broken. */
 const AUTO_START_DELAY_MS = 1500;
 const AUTO_START_PROGRAM: PpgProgram = 2;
 let autoStartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -796,9 +810,21 @@ function scheduleAutoStartProgram(reason: string): void {
       }`);
       return;
     }
+    /* Require a live beat source before auto-starting any sensor program.
+     * Without IBI the glasses just breathe the lens on the pacer timer with
+     * no HRV feedback — Program 2 looks "active" but is essentially a
+     * standalone breathe. Users trying Heartbeat (Program 1) would also see
+     * no pulses. Wait until a sensor is in place. */
+    const hasEarclipDirect = s.connection.narbis.state === 'connected';
+    const hasEarclipRelay  = s.connection.edge.earclipRelay === true;
+    const hasH10           = s.connection.polar.state === 'connected';
+    if (!hasEarclipDirect && !hasEarclipRelay && !hasH10) {
+      appendBleLog('system', 'info', 'auto-start skipped — no beat source (earclip or H10) connected yet');
+      return;
+    }
     void s.setActiveProgram(AUTO_START_PROGRAM)
       .then(() => {
-        appendBleLog('system', 'info', `auto-start Program ${AUTO_START_PROGRAM} (Breathing Guide) — ${reason}`);
+        appendBleLog('system', 'info', `auto-start Program ${AUTO_START_PROGRAM} (Coh Breathe) — ${reason}`);
       })
       .catch(() => { /* setActiveProgram already logs */ });
   }, AUTO_START_DELAY_MS);
@@ -1099,6 +1125,13 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
      * direct-earclip session and land off-screen on the chart otherwise. */
     resetDiagnosticClock();
     lastRawTs = 0;
+    /* Now that the glasses have an earclip source, try to auto-start the
+     * default sensor program if the user hasn't picked one yet. Covers the
+     * connect-order: glasses connected first (auto-start at that point
+     * skipped because earclipRelay was null/false), earclip relay comes up
+     * seconds later. The 1.5 s delay absorbs the config-refresh and any
+     * other GATT writes already in flight. */
+    scheduleAutoStartProgram('earclip relay linked');
     /* Schedule one-shot auto-refresh ~2 s after link-up. The glasses'
      * central does an enter_ready CONFIG read that should make this
      * unnecessary, but if the read drops (Bluedroid outbound queue) we

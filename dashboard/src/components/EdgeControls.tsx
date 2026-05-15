@@ -27,6 +27,14 @@ export default function EdgeControls() {
   const setHrSource = useDashboardStore((s) => s.setHrSourceForGlasses);
   const polarState = useDashboardStore((s) => s.connection.polar.state);
   const polarConnected = polarState === 'connected';
+  const narbisState = useDashboardStore((s) => s.connection.narbis.state);
+  const earclipRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
+  /* Sensor training programs need a live IBI source. Available when:
+   *  • Earclip is directly connected to dashboard (also feeds the glasses via relay)
+   *  • Glasses-to-earclip relay is active (glasses have their own earclip link)
+   *  • Polar H10 is connected (dashboard forwards RR via 0xCA INJECT_IBI) */
+  const hasBeatSource =
+    narbisState === 'connected' || earclipRelay === true || polarConnected;
   const cohParams = useDashboardStore((s) => s.coherenceParams);
   const setCohParams = useDashboardStore((s) => s.setCoherenceParams);
   const program = useDashboardStore((s) => s.activeProgram);
@@ -104,11 +112,17 @@ export default function EdgeControls() {
       </Section>
 
       {/* Sensor-training programs — require earclip OR Polar H10 connected.
-          Without a live beat source the glasses enter the mode but the lens
-          stays inactive (no IBI → no coherence → no output). */}
+          Without a live IBI source the glasses enter the mode but receive no
+          beats → the lens stays inactive (no coherence output, no pulses).
+          Buttons are dimmed when no beat source is detected; they still send
+          the opcode if clicked, but an inline warning explains the situation. */}
       <Section
         label="Training Programs (sensor required, 0xB7)"
-        hint="Requires earclip OR Polar H10. Without a live beat source the lens stays inactive. Each program drives the lens off real-time IBI / coherence."
+        hint={
+          hasBeatSource
+            ? 'Heartbeat=pulse-on-beat • Coh Breathe=6 BPM coherence-paced • Coh Lens=direct coherence→opacity • Breathe+Strobe=coh breathe with strobe'
+            : '⚠ No beat source — connect an earclip or Polar H10 first. Selecting a program will send the opcode but the lens will not react without IBI.'
+        }
       >
         <div className="grid grid-cols-2 gap-1">
           {([
@@ -124,15 +138,19 @@ export default function EdgeControls() {
                 setStandalone(null);
                 await setActiveProgram(p);
               })}
-              className={btnClass(program === p)}
+              className={
+                btnClass(program === p) +
+                (!hasBeatSource ? ' opacity-50' : '')
+              }
+              title={
+                !hasBeatSource
+                  ? 'No earclip or H10 connected — lens will not react without IBI'
+                  : undefined
+              }
             >
               {label}
             </button>
           ))}
-        </div>
-        <div className="text-[10px] text-slate-500 mt-1">
-          Heartbeat=pulse-on-beat • Coh Breathe=6 BPM coherence-paced •
-          Coh Lens=direct coherence→opacity • Breathe+Strobe=coh breathe with strobe
         </div>
       </Section>
 

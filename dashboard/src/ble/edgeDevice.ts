@@ -164,7 +164,7 @@ export interface LedHealth {
   /** Current LED_MODE_* enum value: 0=strobe 1=static 2=breathe 3=breathe+strobe
    *  4=pulse 5=coh·breathe 6=coh·b+strobe 7=coh·lens */
   mode: number;
-  /** Effective PWM duty 0–255 (divide by 2.55 for percent). */
+  /** Effective brightness 0–100 (already a percentage — display as-is). */
   duty: number;
 }
 

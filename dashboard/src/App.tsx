@@ -12,6 +12,7 @@ import RecoveryBanner from './components/RecoveryBanner';
 import DebugPanel from './components/DebugPanel';
 import BleEventLog from './components/BleEventLog';
 import EdgeControls from './components/EdgeControls';
+import GlassesLog from './components/GlassesLog';
 import BasicMode from './components/BasicMode';
 import { metricsRunner } from './state/metricsRunner';
 import { useRecordingStore } from './state/recording';
@@ -84,6 +85,7 @@ export default function App() {
             </section>
             <aside className="flex flex-col gap-2 p-3 border-l border-slate-800 overflow-auto">
               <EdgeControls />
+              <GlassesLog />
               <ConfigPanel />
               <PresetBar />
               <BleEventLog />
