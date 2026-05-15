@@ -131,6 +131,27 @@ export interface RelayedDiagnostic {
   bytes: Uint8Array;
 }
 
+/* 0xFA: glasses-emitted link-quality snapshot. Glasses fires this at ~1 Hz
+ * with RSSI it measured on both its links (central side toward the earclip,
+ * peripheral side toward the dashboard) plus current MTU and a running
+ * notify-drop counter. Web Bluetooth doesn't expose RSSI to JS, so this
+ * frame is the only path to surface link health in the dashboard UI.
+ * Wire layout:
+ *   [type=0xFA][earclip_rssi i8][dashboard_rssi i8][mtu u16 LE][drops u16 LE]
+ * RSSI bytes are signed; a value of 127 (0x7F) means "unknown / no
+ * connection on that side" (e.g. earclip relay down). */
+export interface LinkQuality {
+  timestamp: number;
+  /** dBm of the glasses↔earclip link as measured by the glasses central. null if relay down. */
+  earclipRssi: number | null;
+  /** dBm of the glasses↔dashboard link as measured by the glasses peripheral. null if unknown. */
+  dashboardRssi: number | null;
+  /** Negotiated ATT MTU on the dashboard link. */
+  mtu: number;
+  /** Running count of failed nimble_notify() calls since boot. */
+  drops: number;
+}
+
 const EDGE_SVC_UUID    = '000000ff-0000-1000-8000-00805f9b34fb';
 const EDGE_CTRL_UUID   = '0000ff01-0000-1000-8000-00805f9b34fb';
 const EDGE_STATUS_UUID = '0000ff03-0000-1000-8000-00805f9b34fb';
@@ -584,6 +605,19 @@ export class EdgeDevice extends EventTarget {
             flags,
           } as RelayedIbi);
         }
+      } else if (type === 0xFA && bytes.length >= 7) {
+        /* 0xFA = link quality snapshot. See LinkQuality interface comment. */
+        const ecRaw = dv.getInt8(1);
+        const dashRaw = dv.getInt8(2);
+        const mtu = bytes[3] | (bytes[4] << 8);
+        const drops = bytes[5] | (bytes[6] << 8);
+        this.dispatch('linkQuality', {
+          timestamp: ts,
+          earclipRssi:   ecRaw   === 0x7F ? null : ecRaw,
+          dashboardRssi: dashRaw === 0x7F ? null : dashRaw,
+          mtu,
+          drops,
+        } as LinkQuality);
       }
     } catch (err) {
       this.emitError(err, 'status-parse');
@@ -763,6 +797,15 @@ function decodeStatusFrame(
     const conf = bytes[3];
     const flags = bytes[4];
     return { kind: 'unknown', summary: `relay ibi=${ibi} conf=${conf} flags=0x${flags.toString(16).padStart(2, '0')}` };
+  }
+  if (type === 0xFA && bytes.length >= 7) {
+    const ec = dv.getInt8(1);
+    const dash = dv.getInt8(2);
+    const mtu = dv.getUint16(3, true);
+    const drops = dv.getUint16(5, true);
+    const ecStr   = ec   === 0x7F ? '—' : `${ec}`;
+    const dashStr = dash === 0x7F ? '—' : `${dash}`;
+    return { kind: 'unknown', summary: `link rssi ec=${ecStr} dash=${dashStr} dBm mtu=${mtu} drops=${drops}` };
   }
 
   return { kind: 'unknown', summary: `type=0x${type.toString(16).padStart(2, '0')} (${bytes.length} B): ${bytesToHex(bytes)}` };

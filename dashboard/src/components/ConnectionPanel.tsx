@@ -13,6 +13,22 @@ function formatBattery(b: BatteryState | null): string {
   return ` · ${v} · ${b.soc_pct}%${chg}`;
 }
 
+/* RSSI → 4-step signal-bars glyph. Buckets chosen to track the typical
+ * BLE useful-range curve: ≥−60 dBm full bars (same room), −60..−72 strong
+ * (across small room), −72..−84 marginal (through wall), <−84 fringe.
+ * Returns empty string for null so unknown sides render without bars. */
+function rssiBars(dbm: number | null | undefined): string {
+  if (dbm == null) return '';
+  if (dbm >= -60) return '▮▮▮▮';
+  if (dbm >= -72) return '▮▮▮▯';
+  if (dbm >= -84) return '▮▮▯▯';
+  return '▮▯▯▯';
+}
+function rssiTitle(label: string, dbm: number | null | undefined): string {
+  if (dbm == null) return `${label}: signal unknown`;
+  return `${label}: ${dbm} dBm`;
+}
+
 const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
   disconnected: 'bg-slate-500',
   connecting: 'bg-amber-400 animate-pulse',
@@ -80,6 +96,14 @@ export default function ConnectionPanel() {
     edge.earclipRelay === true &&
     narbis.battery !== null;
 
+  /* Relayed RSSI: only meaningful when the glasses-to-earclip relay is
+   * UP. The glasses sends 0x7F (→ null) for the earclip side when the
+   * relay link is down, so we just trust the null. */
+  const earclipRssi  = edge.linkQuality?.earclipRssi   ?? null;
+  const dashboardRssi = edge.linkQuality?.dashboardRssi ?? null;
+  const earclipBars  = rssiBars(earclipRssi);
+  const dashboardBars = rssiBars(dashboardRssi);
+
   const narbisLabel =
     narbis.state === 'connected'
       ? `${narbis.deviceName ?? 'Narbis'}${formatBattery(narbis.battery)}`
@@ -94,6 +118,12 @@ export default function ConnectionPanel() {
             : pairedName
               ? `disconnected (paired: ${pairedName})`
               : 'disconnected';
+  /* Append earclip-side RSSI bars when the relay link is up. The glasses
+   * is the only thing that knows the earclip RSSI — Web Bluetooth doesn't
+   * expose it — so this depends on a 0xFA frame having arrived. */
+  const narbisLabelWithRssi = earclipBars
+    ? `${narbisLabel} ${earclipBars}`
+    : narbisLabel;
 
   /* Sub-status line under the pill: shows the current phase of the
    * connect / reconnect handshake so the user knows whether the dashboard
@@ -114,6 +144,11 @@ export default function ConnectionPanel() {
           : edgePairedName
             ? `disconnected (paired: ${edgePairedName})`
             : 'disconnected';
+  /* Append dashboard-side RSSI bars when the glasses is connected. The
+   * glasses measures this from its peripheral side and ships it in 0xFA. */
+  const edgeLabelWithRssi = dashboardBars
+    ? `${edgeLabel} ${dashboardBars}`
+    : edgeLabel;
 
   /* Path B: glasses-to-earclip relay status. Only meaningful when the
    * dashboard is connected to the glasses. null = unknown (still
@@ -149,7 +184,11 @@ export default function ConnectionPanel() {
     <div className="flex flex-col items-end gap-1 text-xs text-slate-200">
       <div className="flex items-center gap-2 flex-wrap justify-end">
         {/* Earclip */}
-        <Pill label={`Earclip: ${narbisLabel}`} dot={dotClass[narbis.state]} />
+        <Pill
+          label={`Earclip: ${narbisLabelWithRssi}`}
+          dot={dotClass[narbis.state]}
+          title={earclipBars ? rssiTitle('earclip↔glasses link', earclipRssi) : undefined}
+        />
         {narbis.state === 'disconnected' ? (
           <>
             <button
@@ -179,7 +218,11 @@ export default function ConnectionPanel() {
         )}
 
         {/* Edge glasses */}
-        <Pill label={`Edge: ${edgeLabel}`} dot={dotClass[edge.state]} />
+        <Pill
+          label={`Edge: ${edgeLabelWithRssi}`}
+          dot={dotClass[edge.state]}
+          title={dashboardBars ? rssiTitle('glasses↔dashboard link', dashboardRssi) : undefined}
+        />
         {relayBadge ? (
           <span
             className={`px-2 py-1 rounded text-[11px] font-medium ${relayBadge.cls}`}
@@ -262,9 +305,12 @@ export default function ConnectionPanel() {
   );
 }
 
-function Pill({ label, dot }: { label: string; dot: string }) {
+function Pill({ label, dot, title }: { label: string; dot: string; title?: string }) {
   return (
-    <span className="flex items-center gap-2 px-2 py-1 rounded bg-slate-800">
+    <span
+      className="flex items-center gap-2 px-2 py-1 rounded bg-slate-800"
+      title={title}
+    >
       <span className={`inline-block w-2 h-2 rounded-full ${dot}`} />
       <span>{label}</span>
     </span>
