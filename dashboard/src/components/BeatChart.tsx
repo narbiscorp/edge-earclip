@@ -202,7 +202,7 @@ export default function BeatChart({
           </span>
           {lastEdgeCoh != null && lastEdgeCoh.pacerBpm > 0 && (
             <span className="ml-3 tabular-nums text-amber-300">
-              Pacer: {lastEdgeCoh.pacerBpm} BPM
+              Pacer: {lastEdgeCoh.pacerBpm.toFixed(1)} BPM
             </span>
           )}
         </span>

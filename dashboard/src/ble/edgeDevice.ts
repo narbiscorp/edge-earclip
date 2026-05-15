@@ -572,7 +572,7 @@ export class EdgeDevice extends EventTarget {
           hfNorm:   dv.getUint8(13),
           lfHf:     dv.getUint16(14, true) / 256,
           nIbis:    dv.getUint8(16),
-          pacerBpm: dv.getUint8(17),  /* 0 on older firmware */
+          pacerBpm: dv.getUint8(17) / 5,  /* quintet ÷ 5 → BPM (0.2-BPM res); 0 = idle */
         };
         this.dispatch('edgeCoherence', detail);
       }
