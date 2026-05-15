@@ -45,6 +45,12 @@ CONFIG_BT_LE_MAX_CONNECTIONS=3
 # on, the random static address is generated once on first boot and
 # reused on every boot for the life of the device (or until NVS wipe).
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# BLE 5.0 features + 2M PHY. The committed sdkconfig already enables
+# LE_2M_PHY at the controller level; pin it here so a fresh regen
+# doesn't silently revert. ble_gap_set_prefered_le_phy() in
+# transport_ble.c requests 2M on each connection after connect.
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY=y
 
 # ---------------- BLE radio TX power ----------------
 # +15 dBm — two steps above IDF's ESP32-C6 default (P9 / +9 dBm). +6 dB
