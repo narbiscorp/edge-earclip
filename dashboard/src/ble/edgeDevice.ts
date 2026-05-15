@@ -567,6 +567,23 @@ export class EdgeDevice extends EventTarget {
           mv,
           charging,
         } as RelayedBattery);
+      } else if (type === 0xF9 && bytes.length >= 5) {
+        /* 0xF9 = structured earclip IBI relay. Payload:
+         *   ibi_ms u16 LE, confidence_x100 u8, flags u8.
+         * Compact (5 B vs ~30 B for the 0xF1 ASCII line) so it survives
+         * marginal-link contention better. The 0xF1 regex parser stays
+         * as a belt-and-suspenders path for older glasses firmware. */
+        const ibi_ms = bytes[1] | (bytes[2] << 8);
+        const confidence_x100 = bytes[3];
+        const flags = bytes[4];
+        if (ibi_ms > 0) {
+          this.dispatch('relayedIbi', {
+            timestamp: ts,
+            ibi_ms,
+            confidence_x100,
+            flags,
+          } as RelayedIbi);
+        }
       }
     } catch (err) {
       this.emitError(err, 'status-parse');
@@ -734,6 +751,18 @@ function decodeStatusFrame(
     /* [type][seq u16][n u8][records...] */
     const n = bytes[3];
     return { kind: 'unknown', summary: `relay diag seq=${dv.getUint16(1, true)} n=${n} (${bytes.length - 1} B)` };
+  }
+  if (type === 0xF8 && bytes.length >= 5) {
+    const mv = dv.getUint16(1, true);
+    const soc = bytes[3];
+    const chg = bytes[4];
+    return { kind: 'unknown', summary: `relay batt soc=${soc}% mv=${mv} chg=${chg}` };
+  }
+  if (type === 0xF9 && bytes.length >= 5) {
+    const ibi = dv.getUint16(1, true);
+    const conf = bytes[3];
+    const flags = bytes[4];
+    return { kind: 'unknown', summary: `relay ibi=${ibi} conf=${conf} flags=0x${flags.toString(16).padStart(2, '0')}` };
   }
 
   return { kind: 'unknown', summary: `type=0x${type.toString(16).padStart(2, '0')} (${bytes.length} B): ${bytesToHex(bytes)}` };
