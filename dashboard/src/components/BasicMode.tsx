@@ -151,7 +151,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             value={respBpm != null ? respBpm.toFixed(2) : '—'}
             unit="BPM"
             colorClass="text-pink-300"
-            sub={pacerBpm > 0 ? `Lens paces at ${pacerBpm} BPM` : (lastEdgeCoh ? 'waiting for resonance' : '')}
+            sub={pacerBpm > 0 ? `Lens paces at ${pacerBpm.toFixed(1)} BPM` : (lastEdgeCoh ? 'waiting for resonance' : '')}
           />
           <MetricCard
             label="Heart rate"
