@@ -22,9 +22,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dashboard
     steps:
       - uses: actions/checkout@v4
 
@@ -34,18 +31,31 @@ jobs:
           cache: 'npm'
           cache-dependency-path: dashboard/package-lock.json
 
-      - run: npm ci
+      - name: Build dashboard
+        working-directory: dashboard
+        run: npm ci && npm run build
 
-      - run: npm run build
-
-      - name: SPA fallback (copy index.html to 404.html)
-        run: cp dist/index.html dist/404.html
+      - name: Assemble site
+        run: |
+          mkdir -p _site/webapp/ota _site/docs
+          # Dashboard: deploy dist files at root; rename index.html → app.html
+          # so the hub index.html can own the root URL.
+          cp -r dashboard/dist/. _site/
+          mv _site/index.html _site/app.html
+          # 404 fallback stays as dashboard SPA so deep-links still resolve.
+          cp _site/app.html _site/404.html
+          # Hub landing page
+          cp index.html _site/index.html
+          # OTA updater
+          cp webapp/ota/index.html _site/webapp/ota/index.html
+          # Protocol doc (served as plain text / raw markdown)
+          cp docs/bluetooth-protocol.md _site/docs/bluetooth-protocol.md
 
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dashboard/dist
+          path: _site
 
   deploy:
     needs: build
