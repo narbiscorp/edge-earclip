@@ -31,6 +31,7 @@ import {
   type RelayedRawPpg,
   type RelayedDiagnostic,
   type CentralRelayState,
+  type LinkQuality,
   type PpgProgram,
 } from '../ble/edgeDevice';
 import { edgeCoherenceBuffers } from './metricsBuffer';
@@ -109,6 +110,9 @@ export interface DashboardState {
        * not on Path-B firmware; true = central reached READY (subs in
        * place); false = central not connected. */
       earclipRelay: boolean | null;
+      /** Latest 0xFA link-quality snapshot from the glasses, or null if
+       * none received yet (older glasses firmware doesn't emit it). */
+      linkQuality: LinkQuality | null;
     };
   };
   recording: {
@@ -291,7 +295,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null, phase: null, reconnectAttempt: null },
     polar:  { state: 'disconnected', deviceName: null },
-    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null },
+    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null, linkQuality: null },
   },
   recording: {
     active: false,
@@ -894,6 +898,7 @@ edgeDevice.addEventListener('connected', (e) => {
         deviceName: name,
         lastFrameAt: s.connection.edge.lastFrameAt,
         earclipRelay: null,  /* unknown until first 0xF6 frame */
+        linkQuality: null,   /* unknown until first 0xFA frame */
       },
     },
   }));
@@ -952,6 +957,7 @@ edgeDevice.addEventListener('disconnected', (e) => {
         deviceName: edgeDevice.status === 'reconnecting' ? s.connection.edge.deviceName : null,
         lastFrameAt: edgeDevice.status === 'reconnecting' ? s.connection.edge.lastFrameAt : null,
         earclipRelay: edgeDevice.status === 'reconnecting' ? s.connection.edge.earclipRelay : null,
+        linkQuality:  edgeDevice.status === 'reconnecting' ? s.connection.edge.linkQuality  : null,
       },
     },
     /* Drop the cached firmware-coherence frame on a real disconnect
@@ -1128,6 +1134,19 @@ edgeDevice.addEventListener('relayedBattery', (e) => {
           charging: !!b.charging,
         },
       },
+    },
+  }));
+});
+
+/* 0xFA link-quality snapshot from the glasses (~1 Hz). Drives the
+ * RSSI-bars/tooltip readout in ConnectionPanel. Web Bluetooth doesn't
+ * expose RSSI to JS, so this firmware-emitted frame is the only source. */
+edgeDevice.addEventListener('linkQuality', (e) => {
+  const lq = (e as CustomEvent<LinkQuality>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: { ...s.connection.edge, linkQuality: lq },
     },
   }));
 });
