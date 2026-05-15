@@ -69,6 +69,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const polarConn = useDashboardStore((s) => s.connection.polar.state);
   const edgeConn = useDashboardStore((s) => s.connection.edge.state);
   const narbisConn = useDashboardStore((s) => s.connection.narbis.state);
+  const earclipRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
   const lastBeat = useDashboardStore((s) => s.lastBeat);
   const lastPolarBeat = useDashboardStore((s) => s.lastPolarBeat);
   const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
@@ -87,7 +88,23 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const pacerBpm = lastEdgeCoh?.pacerBpm ?? 0;
 
   const edgeConnected = edgeConn === 'connected';
-  const hrConnected = polarConn === 'connected' || narbisConn === 'connected';
+  /* Three ways to have an HR source feed Basic-mode metrics:
+   *   1. Polar H10 paired directly to the dashboard
+   *   2. Earclip paired directly to the dashboard
+   *   3. Earclip linked to the glasses (Path B relay); the dashboard sees
+   *      beats via 0xF9 / 0xF1 on the Edge link, with `earclipRelay=true`
+   *      from the 0xF6 link-state frame
+   * The original check only counted (1) and (2), so the Basic/Mobile
+   * "Heart rate" card said "no source" even with a happy relay link. */
+  const hrConnected =
+    polarConn === 'connected' ||
+    narbisConn === 'connected' ||
+    (edgeConnected && earclipRelay === true);
+  const hrLabel =
+    hrSource === 'h10' ? 'Polar H10'
+    : narbisConn === 'connected' ? 'Earclip (direct)'
+    : earclipRelay === true ? 'Earclip (via Edge)'
+    : 'Earclip';
 
   /* Local settings state — mirrored to the firmware via edgeDevice setters.
    * No read-back path from the glasses, so these default to reasonable
@@ -164,7 +181,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             value={hrBpm != null ? `${hrBpm}` : '—'}
             unit="BPM"
             colorClass="text-rose-300"
-            sub={hrConnected ? (hrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
+            sub={hrConnected ? hrLabel : 'no source'}
           />
         </div>
 
