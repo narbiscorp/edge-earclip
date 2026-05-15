@@ -158,6 +158,16 @@ export interface LinkQuality {
   dashPhy: number | null;
 }
 
+/** LED state snapshot from bytes [20–21] of the 0xF3 health frame (firmware v4.15+). */
+export interface LedHealth {
+  timestamp: number;
+  /** Current LED_MODE_* enum value: 0=strobe 1=static 2=breathe 3=breathe+strobe
+   *  4=pulse 5=coh·breathe 6=coh·b+strobe 7=coh·lens */
+  mode: number;
+  /** Effective PWM duty 0–255 (divide by 2.55 for percent). */
+  duty: number;
+}
+
 const EDGE_SVC_UUID    = '000000ff-0000-1000-8000-00805f9b34fb';
 const EDGE_CTRL_UUID   = '0000ff01-0000-1000-8000-00805f9b34fb';
 const EDGE_STATUS_UUID = '0000ff03-0000-1000-8000-00805f9b34fb';
@@ -567,6 +577,15 @@ export class EdgeDevice extends EventTarget {
         this.dispatch('edgeCoherence', detail);
       }
 
+      /* 0xF3 health frame — LED state snapshot at bytes [20–21] (firmware v4.15+). */
+      if (type === 0xF3 && bytes.length >= 22) {
+        this.dispatch('ledHealth', {
+          timestamp: ts,
+          mode: bytes[20],
+          duty: bytes[21],
+        } as LedHealth);
+      }
+
       /* Path B Phase 1/2: binary relay frames. The store deserializes the
        * config and feeds the raw batch into the same processRawBatch the
        * direct path uses. Strip the 1-byte type prefix here so consumers
@@ -749,24 +768,28 @@ function decodeStatusFrame(
   }
 
   if (type === 0xF3 && bytes.length >= 20) {
-    // Health / runtime telemetry frame (firmware v4.14.36+):
-    //   [1]      counter (u8)
-    //   [5-8]    free heap bytes (u32 LE)
-    //   [9-12]   min free heap (u32 LE)
-    //   [13-16]  stack high-water (u32 LE) — bytes free, lower = closer to overflow
-    //   [17-18]  max scheduling jitter in µs over the last window (u16 LE)
-    //   [19]     count of jitter ticks that exceeded threshold (u8)
-    const counter   = dv.getUint8(1);
+    // Health / runtime telemetry frame (firmware v4.15+), 22 bytes:
+    //   [1-4]    uptime_s            u32 LE
+    //   [5-8]    heap_free           u32 LE
+    //   [9-12]   heap_min            u32 LE
+    //   [13-14]  ppg_stack_hwm       u16 LE
+    //   [15-16]  ble_send_errors     u16 LE
+    //   [17-18]  jitter_max_us       u16 LE
+    //   [19]     jitter_ticks_over   u8
+    //   [20]     led_mode            u8  (LED_MODE_* enum)
+    //   [21]     led_duty            u8  (0–255 = 0–100% PWM)
+    const uptimeS   = dv.getUint32(1,  true);
     const heapFree  = dv.getUint32(5,  true);
     const heapMin   = dv.getUint32(9,  true);
-    const stackFree = dv.getUint32(13, true);
+    const stackHwm  = dv.getUint16(13, true);
+    const bleErrs   = dv.getUint16(15, true);
     const jitterMax = dv.getUint16(17, true);
     const jitterTicks = dv.getUint8(19);
     return {
       kind: 'unknown',
       summary:
-        `health #${counter}: heap=${heapFree} min=${heapMin} stack=${stackFree} ` +
-        `jitter_max=${jitterMax}us ticks_over=${jitterTicks}`,
+        `health t=${uptimeS}s heap=${heapFree} min=${heapMin} stack=${stackHwm} ` +
+        `ble_err=${bleErrs} jitter_max=${jitterMax}us ticks_over=${jitterTicks}`,
     };
   }
 

@@ -32,6 +32,7 @@ import {
   type RelayedDiagnostic,
   type CentralRelayState,
   type LinkQuality,
+  type LedHealth,
   type PpgProgram,
 } from '../ble/edgeDevice';
 import { edgeCoherenceBuffers } from './metricsBuffer';
@@ -113,6 +114,9 @@ export interface DashboardState {
       /** Latest 0xFA link-quality snapshot from the glasses, or null if
        * none received yet (older glasses firmware doesn't emit it). */
       linkQuality: LinkQuality | null;
+      /** Latest LED state from bytes [20–21] of the 0xF3 health frame, or null
+       * if none received yet (firmware < v4.15 didn't emit 0xF3 at all). */
+      ledHealth: LedHealth | null;
     };
   };
   recording: {
@@ -295,7 +299,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null, phase: null, reconnectAttempt: null },
     polar:  { state: 'disconnected', deviceName: null },
-    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null, linkQuality: null },
+    edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null, linkQuality: null, ledHealth: null },
   },
   recording: {
     active: false,
@@ -899,6 +903,7 @@ edgeDevice.addEventListener('connected', (e) => {
         lastFrameAt: s.connection.edge.lastFrameAt,
         earclipRelay: null,  /* unknown until first 0xF6 frame */
         linkQuality: null,   /* unknown until first 0xFA frame */
+        ledHealth: null,     /* unknown until first 0xF3 frame */
       },
     },
   }));
@@ -958,6 +963,7 @@ edgeDevice.addEventListener('disconnected', (e) => {
         lastFrameAt: edgeDevice.status === 'reconnecting' ? s.connection.edge.lastFrameAt : null,
         earclipRelay: edgeDevice.status === 'reconnecting' ? s.connection.edge.earclipRelay : null,
         linkQuality:  edgeDevice.status === 'reconnecting' ? s.connection.edge.linkQuality  : null,
+        ledHealth:    edgeDevice.status === 'reconnecting' ? s.connection.edge.ledHealth    : null,
       },
     },
     /* Drop the cached firmware-coherence frame on a real disconnect
@@ -1147,6 +1153,18 @@ edgeDevice.addEventListener('linkQuality', (e) => {
     connection: {
       ...s.connection,
       edge: { ...s.connection.edge, linkQuality: lq },
+    },
+  }));
+});
+
+/* 0xF3 health frame bytes [20–21] (~1 Hz). Surfaces LED mode + duty in the
+ * header so the app can confirm brightness commands are landing. */
+edgeDevice.addEventListener('ledHealth', (e) => {
+  const lh = (e as CustomEvent<LedHealth>).detail;
+  setState((s) => ({
+    connection: {
+      ...s.connection,
+      edge: { ...s.connection.edge, ledHealth: lh },
     },
   }));
 });
