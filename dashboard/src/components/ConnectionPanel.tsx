@@ -103,6 +103,10 @@ export default function ConnectionPanel() {
   const dashboardRssi = edge.linkQuality?.dashboardRssi ?? null;
   const earclipBars  = rssiBars(earclipRssi);
   const dashboardBars = rssiBars(dashboardRssi);
+  /* PHY badge: '· 2M' when 2M negotiated, '· 1M' on 1M, '' when unknown
+   * (no 0xFA frame yet or older firmware that sends only 7 bytes). */
+  const ecPhyTag   = edge.linkQuality?.ecPhy   === 2 ? ' · 2M' : edge.linkQuality?.ecPhy   === 1 ? ' · 1M' : '';
+  const dashPhyTag = edge.linkQuality?.dashPhy  === 2 ? ' · 2M' : edge.linkQuality?.dashPhy  === 1 ? ' · 1M' : '';
 
   const narbisLabel =
     narbis.state === 'connected'
@@ -121,9 +125,7 @@ export default function ConnectionPanel() {
   /* Append earclip-side RSSI bars when the relay link is up. The glasses
    * is the only thing that knows the earclip RSSI — Web Bluetooth doesn't
    * expose it — so this depends on a 0xFA frame having arrived. */
-  const narbisLabelWithRssi = earclipBars
-    ? `${narbisLabel} ${earclipBars}`
-    : narbisLabel;
+  const narbisLabelWithRssi = `${earclipBars ? `${narbisLabel} ${earclipBars}` : narbisLabel}${ecPhyTag}`;
 
   /* Sub-status line under the pill: shows the current phase of the
    * connect / reconnect handshake so the user knows whether the dashboard
@@ -146,9 +148,7 @@ export default function ConnectionPanel() {
             : 'disconnected';
   /* Append dashboard-side RSSI bars when the glasses is connected. The
    * glasses measures this from its peripheral side and ships it in 0xFA. */
-  const edgeLabelWithRssi = dashboardBars
-    ? `${edgeLabel} ${dashboardBars}`
-    : edgeLabel;
+  const edgeLabelWithRssi = `${dashboardBars ? `${edgeLabel} ${dashboardBars}` : edgeLabel}${dashPhyTag}`;
 
   /* Path B: glasses-to-earclip relay status. Only meaningful when the
    * dashboard is connected to the glasses. null = unknown (still

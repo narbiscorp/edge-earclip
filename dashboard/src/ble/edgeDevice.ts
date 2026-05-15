@@ -136,10 +136,12 @@ export interface RelayedDiagnostic {
  * peripheral side toward the dashboard) plus current MTU and a running
  * notify-drop counter. Web Bluetooth doesn't expose RSSI to JS, so this
  * frame is the only path to surface link health in the dashboard UI.
- * Wire layout:
+ * Wire layout (9 bytes, firmware ≥ v4.15.3-link-quality):
  *   [type=0xFA][earclip_rssi i8][dashboard_rssi i8][mtu u16 LE][drops u16 LE]
+ *              [ec_phy u8][dash_phy u8]
  * RSSI bytes are signed; a value of 127 (0x7F) means "unknown / no
- * connection on that side" (e.g. earclip relay down). */
+ * connection on that side" (e.g. earclip relay down).
+ * PHY values: 1=1M, 2=2M. null when byte not present (older firmware). */
 export interface LinkQuality {
   timestamp: number;
   /** dBm of the glasses↔earclip link as measured by the glasses central. null if relay down. */
@@ -150,6 +152,10 @@ export interface LinkQuality {
   mtu: number;
   /** Running count of failed nimble_notify() calls since boot. */
   drops: number;
+  /** Negotiated PHY on the glasses↔earclip link (1=1M, 2=2M). null on older firmware. */
+  ecPhy: number | null;
+  /** Negotiated PHY on the glasses↔dashboard link (1=1M, 2=2M). null on older firmware. */
+  dashPhy: number | null;
 }
 
 const EDGE_SVC_UUID    = '000000ff-0000-1000-8000-00805f9b34fb';
@@ -611,12 +617,16 @@ export class EdgeDevice extends EventTarget {
         const dashRaw = dv.getInt8(2);
         const mtu = bytes[3] | (bytes[4] << 8);
         const drops = bytes[5] | (bytes[6] << 8);
+        const ecPhy   = bytes.length >= 9 ? bytes[7] : null;
+        const dashPhy = bytes.length >= 9 ? bytes[8] : null;
         this.dispatch('linkQuality', {
           timestamp: ts,
           earclipRssi:   ecRaw   === 0x7F ? null : ecRaw,
           dashboardRssi: dashRaw === 0x7F ? null : dashRaw,
           mtu,
           drops,
+          ecPhy,
+          dashPhy,
         } as LinkQuality);
       }
     } catch (err) {
@@ -805,7 +815,8 @@ function decodeStatusFrame(
     const drops = dv.getUint16(5, true);
     const ecStr   = ec   === 0x7F ? '—' : `${ec}`;
     const dashStr = dash === 0x7F ? '—' : `${dash}`;
-    return { kind: 'unknown', summary: `link rssi ec=${ecStr} dash=${dashStr} dBm mtu=${mtu} drops=${drops}` };
+    const phyStr  = bytes.length >= 9 ? ` ec_phy=${bytes[7]} dash_phy=${bytes[8]}` : '';
+    return { kind: 'unknown', summary: `link rssi ec=${ecStr} dash=${dashStr} dBm mtu=${mtu} drops=${drops}${phyStr}` };
   }
 
   return { kind: 'unknown', summary: `type=0x${type.toString(16).padStart(2, '0')} (${bytes.length} B): ${bytesToHex(bytes)}` };
