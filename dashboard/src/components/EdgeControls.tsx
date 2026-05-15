@@ -43,7 +43,7 @@ export default function EdgeControls() {
   // Local UI state — these mirror what we last pushed to the firmware.
   // We don't have a read-back path for most, so they default sensibly
   // and the user adjusts. Persisted-on-firmware values survive reboot.
-  const [standalone, setStandalone] = useState<'static' | 'strobe' | 'breathe' | null>(null);
+  const [standalone, setStandalone] = useState<'static' | 'strobe' | 'breathe' | 'breathe+strobe' | null>(null);
   const [staticDuty, setStaticDuty] = useState(50);
   const [difficulty, setDifficulty] = useState<CoherenceDifficulty>('easy');
   const [lensLimit, setLensLimit]   = useState(100);
@@ -156,14 +156,12 @@ export default function EdgeControls() {
 
       {/* Standalone modes — work with NO sensor. Useful for exercising
           the lens / strobe driver without a heart-rate source. Each
-          replaces whatever training program was active.
-          NOTE: Pulse-on-beat (0xB6) is NOT here — it requires a live
-          beat source and belongs under Training Programs (Heartbeat). */}
+          replaces whatever training program was active. */}
       <Section
         label="Standalone Modes (no sensor needed)"
-        hint="Direct lens driver control. Doesn't read PPG / IBI. Use these for testing the optics without the earclip."
+        hint="Direct lens driver control. No PPG / IBI read. Strobe and Breathe+Strobe also use the Strobe Frequency / Duty sliders below."
       >
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-2 gap-1">
           <button
             disabled={!connected}
             onClick={guard('standalone strobe', async () => {
@@ -185,6 +183,17 @@ export default function EdgeControls() {
             className={btnClass(standalone === 'breathe')}
           >
             Breathe (0xB0)
+          </button>
+          <button
+            disabled={!connected}
+            onClick={guard('standalone breathe+strobe', async () => {
+              setStandalone('breathe+strobe');
+              void setActiveProgram(null);
+              await edgeDevice.setProgram(4);
+            })}
+            className={btnClass(standalone === 'breathe+strobe')}
+          >
+            Breathe+Strobe (0xB7)
           </button>
           <button
             disabled={!connected}
@@ -211,11 +220,6 @@ export default function EdgeControls() {
             />
           </div>
         )}
-        <div className="text-[10px] text-slate-500 mt-1">
-          Strobe and Breathe also use the Strobe Frequency / Strobe Duty
-          and Breathing Pacer sliders below. Static uses its own duty
-          slider above.
-        </div>
       </Section>
 
       {/* Difficulty */}
