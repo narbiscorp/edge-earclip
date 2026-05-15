@@ -22,8 +22,16 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    paths:
+      - 'firmware/**'
+      - 'protocol/**'
+      - '.github/workflows/build-release-firmware.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'firmware/**'
+      - 'protocol/**'
+      - '.github/workflows/build-release-firmware.yml'
   workflow_dispatch:
 
 permissions:
