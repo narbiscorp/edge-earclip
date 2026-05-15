@@ -27,7 +27,7 @@ export const DEVICE_CONFIG = {
     label: "Edge glasses",
     scanFilters: [{ name: "Smart_Glasses" }, { name: "Narbis_Edge" }],
     optionalServices: [0x00ff],
-    projectNamePrefix: "edge",
+    projectNamePrefix: "ESP32_Ble",
     chipId: 0x0000,
     chipLabel: "ESP32",
     releaseRepo: { owner: "narbiscorp", repo: "edge-firmware" },
