@@ -226,6 +226,12 @@ export class EdgeDevice extends EventTarget {
   private intentionalDisconnect = false;
   private _status: EdgeStatus = 'disconnected';
   private _deviceName: string | null = null;
+  /* Timestamp (ms) of the last 0xF9 binary IBI relay frame received.
+   * Used to suppress the 0xF1 ASCII IBI duplicate: new glasses firmware
+   * sends both for each beat; 0xF9 is authoritative, 0xF1 is fallback
+   * for older firmware that doesn't emit 0xF9. Reset on disconnect so a
+   * reconnect to old firmware re-enables the 0xF1 path. */
+  private lastF9IbiTs = 0;
 
   get status(): EdgeStatus { return this._status; }
   get deviceName(): string | null { return this._deviceName; }
@@ -528,8 +534,13 @@ export class EdgeDevice extends EventTarget {
        * fire dedicated relay events. This lets the dashboard render
        * beat/battery charts when it's only connected to the glasses. */
       if (kind === 'log') {
-        const ibi = parseRelayedIbi(summary, ts);
-        if (ibi) this.dispatch('relayedIbi', ibi);
+        /* Only parse IBI from the 0xF1 ASCII line when no 0xF9 binary
+         * frame has been seen recently. New glasses firmware sends both
+         * per beat; 0xF9 is authoritative. 3 s window covers HR ≥ 20 BPM. */
+        if (ts - this.lastF9IbiTs > 3000) {
+          const ibi = parseRelayedIbi(summary, ts);
+          if (ibi) this.dispatch('relayedIbi', ibi);
+        }
         const batt = parseRelayedBattery(summary, ts);
         if (batt) this.dispatch('relayedBattery', batt);
       }
@@ -604,6 +615,7 @@ export class EdgeDevice extends EventTarget {
         const confidence_x100 = bytes[3];
         const flags = bytes[4];
         if (ibi_ms > 0) {
+          this.lastF9IbiTs = ts;  /* mark 0xF9 seen; suppresses 0xF1 duplicate */
           this.dispatch('relayedIbi', {
             timestamp: ts,
             ibi_ms,
@@ -635,6 +647,7 @@ export class EdgeDevice extends EventTarget {
   };
 
   private cleanupConnection(opts: { keepDevice?: boolean } = {}): void {
+    this.lastF9IbiTs = 0;
     for (const h of this.listeners) {
       h.target.removeEventListener(h.type, h.listener);
     }
