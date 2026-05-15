@@ -6,6 +6,7 @@ import {
   type PpgProgram,
 } from '../ble/edgeDevice';
 import BeatChart from './BeatChart';
+import SignalChart from './SignalChart';
 
 /* Friendly labels for the four PPG programs the firmware ships. The
  * expert UI shows them as "Prog 1 / 2 / 3 / 4"; a lay user is going to
@@ -58,7 +59,13 @@ const STROBE_PRESETS: Array<{ label: string; band: string; hz: number }> = [
   { label: 'Gamma+',          band: 'high-Gamma', hz: 40.0 },
 ];
 
-export default function BasicMode() {
+interface BasicModeProps {
+  /** Forces a phone-shaped single-column layout with bigger touch targets,
+   *  regardless of viewport width. Toggled by the "Mobile" header button. */
+  mobile?: boolean;
+}
+
+export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const polarConn = useDashboardStore((s) => s.connection.polar.state);
   const edgeConn = useDashboardStore((s) => s.connection.edge.state);
   const narbisConn = useDashboardStore((s) => s.connection.narbis.state);
@@ -107,9 +114,17 @@ export default function BasicMode() {
     }
   };
 
+  /* Mobile mode forces a single-column layout by clamping the container
+   * below the Tailwind `sm:` breakpoint (640 px) — every `sm:grid-cols-N`
+   * inside this view collapses to one column on its own, no class-rewrite
+   * needed. Padding/gap also shrink so the page feels native on a phone. */
+  const containerClass = mobile
+    ? 'max-w-md mx-auto p-3 space-y-4'
+    : 'max-w-3xl mx-auto p-6 space-y-6';
+
   return (
     <div className="flex-1 overflow-auto bg-slate-950">
-      <div className="max-w-3xl mx-auto p-6 space-y-6">
+      <div className={containerClass}>
         {/* Connection hint */}
         {(!edgeConnected || !hrConnected) && (
           <div className="rounded-lg border border-amber-700/50 bg-amber-900/20 p-4">
@@ -147,10 +162,17 @@ export default function BasicMode() {
           />
         </div>
 
-        {/* Live glasses visual + IBI tachogram */}
+        {/* Live glasses visual + raw PPG + IBI tachogram. Raw PPG sits
+            above the IBI tachogram so the user can see the underlying
+            signal that feeds beat detection at a glance. Both charts are
+            in compact mode — no window / smooth / shape pickers, no
+            pan/zoom drag (useLivePlot locks fixedrange on every axis). */}
         <Card title="Live view">
           <div className="flex justify-center">
             <GlassesVisual />
+          </div>
+          <div className="rounded border border-slate-800 overflow-hidden">
+            <SignalChart compact />
           </div>
           <div className="rounded border border-slate-800 overflow-hidden">
             <BeatChart compact defaultSmoothN={7} defaultShape="spline" />
