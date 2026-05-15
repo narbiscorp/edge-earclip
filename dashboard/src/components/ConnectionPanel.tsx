@@ -246,11 +246,11 @@ export default function ConnectionPanel() {
         {ledHealth && edge.state === 'connected' ? (
           <span
             className="px-2 py-1 rounded text-[11px] font-medium bg-slate-700 text-slate-200"
-            title={`LED state from 0xF3 health frame · mode=${ledHealth.mode} duty=${ledHealth.duty}/255`}
+            title={`LED state from 0xF3 health frame · mode=${ledHealth.mode} duty=${ledHealth.duty}%`}
           >
             {LED_MODE_NAMES[ledHealth.mode] ?? `mode${ledHealth.mode}`}
             {' · '}
-            {Math.round(ledHealth.duty / 2.55)}%
+            {ledHealth.duty}%
           </span>
         ) : null}
         {edge.state === 'disconnected' ? (

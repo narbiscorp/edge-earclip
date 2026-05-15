@@ -35,7 +35,7 @@ export default function EdgeControls() {
   // Local UI state — these mirror what we last pushed to the firmware.
   // We don't have a read-back path for most, so they default sensibly
   // and the user adjusts. Persisted-on-firmware values survive reboot.
-  const [standalone, setStandalone] = useState<'static' | 'strobe' | 'breathe' | 'pulse' | null>(null);
+  const [standalone, setStandalone] = useState<'static' | 'strobe' | 'breathe' | null>(null);
   const [staticDuty, setStaticDuty] = useState(50);
   const [difficulty, setDifficulty] = useState<CoherenceDifficulty>('easy');
   const [lensLimit, setLensLimit]   = useState(100);
@@ -103,15 +103,20 @@ export default function EdgeControls() {
         </div>
       </Section>
 
-      {/* Sensor-training programs — require an earclip paired with the
-          glasses (or the on-glasses ADC pin). Without a beat source the
-          glasses just sit in training mode and produce no lens output. */}
+      {/* Sensor-training programs — require earclip OR Polar H10 connected.
+          Without a live beat source the glasses enter the mode but the lens
+          stays inactive (no IBI → no coherence → no output). */}
       <Section
-        label="Training Programs (sensor mode, 0xB7)"
-        hint="Requires a paired earclip OR the internal ADC sensor enabled. Each program drives the lens off live IBI / coherence."
+        label="Training Programs (sensor required, 0xB7)"
+        hint="Requires earclip OR Polar H10. Without a live beat source the lens stays inactive. Each program drives the lens off real-time IBI / coherence."
       >
-        <div className="grid grid-cols-4 gap-1">
-          {([1, 2, 3, 4] as PpgProgram[]).map((p) => (
+        <div className="grid grid-cols-2 gap-1">
+          {([
+            [1, 'Heartbeat'],
+            [2, 'Coh Breathe'],
+            [3, 'Coh Lens'],
+            [4, 'Breathe+Strobe'],
+          ] as [PpgProgram, string][]).map(([p, label]) => (
             <button
               key={p}
               disabled={!connected}
@@ -121,23 +126,26 @@ export default function EdgeControls() {
               })}
               className={btnClass(program === p)}
             >
-              Prog {p}
+              {label}
             </button>
           ))}
         </div>
         <div className="text-[10px] text-slate-500 mt-1">
-          1=heartbeat • 2=coh breathe • 3=coh lens • 4=coh breathe+strobe
+          Heartbeat=pulse-on-beat • Coh Breathe=6 BPM coherence-paced •
+          Coh Lens=direct coherence→opacity • Breathe+Strobe=coh breathe with strobe
         </div>
       </Section>
 
       {/* Standalone modes — work with NO sensor. Useful for exercising
           the lens / strobe driver without a heart-rate source. Each
-          replaces whatever training program was active. */}
+          replaces whatever training program was active.
+          NOTE: Pulse-on-beat (0xB6) is NOT here — it requires a live
+          beat source and belongs under Training Programs (Heartbeat). */}
       <Section
         label="Standalone Modes (no sensor needed)"
         hint="Direct lens driver control. Doesn't read PPG / IBI. Use these for testing the optics without the earclip."
       >
-        <div className="grid grid-cols-2 gap-1">
+        <div className="grid grid-cols-3 gap-1">
           <button
             disabled={!connected}
             onClick={guard('standalone strobe', async () => {
@@ -159,17 +167,6 @@ export default function EdgeControls() {
             className={btnClass(standalone === 'breathe')}
           >
             Breathe (0xB0)
-          </button>
-          <button
-            disabled={!connected}
-            onClick={guard('standalone pulse', async () => {
-              setStandalone('pulse');
-              void setActiveProgram(null);
-              await edgeDevice.setStandalonePulseOnBeat();
-            })}
-            className={btnClass(standalone === 'pulse')}
-          >
-            Pulse on beat (0xB6)
           </button>
           <button
             disabled={!connected}
