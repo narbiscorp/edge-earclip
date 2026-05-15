@@ -20,7 +20,7 @@
 >
 > **Two valid integration patterns** for an iOS app:
 > 1. **Direct, two-connection** — connect to both the earclip and the Edge separately. Best if you want raw earclip data with no extra hop.
-> 2. **Single-connection via Edge** — connect only to the Edge; receive relayed earclip IBI/config/raw/diagnostics on `0xFF03` frames `0xF4`–`0xF7`. Simpler from a CoreBluetooth state-management standpoint.
+> 2. **Single-connection via Edge** — connect only to the Edge; receive relayed earclip IBI/battery/config/raw/diagnostics on `0xFF03` frames `0xF4`–`0xFA`. Simpler from a CoreBluetooth state-management standpoint.
 
 ---
 
@@ -645,14 +645,17 @@ The Edge multiplexes several packet types onto the same characteristic, distingu
 | `0xF0` | every 500 ms | 11 B | Raw ADC stats (min / max / mean of last window) |
 | `0xF1` | on demand | 1 + N B (N ≤ 48) | Firmware log strings (printf output) |
 | `0xF2` | every 1000 ms | 18 B | Coherence packet (HRV bands + score) |
-| `0xF3` | every 500 ms | 20 B | Health telemetry (uptime, heap, jitter, errors) |
+| `0xF3` | every 1000 ms | 22 B | Health telemetry (uptime, heap, jitter, errors, LED state) — see §4.4.4 |
 | **`0xF4`** 🆕 | event-driven | 1 + 50 B | Relayed earclip CONFIG payload — see §4.4.5 |
 | **`0xF5`** 🆕 | event-driven | 1 + variable | Relayed earclip RAW_PPG batch — see §4.4.6 |
 | **`0xF6`** 🆕 | on connect / disconnect / 30 s | 2 B | Earclip relay link state — see §4.4.7 |
 | **`0xF7`** 🆕 | event-driven | 1 + variable | Relayed earclip diagnostics — see §4.4.8 |
+| **`0xF8`** 🆕 | event-driven | 5 B | Relayed earclip battery (binary) — see §4.4.9 |
+| **`0xF9`** 🆕 | event-driven (~1 Hz per beat) | 5 B | Relayed earclip IBI (binary) — see §4.4.10 |
+| **`0xFA`** 🆕 | every 1000 ms | 7 B | Link-quality telemetry (RSSI, MTU, drops) — see §4.4.11 |
 | `0x01`–`0x08` | event-driven | 3–7 B | OTA status — see §6 |
 
-Always subscribe to `0xFF03` before sending any OTA opcode, otherwise you'll miss the READY / PAGE_CRC / ERROR responses you need to drive the protocol. The relay frames `0xF4`–`0xF7` are also delivered on this same characteristic, so a single subscription covers everything.
+Always subscribe to `0xFF03` before sending any OTA opcode, otherwise you'll miss the READY / PAGE_CRC / ERROR responses you need to drive the protocol. The relay frames `0xF4`–`0xFA` are also delivered on this same characteristic, so a single subscription covers everything.
 
 #### 4.4.1 ADC stats (`0xF0`) — 11 B
 
@@ -695,7 +698,7 @@ Useful for debugging. The firmware emits a hello on subscribe, a heartbeat every
 
 The Edge derives this from earclip beats it received over ESP-NOW, so this packet is meaningful only when an earclip is paired and emitting. If `n_ibis_used == 0`, no useful HRV analysis yet.
 
-#### 4.4.4 Health telemetry (`0xF3`) — 20 B
+#### 4.4.4 Health telemetry (`0xF3`) — 22 B
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -707,8 +710,10 @@ The Edge derives this from earclip beats it received over ESP-NOW, so this packe
 | 15 | 2 | `ble_send_errors` | u16 LE; saturates at `0xFFFF` |
 | 17 | 2 | `jitter_max_us` | u16 LE; reset every 5 s |
 | 19 | 1 | `jitter_ticks_over` | u8; reset every 5 s |
+| 20 | 1 | `led_mode` 🆕 | u8 — `LED_MODE_*` enum (0 = off, 1 = static, 2 = strobe, 3 = breathe, 4 = pulse-on-beat, 5 = coherence-lens, 6 = breathe+strobe). Mirror of the lens-driver state machine. |
+| 21 | 1 | `led_duty` 🆕 | u8 — effective PWM duty 0–255 (0–100%). Snapshot of the actual lens output at emit time, not the requested duty. Useful for "is the lens doing what I asked?" overlays. |
 
-A spike in `ble_send_errors` means the iOS side is overwhelming the device — slow your writes.
+A spike in `ble_send_errors` means the iOS side is overwhelming the device — slow your writes. `led_mode` + `led_duty` were added in glasses fw v4.15.4 (PR #28); older firmware emits a 20-byte frame without these two bytes.
 
 #### 4.4.5 Relayed earclip CONFIG (`0xF4`) — 51 B
 
@@ -763,6 +768,70 @@ if data.count == 2 && data[0] == 0xF6 {
 |---|---|---|
 | 0 | 1 | `0xF7` |
 | 1..N | variable | The full earclip diagnostic frame (`[seq:u16, n:u8] then n × [stream_id:u8, len:u8, payload]`) |
+
+#### 4.4.9 Relayed earclip BATTERY (`0xF8`) — 5 B
+
+🆕 **Path B (binary).** Structured battery snapshot. Mirrors the earclip's `narbis_battery_payload_t` ([§3.1.4](#314-battery--b59d3ba1)) with a 1-byte type prefix. Emitted whenever the earclip's BATTERY characteristic notifies — typically every 30 s.
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | `0xF8` | Type byte |
+| 1 | 2 | `mv` | u16 LE — battery voltage, millivolts |
+| 3 | 1 | `soc_pct` | u8 — state of charge, 0–100 |
+| 4 | 1 | `charging` | u8 — 0 = discharging, 1 = charging |
+
+Prefer this over parsing the human-readable `0xF1` log line (`"earclip batt soc=… mv=…"`) — same data, ~6× less air-time, no regex.
+
+#### 4.4.10 Relayed earclip IBI (`0xF9`) — 5 B
+
+🆕 **Path B (binary).** One inter-beat-interval observation, forwarded every time the earclip's IBI characteristic notifies (~1 Hz at resting HR). Mirrors `narbis_ibi_payload_t` ([§3.1.1](#311-ibi--78ef492f)) with a 1-byte type prefix.
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | `0xF9` | Type byte |
+| 1 | 2 | `ibi_ms` | u16 LE — inter-beat interval, milliseconds (300–2000 typ.) |
+| 3 | 1 | `confidence_x100` | u8 — 0–100 → 0.00–1.00 confidence (NCC × Kalman) |
+| 4 | 1 | `flags` | u8 — `NARBIS_BEAT_FLAG_*` bitmask (bit 0 = artifact, see §3.1.1) |
+
+```swift
+case 0xF9:
+    guard data.count >= 5 else { break }
+    let ibiMs = UInt16(data[1]) | (UInt16(data[2]) << 8)
+    let conf  = data[3]                     // 0–100
+    let flags = data[4]                     // bit 0 = artifact
+    if flags & 0x01 == 0 && conf >= 40 {
+        hrvPipeline.pushBeat(ibiMs: ibiMs, confidence: conf)
+    }
+```
+
+Fires unconditionally per detected beat — apply the confidence gate / artifact filter client-side as needed. Confidence threshold is also configurable on the earclip itself via the `sqi_threshold_x100` config field ([§3.6](#36-the-runtime-config-struct)).
+
+#### 4.4.11 Link quality (`0xFA`) — 7 B
+
+🆕 **v4.15.3+.** 1 Hz BLE link-quality snapshot for both hops the Edge participates in. Web Bluetooth doesn't expose RSSI to dashboard JS, so the Edge measures it server-side and ships it up. Use it to drive a "signal strength" UI pill on the iOS / web side.
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | `0xFA` | Type byte |
+| 1 | 1 | `earclip_rssi` | i8 — glasses ↔ earclip link RSSI, dBm. `0x7F` (= 127) sentinel = no link |
+| 2 | 1 | `dashboard_rssi` | i8 — glasses ↔ dashboard link RSSI, dBm. `0x7F` sentinel = no link |
+| 3 | 2 | `mtu` | u16 LE — current ATT MTU on the dashboard link (0 if no link) |
+| 5 | 2 | `drops` | u16 LE — clamped `ble_send_errors`, cumulative notify failures (saturates at `0xFFFF`) |
+
+The dashboard-side RSSI on this frame is the Edge's view of the client — it should always be present when you're receiving the frame. The earclip-side RSSI is `0x7F` whenever the relay link is down (matches `0xF6 linked=0`).
+
+```swift
+case 0xFA:
+    guard data.count >= 7 else { break }
+    let ecRssi   = Int8(bitPattern: data[1])  // i8
+    let dashRssi = Int8(bitPattern: data[2])
+    let mtu      = UInt16(data[3]) | (UInt16(data[4]) << 8)
+    let drops    = UInt16(data[5]) | (UInt16(data[6]) << 8)
+    ui.setEarclipBars(ecRssi == 0x7F ? nil : Int(ecRssi))
+    ui.setEdgeBars(dashRssi == 0x7F ? nil : Int(dashRssi))
+    diagnostics.mtu = mtu
+    diagnostics.notifyDrops = drops
+```
 
 ### 4.5 PPG stream characteristic `0xFF04`
 
@@ -861,9 +930,19 @@ Detect by reading the type byte; both share characteristic `0xFF04`.
 
 **Pairing.** First boot or after a `0xC1` (or 5 magnet-taps), the Edge scans generally for the earclip's NARBIS service UUID, picks the strongest hit, and stores the MAC in NVS. Subsequent boots do a fast directed scan for that MAC (5 s), falling back to general scan after two misses.
 
-**What the Edge subscribes to.** When linked, the Edge keeps live subscriptions to the earclip's IBI, BATTERY, CONFIG, RAW_PPG (if the iOS side enabled it via `0xC4`), and DIAGNOSTICS characteristics. Every notification is relayed to the iOS-facing `0xFF03` with the appropriate type byte (`0xF4`–`0xF7`).
+**What the Edge subscribes to.** When linked, the Edge keeps live subscriptions to the earclip's IBI, BATTERY, CONFIG, RAW_PPG (if the iOS side enabled it via `0xC4`), and DIAGNOSTICS characteristics. Every notification is relayed to the iOS-facing `0xFF03` with the appropriate type byte:
 
-**What stays unrelayed.** The Edge's own coherence pipeline (used to drive the lens animation) consumes the earclip IBI internally — it does **not** forward bare per-beat IBI to iOS. If you want raw IBI, either (a) connect to the earclip directly, or (b) enable raw-PPG relay (`0xC4`) and run your own beat detector on the relayed samples.
+| Earclip characteristic | Relay frame on `0xFF03` |
+|---|---|
+| IBI       | `0xF9` (binary, 5 B — §4.4.10) **and** `0xF1` text log mirror |
+| BATTERY   | `0xF8` (binary, 5 B — §4.4.9) **and** `0xF1` text log mirror |
+| CONFIG    | `0xF4` (§4.4.5) |
+| RAW_PPG   | `0xF5` (§4.4.6) — opt-in via `0xC4` |
+| DIAGNOSTICS | `0xF7` (§4.4.8) |
+
+In addition the Edge emits its own `0xF6` relay-link-state, `0xFA` link-quality, and `0xF3` health frames so the iOS / web client can render connection-strength UI without managing a second BLE link.
+
+**Per-beat IBI is fully relayed (since glasses fw v4.15.2 / PR #25).** Earlier guidance in this doc said the Edge consumed earclip IBI internally without forwarding it; that was true under the original Path B but is no longer the case. Subscribe to `0xFF03`, watch for `0xF9`, and you get every detected beat with confidence + flags. The earclip-direct option (Pattern A below) is now only needed if you want the raw IBI characteristic without the Edge in the path at all (e.g. for timing-sensitive HRV recording during a glasses OTA).
 
 #### iOS integration choice
 
@@ -888,6 +967,21 @@ func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error:
         appState.appendRawPPG(parseRawPPG(payload))
     case 0xF7:  // relayed diagnostics
         break   // ignore unless you're tuning
+    case 0xF8:  // relayed earclip BATTERY (binary, 5 B)
+        guard data.count >= 5 else { break }
+        let mv = UInt16(data[1]) | (UInt16(data[2]) << 8)
+        let soc = data[3], charging = data[4] != 0
+        appState.earclipBattery = (mv: mv, socPct: soc, charging: charging)
+    case 0xF9:  // relayed earclip IBI (binary, 5 B)
+        guard data.count >= 5 else { break }
+        let ibiMs = UInt16(data[1]) | (UInt16(data[2]) << 8)
+        let conf = data[3], flags = data[4]
+        if flags & 0x01 == 0 { hrvPipeline.pushBeat(ibiMs: ibiMs, conf: conf) }
+    case 0xFA:  // link quality (RSSI + MTU + drops)
+        guard data.count >= 7 else { break }
+        let ec = Int8(bitPattern: data[1]), dash = Int8(bitPattern: data[2])
+        ui.setSignalBars(earclip: ec == 0x7F ? nil : Int(ec),
+                         edge:    dash == 0x7F ? nil : Int(dash))
     default:
         // 0xF0/F1/F2/F3 are the Edge's own packets; 0x01-0x08 are OTA.
         break
