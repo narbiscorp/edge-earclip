@@ -46,6 +46,7 @@ import { resetDiagnosticClock, deserializeConfig, parseDiagnostic } from '../ble
 import { StreamBuffer } from './streamBuffer';
 import {
   NARBIS_COH_PARAMS_DEFAULTS,
+  NARBIS_BEAT_FLAG_ARTIFACT,
   type NarbisCoherenceParams,
 } from '../../../protocol/narbis_protocol';
 
@@ -1088,7 +1089,19 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
   const r = (e as CustomEvent<RelayedIbi>).detail;
   if (r.ibi_ms <= 0) return;
 
-  /* Outlier gate — same logic as firmware on_earclip_ibi. */
+  /* Respect earclip's beat_validator: ARTIFACT means IBI was outside the
+   * configured min/max bounds or the delta% continuity check failed. */
+  if (r.flags & NARBIS_BEAT_FLAG_ARTIFACT) return;
+
+  /* Dashboard-side bounds fallback — applied when the earclip hasn't yet
+   * received the updated config (fresh connect, 0xC3 still in flight) and
+   * is therefore using its factory defaults (2000 ms max, 30% delta). */
+  const cfg = useDashboardStore.getState().config;
+  if (cfg != null && (r.ibi_ms < cfg.ibi_min_ms || r.ibi_ms > cfg.ibi_max_ms)) return;
+
+  /* IIR rolling-average outlier gate — catches missed-beat doubles that the
+   * earclip's delta check misses in adaptive/Kalman mode (where the
+   * beat_validator delta check is intentionally disabled). */
   if (relayIbiRollingAvgMs === 0) {
     relayIbiRollingAvgMs = r.ibi_ms;
   } else if (r.ibi_ms > relayIbiRollingAvgMs * (100 + RELAY_IBI_OUTLIER_PCT) / 100) {
