@@ -14,6 +14,8 @@ import BleEventLog from './components/BleEventLog';
 import EdgeControls from './components/EdgeControls';
 import GlassesLog from './components/GlassesLog';
 import BasicMode from './components/BasicMode';
+import CoherenceChart from './components/CoherenceChart';
+import SessionSummaryModal from './components/SessionSummaryModal';
 import { metricsRunner } from './state/metricsRunner';
 import { useRecordingStore } from './state/recording';
 import { useDashboardStore } from './state/store';
@@ -22,6 +24,8 @@ export default function App() {
   const checkForOrphans = useRecordingStore((s) => s.checkForOrphanedSessions);
   const uiMode = useDashboardStore((s) => s.uiMode);
   const setUiMode = useDashboardStore((s) => s.setUiMode);
+  const showSessionSummary = useDashboardStore((s) => s.showSessionSummary);
+  const setShowSessionSummary = useDashboardStore((s) => s.setShowSessionSummary);
 
   useEffect(() => {
     metricsRunner.start();
@@ -83,6 +87,13 @@ export default function App() {
             Expert
           </button>
         </div>
+        <button
+          onClick={() => setShowSessionSummary(true)}
+          className="px-3 py-1 rounded-lg border border-red-700/50 bg-red-900/30 hover:bg-red-800/50 text-xs font-medium text-red-300 shrink-0 transition"
+          title="View training summary for this session"
+        >
+          End Session
+        </button>
         <ConnectionPanel />
       </header>
 
@@ -98,6 +109,7 @@ export default function App() {
               <FilteredChart />
               <BeatChart />
               <MetricsChart />
+              <CoherenceChart />
             </section>
             <aside className="flex flex-col gap-2 p-3 border-l border-slate-800 overflow-auto">
               <EdgeControls />
@@ -115,6 +127,7 @@ export default function App() {
           </footer>
         </>
       )}
+      {showSessionSummary && <SessionSummaryModal />}
     </div>
   );
 }

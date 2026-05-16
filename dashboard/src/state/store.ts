@@ -238,6 +238,11 @@ export interface DashboardState {
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
   setWindowSec: (seconds: number) => void;
+  /** Whether the session-summary modal is open. */
+  showSessionSummary: boolean;
+  setShowSessionSummary: (v: boolean) => void;
+  /** Clear accumulated session beats/coherence and close the summary modal. */
+  clearSession: () => void;
 }
 
 function makeBuffers(): BufferSet {
@@ -252,6 +257,37 @@ function makeBuffers(): BufferSet {
 
 const liveBuffers = makeBuffers();
 const replayBuffers = makeBuffers();
+
+// Session accumulator — module-level mutable arrays avoid GC pressure from
+// spread-cloning on every beat. Consumers call the getters; the modal reads
+// them at open time for a one-shot snapshot.
+const SESSION_BEAT_CAP = 10800; // ~3 h at 60 BPM
+const SESSION_COH_CAP  = 10800; // ~3 h at 1 Hz
+const sessionBeatArray: NarbisBeatEvent[] = [];
+const sessionCohArray: Array<{ ts: number; coh: number }> = [];
+let _sessionStartTs: number | null = null;
+
+export function getSessionBeats(): NarbisBeatEvent[] { return sessionBeatArray; }
+export function getSessionCoherence(): Array<{ ts: number; coh: number }> { return sessionCohArray; }
+export function getSessionStartTs(): number | null { return _sessionStartTs; }
+
+function pushSessionBeat(beat: NarbisBeatEvent): void {
+  if (sessionBeatArray.length >= SESSION_BEAT_CAP) return;
+  sessionBeatArray.push(beat);
+  if (_sessionStartTs === null) _sessionStartTs = beat.timestamp;
+}
+
+function pushSessionCoh(ts: number, coh: number): void {
+  if (sessionCohArray.length < SESSION_COH_CAP) {
+    sessionCohArray.push({ ts, coh });
+  }
+}
+
+function clearSessionArrays(): void {
+  sessionBeatArray.length = 0;
+  sessionCohArray.length = 0;
+  _sessionStartTs = null;
+}
 
 const HR_SOURCE_FOR_GLASSES_KEY = 'hrSourceForGlasses';
 function loadHrSourceForGlasses(): 'earclip' | 'h10' {
@@ -327,6 +363,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   lastPolarBeat: null,
   lastBeatAt: null,
   uiMode: loadUiMode(),
+  showSessionSummary: false,
 
   connectNarbis: async () => {
     set({ lastError: null });
@@ -464,6 +501,11 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
   setWindowSec: (seconds) => set({ windowSec: seconds }),
+  setShowSessionSummary: (v) => set({ showSessionSummary: v }),
+  clearSession: () => {
+    clearSessionArrays();
+    set({ showSessionSummary: false });
+  },
 }));
 
 let bleLogIdCounter = 0;
@@ -625,6 +667,7 @@ function scheduleCounterFlush(): void {
 narbisDevice.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<NarbisBeatEvent>).detail;
   liveBuffers.narbisBeats.push(beat.timestamp, beat);
+  pushSessionBeat(beat);
   pending.beats += 1;
   pending.lastBeat = beat;
   scheduleCounterFlush();
@@ -1062,6 +1105,7 @@ edgeDevice.addEventListener('edgeCoherence', (e) => {
     nIbis: f.nIbis,
     pacerBpm: f.pacerBpm,
   });
+  pushSessionCoh(f.timestamp, f.coh);
   setState({ lastEdgeCoherence: f });
 });
 
@@ -1119,6 +1163,7 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
     timestamp: r.timestamp,
   };
   liveBuffers.narbisBeats.push(beat.timestamp, beat);
+  pushSessionBeat(beat);
   pending.beats += 1;
   setState({ lastBeatAt: beat.timestamp });
   pending.lastBeat = beat;
