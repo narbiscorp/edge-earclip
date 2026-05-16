@@ -14,15 +14,20 @@ interface BeatChartProps {
   /** When true, hides the chart-controls bar in the header. Used by
    * Basic mode where the user shouldn't fiddle with window/smooth/shape. */
   compact?: boolean;
+  /** When provided, overrides the global store windowSec and hides the
+   * window slider. Used by Basic/Mobile mode to lock to 30 s. */
+  windowSec?: number;
 }
 
 export default function BeatChart({
   defaultSmoothN = 0,
   defaultShape = 'spline',
   compact = false,
+  windowSec: windowSecProp,
 }: BeatChartProps = {}) {
-  const windowSec = useDashboardStore((s) => s.windowSec);
+  const storeWindowSec = useDashboardStore((s) => s.windowSec);
   const setWindowSec = useDashboardStore((s) => s.setWindowSec);
+  const windowSec = windowSecProp ?? storeWindowSec;
   /* Live respiration peak from the glasses' 0xF2 coherence packet, in
    * milli-Hz. This is the value that feeds the adaptive-pacer ring on
    * the glasses, so it doubles as a sanity readout: with Programs 2 / 4
@@ -206,7 +211,7 @@ export default function BeatChart({
             </span>
           )}
         </span>
-        {!compact && (
+        {!compact && windowSecProp === undefined && (
           <ChartControls
             windowSec={windowSec}
             onWindowChange={onWindowChange}

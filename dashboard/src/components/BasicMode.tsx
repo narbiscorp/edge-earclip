@@ -6,7 +6,8 @@ import {
   type PpgProgram,
 } from '../ble/edgeDevice';
 import BeatChart from './BeatChart';
-import SignalChart from './SignalChart';
+import FilteredBeatChart from './FilteredBeatChart';
+import CoherenceChart from './CoherenceChart';
 
 /* Friendly labels for the four PPG programs the firmware ships. The
  * expert UI shows them as "Prog 1 / 2 / 3 / 4"; a lay user is going to
@@ -162,21 +163,18 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           />
         </div>
 
-        {/* Live glasses visual + raw PPG + IBI tachogram. Raw PPG sits
-            above the IBI tachogram so the user can see the underlying
-            signal that feeds beat detection at a glance. Both charts are
-            in compact mode — no window / smooth / shape pickers, no
-            pan/zoom drag (useLivePlot locks fixedrange on every axis). */}
+        {/* Live glasses visual + filtered PPG + IBI tachogram + coherence.
+            Filtered signal with peak markers replaces raw PPG — it shows
+            what the beat detector actually sees, with accepted (▲) and
+            rejected (✕) candidates overlaid. Both chart windows are locked
+            to 30 s; the controls bar is hidden in basic/mobile mode. */}
         <Card title="Live view">
           <div className="flex justify-center">
             <GlassesVisual />
           </div>
-          <div className="rounded border border-slate-800 overflow-hidden">
-            <SignalChart compact />
-          </div>
-          <div className="rounded border border-slate-800 overflow-hidden">
-            <BeatChart compact defaultSmoothN={7} defaultShape="spline" />
-          </div>
+          <FilteredBeatChart compact windowSec={30} />
+          <BeatChart compact defaultSmoothN={7} defaultShape="spline" windowSec={30} />
+          <CoherenceChart compact windowSec={30} />
         </Card>
 
         {/* Program selector — the four named cards. */}
