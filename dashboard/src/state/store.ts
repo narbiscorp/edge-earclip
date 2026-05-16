@@ -1077,11 +1077,28 @@ function isEarclipDirect(): boolean {
   return useDashboardStore.getState().connection.narbis.state === 'connected';
 }
 
+/* IIR rolling average for the relayed-IBI outlier gate. Mirrors the firmware's
+ * on_earclip_ibi gate so the dashboard coherence ring sees the same filtered
+ * stream as the firmware's coh_ibi_ring. Reset on earclip relay disconnect. */
+let relayIbiRollingAvgMs = 0;
+const RELAY_IBI_OUTLIER_PCT = 75;  // reject if IBI > avg × 1.75
+
 edgeDevice.addEventListener('relayedIbi', (e) => {
   if (isEarclipDirect()) return;  // direct path already covers this
   const r = (e as CustomEvent<RelayedIbi>).detail;
+  if (r.ibi_ms <= 0) return;
+
+  /* Outlier gate — same logic as firmware on_earclip_ibi. */
+  if (relayIbiRollingAvgMs === 0) {
+    relayIbiRollingAvgMs = r.ibi_ms;
+  } else if (r.ibi_ms > relayIbiRollingAvgMs * (100 + RELAY_IBI_OUTLIER_PCT) / 100) {
+    return;  /* likely missed beat — skip dashboard coherence ring */
+  } else {
+    relayIbiRollingAvgMs = (relayIbiRollingAvgMs * 7 + r.ibi_ms) / 8;
+  }
+
   const beat: NarbisBeatEvent = {
-    bpm: r.ibi_ms > 0 ? Math.round(60000 / r.ibi_ms) : 0,
+    bpm: Math.round(60000 / r.ibi_ms),
     ibi_ms: r.ibi_ms,
     confidence: r.confidence_x100,
     flags: r.flags,
@@ -1155,9 +1172,12 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
           configRefreshInFlight = false;
         });
     }, 2000);
-  } else if (transitionedDown && configRefreshTimer) {
-    clearTimeout(configRefreshTimer);
-    configRefreshTimer = null;
+  } else if (transitionedDown) {
+    relayIbiRollingAvgMs = 0;  /* stale avg would corrupt next relay session */
+    if (configRefreshTimer) {
+      clearTimeout(configRefreshTimer);
+      configRefreshTimer = null;
+    }
   }
 });
 
