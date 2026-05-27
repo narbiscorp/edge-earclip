@@ -77,8 +77,13 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const program = useDashboardStore((s) => s.activeProgram);
   const setActiveProgram = useDashboardStore((s) => s.setActiveProgram);
 
-  /* Derived metrics. Each can be null when its data source isn't reporting. */
-  const hrBpm = hrSource === 'h10'
+  /* Derived metrics. Each can be null when its data source isn't reporting.
+   * effectiveHrSource falls back to H10 for the display when earclip is
+   * absent — hrSourceForGlasses only auto-switches when glasses are connected,
+   * so without glasses it stays 'earclip' even if H10 is the only sensor. */
+  const effectiveHrSource =
+    narbisConn !== 'connected' && polarConn === 'connected' ? 'h10' : hrSource;
+  const hrBpm = effectiveHrSource === 'h10'
     ? (lastPolarBeat?.bpm ?? null)
     : (lastBeat?.bpm ?? null);
   const coh = lastEdgeCoh?.coh ?? null;
@@ -159,7 +164,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             value={hrBpm != null ? `${hrBpm}` : '—'}
             unit="BPM"
             colorClass="text-rose-300"
-            sub={hrConnected ? (hrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
+            sub={hrConnected ? (effectiveHrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
           />
         </div>
 

@@ -960,6 +960,34 @@ polarH10.addEventListener('beatReceived', (e) => {
   if (useDashboardStore.getState().hrSourceForGlasses === 'h10') {
     forwardH10BeatsToGlasses(beat.rrIntervals_ms);
   }
+
+  /* Accumulate H10 beats into the session array so End Session summary
+   * populates when earclip is absent. Gated on earclip being unavailable
+   * (both direct and relay) to avoid double-counting when earclip + H10
+   * are connected simultaneously. Back-calculate per-beat timestamps the
+   * same way BeatChart does: last RR ends at beat.timestamp. */
+  const s = useDashboardStore.getState();
+  const hasEarclipSource =
+    s.connection.narbis.state === 'connected' || s.connection.edge.earclipRelay === true;
+  if (!hasEarclipSource) {
+    const rrs = beat.rrIntervals_ms;
+    let totalMs = 0;
+    for (const rr of rrs) totalMs += rr;
+    let acc = 0;
+    for (const rr of rrs) {
+      if (rr >= H10_RR_MIN_MS && rr <= H10_RR_MAX_MS) {
+        pushSessionBeat({
+          bpm: Math.round(60000 / rr),
+          ibi_ms: rr,
+          confidence: 100,
+          flags: 0,
+          sqi: null,
+          timestamp: beat.timestamp - (totalMs - acc),
+        });
+      }
+      acc += rr;
+    }
+  }
 });
 
 // ---------- Edge glasses ----------
