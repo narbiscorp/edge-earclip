@@ -76,6 +76,7 @@ class MetricsRunner extends EventTarget {
         timestamp: s.timestamp,
         bpm: s.value.bpm,
         rr: s.value.rr,
+        beatTimestamps: s.value.beatTimestamps,
       }));
       window = extractH10IbiWindow(polarSamples, METRICS_WINDOW_SEC, Date.now());
     } else {

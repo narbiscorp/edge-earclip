@@ -6,6 +6,7 @@ import { extractIbiWindow } from '../metrics/windowing';
 import MetricsWorker from '../workers/metricsWorker?worker';
 import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { snapshotFromResult } from '../state/metricsBuffer';
+import { walkPolarBeatClock } from '../ble/polarH10';
 import type {
   Annotation,
   BatteryRecord,
@@ -94,6 +95,8 @@ function loadedFromEvents(
       case 'polarBeat':
         polarBeats.push(e.payload as PolarBeatRecordTimed);
         break;
+      /* beatTimestamps regeneration for old bundles happens in a second
+       * pass below, after all polarBeats are gathered and time-sorted. */
       case 'metric':
         metrics.push(e.payload as MetricsRecord);
         break;
@@ -105,6 +108,21 @@ function loadedFromEvents(
         break;
     }
   }
+  /* Back-fill beatTimestamps for pre-clock recording bundles. New bundles
+   * round-trip the field exactly; this pass only fires for records that
+   * arrived without it. polarBeats is already in arrival order because
+   * `events` is sorted by `t` above. */
+  let polarAnchor: number | null = null;
+  for (const p of polarBeats) {
+    if (p.beatTimestamps && p.beatTimestamps.length === p.rr.length) {
+      polarAnchor = p.beatTimestamps[p.beatTimestamps.length - 1] ?? polarAnchor;
+      continue;
+    }
+    const { beatTimestamps, next } = walkPolarBeatClock(polarAnchor, p.timestamp, p.rr);
+    p.beatTimestamps = beatTimestamps;
+    polarAnchor = next;
+  }
+
   const startedAt = manifest?.startedAt ?? (events.length > 0 ? events[0].t : 0);
   const endedAt = manifest?.endedAt ?? (events.length > 0 ? events[events.length - 1].t : 0);
   return {
@@ -247,7 +265,15 @@ export class ReplayPlayer {
       bufs.filtered.push(f.timestamp, f.sample),
     );
     pushWindow(this.session.polarBeats, tEnd, BEAT_WINDOW_SEC, (p) =>
-      bufs.polarBeats.push(p.timestamp, { bpm: p.bpm, rr: p.rr }),
+      bufs.polarBeats.push(p.timestamp, {
+        bpm: p.bpm,
+        rr: p.rr,
+        /* loadedFromEvents back-fills this for old bundles, so it's
+         * always present at this point — fall back to [] only to satisfy
+         * the non-optional PolarBeatRecord shape if a future code path
+         * pushes a record without it. */
+        beatTimestamps: p.beatTimestamps ?? [],
+      }),
     );
     pushWindow(
       this.session.metrics,

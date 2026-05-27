@@ -81,6 +81,10 @@ export interface PolarBeatRecordTimed {
   timestamp: number;
   bpm: number;
   rr: number[];
+  /* Monotonic per-RR timestamps (ms). Optional because recording bundles
+   * captured before the beat-clock landing won't have it; replay
+   * regenerates them on load. New recordings always include this. */
+  beatTimestamps?: number[];
 }
 
 export interface MetricsRecord {

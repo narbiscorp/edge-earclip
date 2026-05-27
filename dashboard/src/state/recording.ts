@@ -710,8 +710,11 @@ function makeOnPolar(r: RecorderRuntime) {
       timestamp: beat.timestamp,
       bpm: beat.bpm,
       rr: beat.rrIntervals_ms.slice(),
+      beatTimestamps: beat.beatTimestamps.slice(),
     });
-    bump(r, 'polarBeats', 48 + beat.rrIntervals_ms.length * 6);
+    /* 48 B base + 6 B per RR (uint16-ish JSON) + 8 B per beat timestamp
+     * (f64 JSON number). beatTimestamps.length === rr.length. */
+    bump(r, 'polarBeats', 48 + beat.rrIntervals_ms.length * 14);
   };
 }
 
