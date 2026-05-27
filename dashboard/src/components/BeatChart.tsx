@@ -123,17 +123,13 @@ export default function BeatChart({
 
       const polarX: number[] = [];
       const polarY: number[] = [];
-      bufs.polarBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
+      bufs.polarBeats.forEachInWindow(windowSecRef.current, (_ts, v) => {
         const rrs = v.rr;
-        if (!rrs || rrs.length === 0) return;
-        let totalRemaining = 0;
-        for (let i = rrs.length - 1; i >= 0; i--) totalRemaining += rrs[i];
-        let acc = 0;
+        const bts = v.beatTimestamps;
+        if (!rrs || rrs.length === 0 || !bts || bts.length !== rrs.length) return;
         for (let i = 0; i < rrs.length; i++) {
-          const t = ts - (totalRemaining - acc);
-          polarX.push(t);
+          polarX.push(bts[i]);
           polarY.push(rrs[i]);
-          acc += rrs[i];
         }
       });
 

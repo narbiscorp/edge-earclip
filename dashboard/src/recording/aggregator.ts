@@ -108,13 +108,23 @@ export function alignH10ToEarclip(
   const h10Pairs: Array<{ timestamp: number; ibi: number }> = [];
   for (const p of h10Beats) {
     if (!p.rr || p.rr.length === 0) continue;
-    let totalRemaining = 0;
-    for (let i = p.rr.length - 1; i >= 0; i--) totalRemaining += p.rr[i];
-    let acc = 0;
-    for (let i = 0; i < p.rr.length; i++) {
-      const t = p.timestamp - (totalRemaining - acc);
-      h10Pairs.push({ timestamp: t, ibi: p.rr[i] });
-      acc += p.rr[i];
+    const bts = p.beatTimestamps;
+    if (bts && bts.length === p.rr.length) {
+      for (let i = 0; i < p.rr.length; i++) {
+        h10Pairs.push({ timestamp: bts[i], ibi: p.rr[i] });
+      }
+    } else {
+      /* Back-compat for old recording bundles (pre-beat-clock). Replay
+       * regenerates beatTimestamps on load, so this branch is only for
+       * direct callers that bypass replay. */
+      let totalRemaining = 0;
+      for (let i = p.rr.length - 1; i >= 0; i--) totalRemaining += p.rr[i];
+      let acc = 0;
+      for (let i = 0; i < p.rr.length; i++) {
+        const t = p.timestamp - (totalRemaining - acc);
+        h10Pairs.push({ timestamp: t, ibi: p.rr[i] });
+        acc += p.rr[i];
+      }
     }
   }
   h10Pairs.sort((a, b) => a.timestamp - b.timestamp);

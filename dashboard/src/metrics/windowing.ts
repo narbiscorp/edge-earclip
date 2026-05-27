@@ -81,15 +81,21 @@ export function extractIbiWindow(
 
 /**
  * Polar H10 beats arrive as a notification carrying 0..N R-R intervals
- * with a single notify-time timestamp. To feed the same FFT pipeline the
- * earclip uses we explode each RR back to its own beat timestamp by
- * walking backwards from the notify time summing the RR values — the
- * same convention BeatChart and the aggregator use.
+ * with a single notify-time timestamp. Each record also carries a
+ * `beatTimestamps` array (one entry per RR) produced by PolarH10's
+ * monotonic beat clock — use those directly. The legacy per-call-site
+ * "walk backwards from notify time" reconstruction is gone because it
+ * jittered backwards under BLE latency variance.
  */
 export interface PolarBeatSample {
   timestamp: number;
   bpm: number;
   rr: number[];
+  /* Monotonic per-RR timestamps (ms). Length === rr.length. Optional on
+   * the type because old recording bundles loaded via replay may not have
+   * them; the replay layer regenerates them before they reach here, so in
+   * practice this is always present at runtime. */
+  beatTimestamps?: number[];
 }
 
 export function extractH10IbiWindow(
@@ -101,17 +107,28 @@ export function extractH10IbiWindow(
   const pairs: Array<{ t: number; ibi: number }> = [];
   for (const p of beats) {
     if (!p.rr || p.rr.length === 0) continue;
-    let totalRemaining = 0;
-    for (let i = 0; i < p.rr.length; i++) totalRemaining += p.rr[i];
-    let acc = 0;
-    for (let i = 0; i < p.rr.length; i++) {
-      const t = p.timestamp - (totalRemaining - acc);
-      if (t >= cutoff && p.rr[i] > 0) {
-        pairs.push({ t, ibi: p.rr[i] });
+    const bts = p.beatTimestamps;
+    if (bts && bts.length === p.rr.length) {
+      for (let i = 0; i < p.rr.length; i++) {
+        if (bts[i] >= cutoff && p.rr[i] > 0) pairs.push({ t: bts[i], ibi: p.rr[i] });
       }
-      acc += p.rr[i];
+    } else {
+      /* Fallback for any caller that hasn't been migrated — same math the
+       * site used historically. Replay regenerates beatTimestamps so this
+       * branch should not fire in production code paths. */
+      let totalRemaining = 0;
+      for (let i = 0; i < p.rr.length; i++) totalRemaining += p.rr[i];
+      let acc = 0;
+      for (let i = 0; i < p.rr.length; i++) {
+        const t = p.timestamp - (totalRemaining - acc);
+        if (t >= cutoff && p.rr[i] > 0) pairs.push({ t, ibi: p.rr[i] });
+        acc += p.rr[i];
+      }
     }
   }
+  /* Defensive sort — the beat clock guarantees monotonic timestamps
+   * within a single source, but if a recording is interleaved or a future
+   * caller batches multiple sources we want to fail safe. */
   pairs.sort((a, b) => a.t - b.t);
   const n = pairs.length;
   const times_s = new Float64Array(n);

@@ -71,6 +71,11 @@ const BLE_LOG_MAX = 500;
 export interface PolarBeatRecord {
   bpm: number;
   rr: number[];
+  /* One monotonic timestamp per RR (in ms, Date.now() basis). Filled by
+   * PolarH10's beat clock — see reconstructBeatTimestamps(). Length matches
+   * `rr`. Consumers should plot/align against these instead of subtracting
+   * cumulative RR from the buffer's per-record receive timestamp. */
+  beatTimestamps: number[];
 }
 
 /* Earclip battery snapshot for the connection panel. `mv` is null on the
@@ -950,7 +955,11 @@ function forwardH10BeatsToGlasses(rrs: number[]): void {
 
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
-  const record: PolarBeatRecord = { bpm: beat.bpm, rr: beat.rrIntervals_ms };
+  const record: PolarBeatRecord = {
+    bpm: beat.bpm,
+    rr: beat.rrIntervals_ms,
+    beatTimestamps: beat.beatTimestamps,
+  };
   liveBuffers.polarBeats.push(beat.timestamp, record);
   pending.polarBeats += 1;
   scheduleCounterFlush();
