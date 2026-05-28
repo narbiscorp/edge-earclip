@@ -1,8 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Plotly from 'plotly.js-dist-min';
 import type { Shape } from 'plotly.js';
-import { useDashboardStore, getSessionBeats, getSessionCoherence, getSessionStartTs } from '../state/store';
+import { useDashboardStore, getSessionBeats, getSessionCoherence, getSessionStartTs, getSessionId } from '../state/store';
 import { darkLayout } from '../charts/chartTheme';
+import { useAuthStore } from '../auth/authStore';
+import { SUPABASE_CONFIGURED } from '../lib/supabase';
+import { buildSessionRow } from '../sessions/buildSessionRow';
+import { saveSession, updateSessionNotes } from '../sessions/saveSession';
+import { AUTO_SAVE_MIN_DURATION_SEC, type SaveStatus } from '../sessions/types';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -62,6 +67,8 @@ function StatCard({
 export default function SessionSummaryModal() {
   const setShowSessionSummary = useDashboardStore((s) => s.setShowSessionSummary);
   const clearSession = useDashboardStore((s) => s.clearSession);
+  const authStatus = useAuthStore((s) => s.status);
+  const setShowLogin = useAuthStore((s) => s.setShowLogin);
 
   const ibiDivRef = useRef<HTMLDivElement | null>(null);
   const cohDivRef = useRef<HTMLDivElement | null>(null);
@@ -71,10 +78,19 @@ export default function SessionSummaryModal() {
   const beatsSnap = useRef(getSessionBeats().slice());
   const cohSnap   = useRef(getSessionCoherence().slice());
   const startTs   = useRef(getSessionStartTs());
+  const sessionIdSnap = useRef(getSessionId());
 
   const beats   = beatsSnap.current;
   const cohData = cohSnap.current;
   const sessionStartTs = startTs.current;
+  const sessionId = sessionIdSnap.current;
+
+  // Save-flow state
+  const [notes, setNotes] = useState('');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const autoSaveAttemptedRef = useRef(false);
+  const savedRowIdRef = useRef<string | null>(null);
 
   // ── derived metrics ────────────────────────────────────────────────────────
 
@@ -113,8 +129,64 @@ export default function SessionSummaryModal() {
 
   const lastBeatTs  = validBeats.length > 0 ? validBeats[validBeats.length - 1].timestamp : null;
   const durationMs  = sessionStartTs && lastBeatTs ? lastBeatTs - sessionStartTs : null;
+  const durationSec = durationMs != null ? Math.floor(durationMs / 1000) : 0;
 
   const empty = validBeats.length < 5;
+
+  // ── save flow ──────────────────────────────────────────────────────────────
+
+  const canSave = !empty && sessionId != null && sessionStartTs != null;
+  const autoSaveEligible =
+    canSave && authStatus === 'signed_in' && durationSec >= AUTO_SAVE_MIN_DURATION_SEC;
+  const manualSaveAvailable =
+    canSave && authStatus === 'signed_in' && durationSec < AUTO_SAVE_MIN_DURATION_SEC;
+  const persisted = saveStatus === 'saved' || saveStatus === 'queued';
+
+  async function doSaveInternal(savedVia: 'auto' | 'manual', notesAtSaveTime: string): Promise<void> {
+    if (!sessionId || !sessionStartTs) return;
+    setSaveStatus('saving');
+    setSaveError(null);
+    const row = buildSessionRow({
+      sessionId,
+      startTs: sessionStartTs,
+      beats,
+      coherence: cohData,
+      notes: notesAtSaveTime,
+      savedVia,
+      deviceInfo: { dashboard_build_id: __BUILD_ID__ },
+    });
+    savedRowIdRef.current = row.id;
+    const result = await saveSession(row);
+    setSaveStatus(result.status);
+    setSaveError(result.error ?? null);
+  }
+
+  // Auto-save once when auth + session state are ready. Guarded so it never
+  // fires twice for the same modal lifecycle.
+  useEffect(() => {
+    if (autoSaveAttemptedRef.current) return;
+    if (authStatus === 'loading') return;       // wait for getSession() to resolve
+    if (!autoSaveEligible) {
+      // Sessions that don't qualify (short / not signed in / empty) just
+      // mark as attempted so we don't re-evaluate every render.
+      if (!canSave || authStatus !== 'signed_in' || durationSec < AUTO_SAVE_MIN_DURATION_SEC) {
+        autoSaveAttemptedRef.current = true;
+      }
+      return;
+    }
+    autoSaveAttemptedRef.current = true;
+    void doSaveInternal('auto', '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps — snapshot-based
+  }, [authStatus, autoSaveEligible]);
+
+  // Debounced notes-update once the row has been persisted server-side.
+  useEffect(() => {
+    if (saveStatus !== 'saved') return;
+    const id = savedRowIdRef.current;
+    if (!id) return;
+    const t = setTimeout(() => { void updateSessionNotes(id, notes); }, 800);
+    return () => clearTimeout(t);
+  }, [notes, saveStatus]);
 
   // ── IBI tachogram (static, rendered once) ─────────────────────────────────
 
@@ -224,14 +296,46 @@ export default function SessionSummaryModal() {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm">
       <div className="relative bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto mx-4 p-6 space-y-5">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Session Summary</h2>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center flex-wrap">
+            <SaveStatusPill
+              status={saveStatus}
+              error={saveError}
+              authStatus={authStatus}
+              autoSaveEligible={autoSaveEligible}
+              manualSaveAvailable={manualSaveAvailable}
+              configured={SUPABASE_CONFIGURED}
+              empty={empty}
+            />
+
+            {/* Sign-in CTA when logged out and there's something to save */}
+            {!empty && SUPABASE_CONFIGURED && authStatus === 'signed_out' && (
+              <button
+                onClick={() => setShowLogin(true)}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium text-white transition"
+              >
+                Sign in to save
+              </button>
+            )}
+
+            {/* Manual save for short sessions (or retry after queued/error) */}
+            {!empty && authStatus === 'signed_in' && (manualSaveAvailable || saveStatus === 'queued' || saveStatus === 'error') && saveStatus !== 'saving' && (
+              <button
+                onClick={() => void doSaveInternal('manual', notes)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white transition"
+                title={manualSaveAvailable ? 'Session shorter than 5 min — save anyway' : 'Retry cloud save'}
+              >
+                {saveStatus === 'idle' ? 'Save this session' : 'Retry save'}
+              </button>
+            )}
+
             <button
               onClick={clearSession}
               className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium text-white transition"
+              title={persisted ? 'Saved — start a new session' : 'Discard and start a new session'}
             >
-              New Session
+              {persisted ? 'New Session' : 'New Session'}
             </button>
             <button
               onClick={() => setShowSessionSummary(false)}
@@ -384,9 +488,91 @@ export default function SessionSummaryModal() {
                 <div ref={cohDivRef} className="h-48 rounded border border-slate-800" />
               </div>
             )}
+
+            {/* Notes — only shown when cloud save is configured, since
+                that's the only place they get persisted. */}
+            {SUPABASE_CONFIGURED && (
+              <div className="space-y-1">
+                <label
+                  htmlFor="session-notes"
+                  className="text-xs font-medium text-slate-400 uppercase tracking-wide block"
+                >
+                  Notes {persisted && <span className="text-emerald-500/70 normal-case ml-1">(auto-syncs)</span>}
+                </label>
+                <textarea
+                  id="session-notes"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                  placeholder="How did this session feel? Mood, posture, anything noteworthy…"
+                  className="w-full rounded bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 resize-y"
+                />
+              </div>
+            )}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Save-status pill ────────────────────────────────────────────────────────
+
+function SaveStatusPill({
+  status,
+  error,
+  authStatus,
+  autoSaveEligible,
+  manualSaveAvailable,
+  configured,
+  empty,
+}: {
+  status: SaveStatus;
+  error: string | null;
+  authStatus: 'loading' | 'signed_in' | 'signed_out';
+  autoSaveEligible: boolean;
+  manualSaveAvailable: boolean;
+  configured: boolean;
+  empty: boolean;
+}) {
+  if (empty || !configured) return null;
+  if (authStatus !== 'signed_in') return null;
+
+  // While we're waiting on the auto-save to fire (or after a short session
+  // where the user hasn't clicked manual yet) show a quiet status hint.
+  if (status === 'idle') {
+    if (autoSaveEligible) return <Pill tone="info">Preparing to save…</Pill>;
+    if (manualSaveAvailable) return <Pill tone="muted">&lt; 5 min — manual save</Pill>;
+    return null;
+  }
+  if (status === 'saving') return <Pill tone="info">Saving…</Pill>;
+  if (status === 'saved')  return <Pill tone="ok">Saved</Pill>;
+  if (status === 'queued') return <Pill tone="warn">Saved (offline — will sync)</Pill>;
+  return <Pill tone="error" title={error ?? undefined}>Save failed</Pill>;
+}
+
+function Pill({
+  tone,
+  title,
+  children,
+}: {
+  tone: 'info' | 'ok' | 'warn' | 'error' | 'muted';
+  title?: string;
+  children: React.ReactNode;
+}) {
+  const cls = {
+    info:  'border-indigo-600/40 bg-indigo-900/30 text-indigo-200',
+    ok:    'border-emerald-600/40 bg-emerald-900/30 text-emerald-200',
+    warn:  'border-amber-600/40 bg-amber-900/30 text-amber-200',
+    error: 'border-rose-600/40 bg-rose-900/30 text-rose-200',
+    muted: 'border-slate-700 bg-slate-800/50 text-slate-400',
+  }[tone];
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center px-2 py-1 rounded border text-xs ${cls}`}
+    >
+      {children}
+    </span>
   );
 }

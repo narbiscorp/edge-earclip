@@ -34,6 +34,13 @@ jobs:
 
       - name: Build dashboard
         working-directory: dashboard
+        env:
+          # Supabase config — inlined into the bundle by Vite at build time.
+          # Set these in Settings → Secrets and variables → Actions on GitHub.
+          # If unset, the dashboard builds without cloud save (tuning still
+          # works) and shows a console warning.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm ci && npm run build
 
       - name: Assemble site

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import ConnectionPanel from './components/ConnectionPanel';
 import SignalChart from './components/SignalChart';
 import FilteredChart from './components/FilteredChart';
@@ -16,9 +16,17 @@ import GlassesLog from './components/GlassesLog';
 import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
 import SessionSummaryModal from './components/SessionSummaryModal';
+import AuthButton from './auth/AuthButton';
+import LoginModal from './auth/LoginModal';
+import HistoryView from './sessions/HistoryView';
+import { useAuthStore } from './auth/authStore';
+import { SUPABASE_CONFIGURED } from './lib/supabase';
 import { metricsRunner } from './state/metricsRunner';
 import { useRecordingStore } from './state/recording';
 import { useDashboardStore } from './state/store';
+// Side-effect import: subscribes the pending-sync queue to window 'online'
+// and auth-state events. Must be imported somewhere in the app.
+import './sessions/pendingSyncQueue';
 
 export default function App() {
   const checkForOrphans = useRecordingStore((s) => s.checkForOrphanedSessions);
@@ -26,6 +34,11 @@ export default function App() {
   const setUiMode = useDashboardStore((s) => s.setUiMode);
   const showSessionSummary = useDashboardStore((s) => s.showSessionSummary);
   const setShowSessionSummary = useDashboardStore((s) => s.setShowSessionSummary);
+  const showLogin = useAuthStore((s) => s.showLogin);
+
+  // History view is a sibling overlay, not auth-gated — sign-in CTA lives
+  // inside it so the route exists for everyone.
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     metricsRunner.start();
@@ -34,7 +47,7 @@ export default function App() {
   }, [checkForOrphans]);
 
   return (
-    <div className="h-screen flex flex-col bg-slate-950 text-slate-100">
+    <div className="h-screen flex flex-col bg-slate-950 text-slate-100 relative">
       <RecoveryBanner />
       <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-3">
         <h1 className="text-lg font-semibold tracking-tight">
@@ -94,6 +107,16 @@ export default function App() {
         >
           End Session
         </button>
+        {SUPABASE_CONFIGURED && (
+          <button
+            onClick={() => setShowHistory(true)}
+            className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 shrink-0 transition"
+            title="View saved sessions and progress trends"
+          >
+            History
+          </button>
+        )}
+        <AuthButton />
         <ConnectionPanel />
       </header>
 
@@ -128,6 +151,8 @@ export default function App() {
         </>
       )}
       {showSessionSummary && <SessionSummaryModal />}
+      {showLogin && <LoginModal />}
+      {showHistory && <HistoryView onClose={() => setShowHistory(false)} />}
     </div>
   );
 }

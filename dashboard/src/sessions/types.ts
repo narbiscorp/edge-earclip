@@ -1,0 +1,62 @@
+// Shared types for the cloud-session persistence layer.
+//
+// The shape mirrors the `sessions` Postgres table 1:1; columns are nullable
+// where the DB column is nullable. `user_id` is filled by the Postgres
+// `default auth.uid()` so the client doesn't need to set it.
+
+export const SESSION_SCHEMA_VERSION = 1;
+
+/** Soft cutoff (seconds) for auto-save vs manual-save in the modal. */
+export const AUTO_SAVE_MIN_DURATION_SEC = 5 * 60;
+
+export interface DeviceInfo {
+  firmware_version?: string | null;
+  dashboard_build_id?: string | null;
+  polar_h10_used?: boolean;
+  relay_used?: boolean;
+  hr_source?: 'earclip' | 'h10' | null;
+}
+
+export interface SessionRow {
+  id: string;                              // client-generated uuid
+  schema_version: number;
+
+  started_at: string;                      // ISO timestamp
+  ended_at: string;
+  session_local_date: string;              // YYYY-MM-DD local
+  duration_seconds: number;
+
+  beat_count: number;
+  avg_hr_bpm: number | null;
+  avg_ibi_ms: number | null;
+  ibi_min_ms: number | null;
+  ibi_max_ms: number | null;
+  ibi_sd_ms: number | null;
+  ibi_cv_pct: number | null;
+  ibi_change_pct: number | null;
+  rmssd_ms: number | null;
+
+  avg_coherence: number | null;
+  peak_coherence: number | null;
+  high_coh_time_pct: number | null;
+  med_coh_time_pct: number | null;
+  low_coh_time_pct: number | null;
+  coh_change_pct: number | null;
+
+  notes: string | null;
+  device_info: DeviceInfo | null;
+
+  ibi_log: number[];
+  coherence_log_t_ms: number[] | null;
+  coherence_log_value: number[] | null;
+
+  saved_via: 'auto' | 'manual';
+}
+
+/** Save-progress state shown in the modal pill. */
+export type SaveStatus =
+  | 'idle'         // not attempted yet
+  | 'saving'       // in-flight
+  | 'saved'        // server confirmed
+  | 'queued'       // offline / failed, sitting in IDB pending queue
+  | 'error';       // unrecoverable error (e.g. RLS violation)

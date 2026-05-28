@@ -271,15 +271,31 @@ const SESSION_COH_CAP  = 10800; // ~3 h at 1 Hz
 const sessionBeatArray: NarbisBeatEvent[] = [];
 const sessionCohArray: Array<{ ts: number; coh: number }> = [];
 let _sessionStartTs: number | null = null;
+// Client-generated session ID — minted on the first beat of a session so
+// save-to-cloud can be idempotent (upsert by id, retry safe).
+let _sessionId: string | null = null;
 
 export function getSessionBeats(): NarbisBeatEvent[] { return sessionBeatArray; }
 export function getSessionCoherence(): Array<{ ts: number; coh: number }> { return sessionCohArray; }
 export function getSessionStartTs(): number | null { return _sessionStartTs; }
+export function getSessionId(): string | null { return _sessionId; }
+
+function mintSessionId(): string {
+  // crypto.randomUUID is available in all browsers Web Bluetooth runs on.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback: timestamp + random — never expected to hit in supported browsers.
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
 
 function pushSessionBeat(beat: NarbisBeatEvent): void {
   if (sessionBeatArray.length >= SESSION_BEAT_CAP) return;
   sessionBeatArray.push(beat);
-  if (_sessionStartTs === null) _sessionStartTs = beat.timestamp;
+  if (_sessionStartTs === null) {
+    _sessionStartTs = beat.timestamp;
+    _sessionId = mintSessionId();
+  }
 }
 
 function pushSessionCoh(ts: number, coh: number): void {
@@ -292,6 +308,7 @@ function clearSessionArrays(): void {
   sessionBeatArray.length = 0;
   sessionCohArray.length = 0;
   _sessionStartTs = null;
+  _sessionId = null;
 }
 
 const HR_SOURCE_FOR_GLASSES_KEY = 'hrSourceForGlasses';

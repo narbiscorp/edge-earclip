@@ -1,3 +1,9 @@
 # Claude Code scratch worktrees — auto-generated <adjective>-<noun>-<hash>
 # directories used for isolated agent sessions. Not part of the project.
 .claude/worktrees/
+
+# Dashboard environment files (Supabase URL / anon key). `.env.example` is
+# tracked and documents the required variables.
+dashboard/.env
+dashboard/.env.local
+dashboard/.env.*.local
