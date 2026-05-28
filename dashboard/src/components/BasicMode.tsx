@@ -150,42 +150,44 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           </div>
         )}
 
-        {/* Metric cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MetricCard
-            label="Coherence"
-            value={coh != null ? `${coh}` : '—'}
-            unit={coh != null ? '/100' : ''}
-            colorClass={cohColor(coh)}
-            sub={coh != null ? cohLabel(coh) : 'connect glasses'}
-          />
-          <MetricCard
-            label="Breathing"
-            value={respBpm != null ? respBpm.toFixed(2) : '—'}
-            unit="BPM"
-            colorClass="text-pink-300"
-            sub={pacerBpm > 0 ? `Lens paces at ${pacerBpm.toFixed(1)} BPM` : (lastEdgeCoh ? 'waiting for resonance' : '')}
-          />
-          <MetricCard
-            label="Heart rate"
-            value={hrBpm != null ? `${hrBpm}` : '—'}
-            unit="BPM"
-            colorClass="text-rose-300"
-            sub={hrConnected ? (effectiveHrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
-          />
+        {/* Glasses visual at the top — swapped position with the metric
+            cards so the lens animation is the first thing the user sees. */}
+        <div className="flex justify-center">
+          <GlassesVisual />
         </div>
 
-        {/* Live glasses visual + filtered PPG + IBI tachogram + coherence.
-            Filtered signal with peak markers replaces raw PPG — it shows
-            what the beat detector actually sees, with accepted (▲) and
-            rejected (✕) candidates overlaid. It only renders when the
-            earclip is the active source (direct or relay) since H10 has
-            no PPG stream. Both chart windows are locked to 30 s; the
-            controls bar is hidden in basic/mobile mode. */}
+        {/* Live view: session clock, metric cards, filtered PPG + IBI
+            tachogram + coherence. Filtered signal with peak markers
+            replaces raw PPG — it shows what the beat detector actually
+            sees, with accepted (▲) and rejected (✕) candidates overlaid.
+            It only renders when the earclip is the active source (direct
+            or relay) since H10 has no PPG stream. Both chart windows are
+            locked to 30 s; the controls bar is hidden in basic/mobile
+            mode. */}
         <Card title="Live view">
           <SessionTimer />
-          <div className="flex justify-center">
-            <GlassesVisual />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <MetricCard
+              label="Coherence"
+              value={coh != null ? `${coh}` : '—'}
+              unit={coh != null ? '/100' : ''}
+              colorClass={cohColor(coh)}
+              sub={coh != null ? cohLabel(coh) : 'connect glasses'}
+            />
+            <MetricCard
+              label="Breathing"
+              value={respBpm != null ? respBpm.toFixed(2) : '—'}
+              unit="BPM"
+              colorClass="text-pink-300"
+              sub={pacerBpm > 0 ? `Lens paces at ${pacerBpm.toFixed(1)} BPM` : (lastEdgeCoh ? 'waiting for resonance' : '')}
+            />
+            <MetricCard
+              label="Heart rate"
+              value={hrBpm != null ? `${hrBpm}` : '—'}
+              unit="BPM"
+              colorClass="text-rose-300"
+              sub={hrConnected ? (effectiveHrSource === 'h10' ? 'Polar H10' : 'Earclip') : 'no source'}
+            />
           </div>
           {earclipConnected && <FilteredBeatChart compact windowSec={30} />}
           <BeatChart compact defaultSmoothN={7} defaultShape="spline" windowSec={30} />
