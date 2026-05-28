@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useDashboardStore } from '../state/store';
+import { useDashboardStore, getSessionStartTs } from '../state/store';
 import {
   edgeDevice,
   type CoherenceDifficulty,
@@ -70,6 +70,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const polarConn = useDashboardStore((s) => s.connection.polar.state);
   const edgeConn = useDashboardStore((s) => s.connection.edge.state);
   const narbisConn = useDashboardStore((s) => s.connection.narbis.state);
+  const edgeRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
   const lastBeat = useDashboardStore((s) => s.lastBeat);
   const lastPolarBeat = useDashboardStore((s) => s.lastPolarBeat);
   const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
@@ -94,6 +95,12 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
 
   const edgeConnected = edgeConn === 'connected';
   const hrConnected = polarConn === 'connected' || narbisConn === 'connected';
+  /* Earclip is "connected" either directly (narbisConn) or via the
+   * glasses-side BLE central relay (edge.earclipRelay === true). Both paths
+   * deliver the filtered diagnostic stream the FilteredBeatChart renders,
+   * so either one warrants showing that chart. H10 alone does not — Polar
+   * exposes only beat events, no PPG. */
+  const earclipConnected = narbisConn === 'connected' || edgeRelay === true;
 
   /* Local settings state — mirrored to the firmware via edgeDevice setters.
    * No read-back path from the glasses, so these default to reasonable
@@ -171,13 +178,16 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         {/* Live glasses visual + filtered PPG + IBI tachogram + coherence.
             Filtered signal with peak markers replaces raw PPG — it shows
             what the beat detector actually sees, with accepted (▲) and
-            rejected (✕) candidates overlaid. Both chart windows are locked
-            to 30 s; the controls bar is hidden in basic/mobile mode. */}
+            rejected (✕) candidates overlaid. It only renders when the
+            earclip is the active source (direct or relay) since H10 has
+            no PPG stream. Both chart windows are locked to 30 s; the
+            controls bar is hidden in basic/mobile mode. */}
         <Card title="Live view">
+          <SessionTimer />
           <div className="flex justify-center">
             <GlassesVisual />
           </div>
-          <FilteredBeatChart compact windowSec={30} />
+          {earclipConnected && <FilteredBeatChart compact windowSec={30} />}
           <BeatChart compact defaultSmoothN={7} defaultShape="spline" windowSec={30} />
           <CoherenceChart compact windowSec={30} />
         </Card>
@@ -557,6 +567,45 @@ function GlassesVisual() {
       <div className="text-[11px] text-slate-400">
         Lens: <span className="text-amber-300 tabular-nums">{Math.round(opacity * 100)}%</span>
         <span className="ml-2 text-slate-500">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+/* Conspicuous session clock for the Live view. Reads the module-level
+ * session start timestamp (set on the first beat from either earclip or
+ * H10; cleared on End Session) and ticks once per second. Renders mm:ss
+ * up to an hour, then h:mm:ss. Dim/idle state until the first beat lands. */
+function SessionTimer() {
+  const [, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const startTs = getSessionStartTs();
+  const elapsedMs = startTs != null ? Math.max(0, Date.now() - startTs) : 0;
+  const totalSec = Math.floor(elapsedMs / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const text = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  const active = startTs != null;
+  return (
+    <div className="flex flex-col items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 py-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+        Session
+      </div>
+      <div
+        className={
+          'text-4xl font-mono font-semibold tabular-nums leading-none ' +
+          (active ? 'text-emerald-300' : 'text-slate-600')
+        }
+      >
+        {text}
+      </div>
+      <div className="text-[11px] text-slate-500 mt-1">
+        {active ? 'recording beats' : 'waiting for first beat…'}
       </div>
     </div>
   );
