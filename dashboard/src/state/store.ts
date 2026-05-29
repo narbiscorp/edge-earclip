@@ -248,6 +248,24 @@ export interface DashboardState {
   setShowSessionSummary: (v: boolean) => void;
   /** Clear accumulated session beats/coherence and close the summary modal. */
   clearSession: () => void;
+
+  /** True while the session is paused — clock is frozen and incoming beats
+   * are dropped from the session accumulator (live charts keep flowing). */
+  sessionPaused: boolean;
+  /** True once the user has ended the session (either save or no-save path
+   * for the latter the state clears immediately, so this only really stays
+   * true after End & Save). Clock stays at the ended timestamp. */
+  sessionEnded: boolean;
+  /** Pause the session — freezes clock + stops accumulating beats/coh. */
+  pauseSession: () => void;
+  /** Resume after pause — closes a pause marker and accumulates pause time. */
+  resumeSession: () => void;
+  /** End the session and open the summary modal. Closes an open pause cleanly
+   * first. No-op if no session has started (just opens an empty modal). */
+  endSessionAndSave: () => void;
+  /** End the session without saving — clears all accumulated data and
+   * resets the clock. The caller is expected to have already confirmed. */
+  endSessionWithoutSaving: () => void;
 }
 
 function makeBuffers(): BufferSet {
@@ -274,11 +292,27 @@ let _sessionStartTs: number | null = null;
 // Client-generated session ID — minted on the first beat of a session so
 // save-to-cloud can be idempotent (upsert by id, retry safe).
 let _sessionId: string | null = null;
+// Pause/end bookkeeping. When _sessionPausedAt != null we drop incoming
+// beats + coherence from the session accumulator and freeze the clock at
+// that timestamp. On resume we close the pause into _sessionPauseMarkers
+// and add the interval to _sessionPauseTotalMs so the displayed elapsed
+// time only counts active recording. _sessionEndedAt being non-null is
+// a terminal state — the clock stays frozen at that point until clearSession.
+let _sessionPausedAt: number | null = null;
+let _sessionPauseTotalMs = 0;
+const _sessionPauseMarkers: Array<{ start: number; end: number }> = [];
+let _sessionEndedAt: number | null = null;
 
 export function getSessionBeats(): NarbisBeatEvent[] { return sessionBeatArray; }
 export function getSessionCoherence(): Array<{ ts: number; coh: number }> { return sessionCohArray; }
 export function getSessionStartTs(): number | null { return _sessionStartTs; }
 export function getSessionId(): string | null { return _sessionId; }
+export function getSessionPausedAt(): number | null { return _sessionPausedAt; }
+export function getSessionEndedAt(): number | null { return _sessionEndedAt; }
+export function getSessionPauseTotalMs(): number { return _sessionPauseTotalMs; }
+export function getSessionPauseMarkers(): Array<{ start: number; end: number }> {
+  return _sessionPauseMarkers;
+}
 
 function mintSessionId(): string {
   // crypto.randomUUID is available in all browsers Web Bluetooth runs on.
@@ -291,6 +325,9 @@ function mintSessionId(): string {
 
 function pushSessionBeat(beat: NarbisBeatEvent): void {
   if (sessionBeatArray.length >= SESSION_BEAT_CAP) return;
+  // Drop beats while paused or after end — they shouldn't show up in the
+  // summary tachogram or count toward duration.
+  if (_sessionPausedAt !== null || _sessionEndedAt !== null) return;
   sessionBeatArray.push(beat);
   if (_sessionStartTs === null) {
     _sessionStartTs = beat.timestamp;
@@ -299,9 +336,9 @@ function pushSessionBeat(beat: NarbisBeatEvent): void {
 }
 
 function pushSessionCoh(ts: number, coh: number): void {
-  if (sessionCohArray.length < SESSION_COH_CAP) {
-    sessionCohArray.push({ ts, coh });
-  }
+  if (sessionCohArray.length >= SESSION_COH_CAP) return;
+  if (_sessionPausedAt !== null || _sessionEndedAt !== null) return;
+  sessionCohArray.push({ ts, coh });
 }
 
 function clearSessionArrays(): void {
@@ -309,6 +346,10 @@ function clearSessionArrays(): void {
   sessionCohArray.length = 0;
   _sessionStartTs = null;
   _sessionId = null;
+  _sessionPausedAt = null;
+  _sessionPauseTotalMs = 0;
+  _sessionPauseMarkers.length = 0;
+  _sessionEndedAt = null;
 }
 
 const HR_SOURCE_FOR_GLASSES_KEY = 'hrSourceForGlasses';
@@ -386,6 +427,8 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   lastBeatAt: null,
   uiMode: loadUiMode(),
   showSessionSummary: false,
+  sessionPaused: false,
+  sessionEnded: false,
 
   connectNarbis: async () => {
     set({ lastError: null });
@@ -526,7 +569,53 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setShowSessionSummary: (v) => set({ showSessionSummary: v }),
   clearSession: () => {
     clearSessionArrays();
-    set({ showSessionSummary: false });
+    set({ showSessionSummary: false, sessionPaused: false, sessionEnded: false });
+  },
+
+  pauseSession: () => {
+    /* No-op if no session has started yet, already paused, or already ended.
+     * Without these guards, hitting pause before the first beat would still
+     * set a sentinel timestamp and corrupt later math. */
+    if (_sessionStartTs === null) return;
+    if (_sessionPausedAt !== null) return;
+    if (_sessionEndedAt !== null) return;
+    _sessionPausedAt = Date.now();
+    set({ sessionPaused: true });
+  },
+  resumeSession: () => {
+    if (_sessionPausedAt === null) return;
+    if (_sessionEndedAt !== null) return;
+    const now = Date.now();
+    _sessionPauseMarkers.push({ start: _sessionPausedAt, end: now });
+    _sessionPauseTotalMs += now - _sessionPausedAt;
+    _sessionPausedAt = null;
+    set({ sessionPaused: false });
+  },
+  endSessionAndSave: () => {
+    /* If nothing has streamed yet, just open the (empty) modal so the
+     * existing "No session data yet" message renders. Don't mark ended —
+     * that would lock the clock at 0:00 for no reason. */
+    if (_sessionStartTs === null) {
+      set({ showSessionSummary: true });
+      return;
+    }
+    /* Close a hanging pause cleanly so the marker + accumulated-pause math
+     * matches what the user did. The marker's end becomes the end-of-session
+     * moment, which is fine — only the start anchors the visual marker. */
+    if (_sessionPausedAt !== null) {
+      const now = Date.now();
+      _sessionPauseMarkers.push({ start: _sessionPausedAt, end: now });
+      _sessionPauseTotalMs += now - _sessionPausedAt;
+      _sessionPausedAt = null;
+    }
+    if (_sessionEndedAt === null) {
+      _sessionEndedAt = Date.now();
+    }
+    set({ sessionPaused: false, sessionEnded: true, showSessionSummary: true });
+  },
+  endSessionWithoutSaving: () => {
+    clearSessionArrays();
+    set({ showSessionSummary: false, sessionPaused: false, sessionEnded: false });
   },
 }));
 

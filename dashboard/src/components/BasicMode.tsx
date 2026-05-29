@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { useDashboardStore, getSessionStartTs } from '../state/store';
+import {
+  useDashboardStore,
+  getSessionStartTs,
+  getSessionPausedAt,
+  getSessionEndedAt,
+  getSessionPauseTotalMs,
+} from '../state/store';
 import {
   edgeDevice,
   type CoherenceDifficulty,
@@ -577,15 +583,42 @@ function GlassesVisual() {
 /* Conspicuous session clock for the Live view. Reads the module-level
  * session start timestamp (set on the first beat from either earclip or
  * H10; cleared on End Session) and ticks once per second. Renders mm:ss
- * up to an hour, then h:mm:ss. Dim/idle state until the first beat lands. */
+ * up to an hour, then h:mm:ss. Dim/idle state until the first beat lands.
+ *
+ * Pause/end controls live underneath the clock and call into the store
+ * actions. When paused the clock freezes at the pause moment; when ended
+ * (via End & Save) it freezes at the end moment. End (no save) wipes the
+ * session immediately after confirmation. */
 function SessionTimer() {
   const [, setNow] = useState(Date.now());
+  const sessionPaused = useDashboardStore((s) => s.sessionPaused);
+  const sessionEnded = useDashboardStore((s) => s.sessionEnded);
+  const pauseSession = useDashboardStore((s) => s.pauseSession);
+  const resumeSession = useDashboardStore((s) => s.resumeSession);
+  const endSessionAndSave = useDashboardStore((s) => s.endSessionAndSave);
+  const endSessionWithoutSaving = useDashboardStore((s) => s.endSessionWithoutSaving);
+
+  /* Only tick when the clock is actually advancing. Paused / ended states
+   * are frozen so the 1 Hz interval is just wasted setState calls. */
   useEffect(() => {
+    if (sessionPaused || sessionEnded) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [sessionPaused, sessionEnded]);
+
   const startTs = getSessionStartTs();
-  const elapsedMs = startTs != null ? Math.max(0, Date.now() - startTs) : 0;
+  const pausedAt = getSessionPausedAt();
+  const endedAt = getSessionEndedAt();
+  const pauseTotal = getSessionPauseTotalMs();
+
+  /* Pick the right "now" to subtract against startTs. End beats pause
+   * beats live wall-clock, so a paused session that gets ended still shows
+   * the elapsed time at pause-moment, not end-moment. */
+  let elapsedMs = 0;
+  if (startTs != null) {
+    const endRef = endedAt ?? pausedAt ?? Date.now();
+    elapsedMs = Math.max(0, endRef - startTs - pauseTotal);
+  }
   const totalSec = Math.floor(elapsedMs / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
@@ -593,21 +626,78 @@ function SessionTimer() {
   const pad = (n: number) => n.toString().padStart(2, '0');
   const text = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   const active = startTs != null;
+  const controlsEnabled = active && !sessionEnded;
+
+  const clockColor = sessionEnded
+    ? 'text-slate-400'
+    : sessionPaused
+      ? 'text-amber-300'
+      : active
+        ? 'text-emerald-300'
+        : 'text-slate-600';
+  const statusLabel = sessionEnded
+    ? 'session ended'
+    : sessionPaused
+      ? 'paused'
+      : active
+        ? 'recording beats'
+        : 'waiting for first beat…';
+
+  const handleEndNoSave = () => {
+    if (!controlsEnabled) return;
+    if (window.confirm('Discard this session? Beats and coherence will be cleared and not saved.')) {
+      endSessionWithoutSaving();
+    }
+  };
+
   return (
-    <div className="flex flex-col items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 py-3">
+    <div className="flex flex-col items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 py-3 px-3">
       <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
         Session
       </div>
       <div
         className={
           'text-4xl font-mono font-semibold tabular-nums leading-none ' +
-          (active ? 'text-emerald-300' : 'text-slate-600')
+          clockColor
         }
       >
         {text}
       </div>
       <div className="text-[11px] text-slate-500 mt-1">
-        {active ? 'recording beats' : 'waiting for first beat…'}
+        {statusLabel}
+      </div>
+      <div className="flex flex-wrap justify-center gap-2 pt-2">
+        <button
+          onClick={() => (sessionPaused ? resumeSession() : pauseSession())}
+          disabled={!controlsEnabled}
+          className={
+            'px-3 py-1.5 rounded border text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ' +
+            (sessionPaused
+              ? 'bg-emerald-900/30 hover:bg-emerald-800/50 border-emerald-700/50 text-emerald-200'
+              : 'bg-amber-900/30 hover:bg-amber-800/50 border-amber-700/50 text-amber-200')
+          }
+          title={sessionPaused
+            ? 'Resume — clock and beat recording continue'
+            : 'Pause — clock stops and incoming beats are dropped until resumed'}
+        >
+          {sessionPaused ? 'Resume' : 'Pause'}
+        </button>
+        <button
+          onClick={endSessionAndSave}
+          disabled={!controlsEnabled}
+          className="px-3 py-1.5 rounded border border-indigo-700/50 bg-indigo-900/30 hover:bg-indigo-800/50 text-xs font-medium text-indigo-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          title="End session and open summary (auto-saves to cloud when signed in)"
+        >
+          End &amp; Save
+        </button>
+        <button
+          onClick={handleEndNoSave}
+          disabled={!controlsEnabled}
+          className="px-3 py-1.5 rounded border border-rose-700/50 bg-rose-900/30 hover:bg-rose-800/50 text-xs font-medium text-rose-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          title="End and discard this session — no summary, no save"
+        >
+          End (no save)
+        </button>
       </div>
     </div>
   );

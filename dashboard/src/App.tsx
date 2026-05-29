@@ -33,7 +33,7 @@ export default function App() {
   const uiMode = useDashboardStore((s) => s.uiMode);
   const setUiMode = useDashboardStore((s) => s.setUiMode);
   const showSessionSummary = useDashboardStore((s) => s.showSessionSummary);
-  const setShowSessionSummary = useDashboardStore((s) => s.setShowSessionSummary);
+  const endSessionAndSave = useDashboardStore((s) => s.endSessionAndSave);
   const showLogin = useAuthStore((s) => s.showLogin);
 
   // History view is a sibling overlay, not auth-gated — sign-in CTA lives
@@ -101,9 +101,9 @@ export default function App() {
           </button>
         </div>
         <button
-          onClick={() => setShowSessionSummary(true)}
+          onClick={endSessionAndSave}
           className="px-3 py-1 rounded-lg border border-red-700/50 bg-red-900/30 hover:bg-red-800/50 text-xs font-medium text-red-300 shrink-0 transition"
-          title="View training summary for this session"
+          title="End session and open summary (auto-saves to cloud when signed in)"
         >
           End Session
         </button>

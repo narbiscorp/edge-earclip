@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import Plotly from 'plotly.js-dist-min';
 import type { Shape } from 'plotly.js';
-import { useDashboardStore, getSessionBeats, getSessionCoherence, getSessionStartTs, getSessionId } from '../state/store';
+import {
+  useDashboardStore,
+  getSessionBeats,
+  getSessionCoherence,
+  getSessionStartTs,
+  getSessionId,
+  getSessionPauseMarkers,
+  getSessionPauseTotalMs,
+  getSessionEndedAt,
+} from '../state/store';
 import { darkLayout } from '../charts/chartTheme';
 import { useAuthStore } from '../auth/authStore';
 import { SUPABASE_CONFIGURED } from '../lib/supabase';
@@ -79,11 +88,17 @@ export default function SessionSummaryModal() {
   const cohSnap   = useRef(getSessionCoherence().slice());
   const startTs   = useRef(getSessionStartTs());
   const sessionIdSnap = useRef(getSessionId());
+  const pauseMarkersSnap = useRef(getSessionPauseMarkers().slice());
+  const pauseTotalMsSnap = useRef(getSessionPauseTotalMs());
+  const sessionEndedAtSnap = useRef(getSessionEndedAt());
 
   const beats   = beatsSnap.current;
   const cohData = cohSnap.current;
   const sessionStartTs = startTs.current;
   const sessionId = sessionIdSnap.current;
+  const pauseMarkers = pauseMarkersSnap.current;
+  const pauseTotalMs = pauseTotalMsSnap.current;
+  const sessionEndedAt = sessionEndedAtSnap.current;
 
   // Save-flow state
   const [notes, setNotes] = useState('');
@@ -128,8 +143,33 @@ export default function SessionSummaryModal() {
       : null;
 
   const lastBeatTs  = validBeats.length > 0 ? validBeats[validBeats.length - 1].timestamp : null;
-  const durationMs  = sessionStartTs && lastBeatTs ? lastBeatTs - sessionStartTs : null;
+  // Active-recording duration: anchor against sessionEndedAt when the user
+  // explicitly ended (so a long pause at the end doesn't leave a stale
+  // "ended somewhere mid-flow" feel), otherwise fall back to lastBeatTs.
+  // pauseTotalMs is already accumulated at end-time, so subtracting it here
+  // gives just the time beats were actually streaming.
+  const endRefTs = sessionEndedAt ?? lastBeatTs;
+  const durationMs = sessionStartTs && endRefTs
+    ? Math.max(0, endRefTs - sessionStartTs - pauseTotalMs)
+    : null;
   const durationSec = durationMs != null ? Math.floor(durationMs / 1000) : 0;
+
+  // Pause markers as Plotly vertical-line shapes anchored to the same
+  // "seconds since session start" x axis the charts use. Thin dashed amber
+  // line spanning the chart height — visible but unobtrusive.
+  const pauseShapes: Partial<Shape>[] =
+    sessionStartTs != null
+      ? pauseMarkers.map((m) => ({
+          type: 'line' as const,
+          xref: 'x' as const,
+          yref: 'paper' as const,
+          x0: (m.start - sessionStartTs) / 1000,
+          x1: (m.start - sessionStartTs) / 1000,
+          y0: 0,
+          y1: 1,
+          line: { color: '#facc15', width: 1.5, dash: 'dot' as const },
+        }))
+      : [];
 
   const empty = validBeats.length < 5;
 
@@ -224,6 +264,7 @@ export default function SessionSummaryModal() {
           zerolinecolor: '#475569',
           linecolor: '#475569',
         },
+        shapes: pauseShapes as Shape[],
         showlegend: false,
         margin: { l: 56, r: 16, t: 8, b: 40 },
       }),
@@ -278,7 +319,7 @@ export default function SessionSummaryModal() {
           zerolinecolor: '#475569',
           linecolor: '#475569',
         },
-        shapes: bandShapes as Shape[],
+        shapes: [...bandShapes, ...pauseShapes] as Shape[],
         showlegend: false,
         margin: { l: 56, r: 16, t: 8, b: 40 },
       }),
