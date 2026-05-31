@@ -16,6 +16,7 @@ import GlassesLog from './components/GlassesLog';
 import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
 import SessionSummaryModal from './components/SessionSummaryModal';
+import SlimHeader from './components/SlimHeader';
 import AuthButton from './auth/AuthButton';
 import LoginModal from './auth/LoginModal';
 import HistoryView from './sessions/HistoryView';
@@ -49,76 +50,66 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100 relative">
       <RecoveryBanner />
-      <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-3">
-        <h1 className="text-lg font-semibold tracking-tight">
-          Narbis Earclip Dashboard
-          {uiMode === 'expert' && (
+      {/* Header is mode-aware: Basic and Mobile get the cinematic SlimHeader
+          (brand + device pills + cog tray + kebab menu); Expert keeps the
+          original dense control panel below. */}
+      {uiMode === 'expert' ? (
+        <header className="flex items-center justify-between px-4 py-2 border-b border-slate-800 shrink-0 gap-3">
+          <h1 className="text-lg font-semibold tracking-tight">
+            Narbis Earclip Dashboard
             <span className="ml-2 text-[10px] font-mono text-emerald-400 align-middle">
               relay-v5 · {__BUILD_ID__}
             </span>
+          </h1>
+          {/* Basic ↔ Mobile ↔ Expert toggle. Lay users land on Basic by
+              default; Mobile is Basic forced into a single-column layout
+              with bigger touch targets for phone screens; Expert is the
+              full charts + sidebar layout. */}
+          <div className="inline-flex rounded-md border border-slate-700 overflow-hidden text-xs shrink-0">
+            <button
+              onClick={() => setUiMode('basic')}
+              className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300"
+              title="Simple view: live metrics + program picker + a few settings"
+            >
+              Basic
+            </button>
+            <button
+              onClick={() => setUiMode('mobile')}
+              className="px-3 py-1 border-l border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300"
+              title="Phone-optimized view: single column, larger touch targets"
+            >
+              Mobile
+            </button>
+            <button
+              onClick={() => setUiMode('expert')}
+              className="px-3 py-1 border-l border-slate-700 bg-indigo-600 text-white"
+              title="Full charts, BLE event log, algorithm tuning, recording, presets"
+            >
+              Expert
+            </button>
+          </div>
+          <button
+            onClick={endSessionAndSave}
+            className="px-3 py-1 rounded-lg border border-red-700/50 bg-red-900/30 hover:bg-red-800/50 text-xs font-medium text-red-300 shrink-0 transition"
+            title="End session and open summary (auto-saves to cloud when signed in)"
+          >
+            End Session
+          </button>
+          {SUPABASE_CONFIGURED && (
+            <button
+              onClick={() => setShowHistory(true)}
+              className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 shrink-0 transition"
+              title="View saved sessions and progress trends"
+            >
+              History
+            </button>
           )}
-        </h1>
-        {/* Basic ↔ Mobile ↔ Expert toggle. Lay users land on Basic by
-            default; Mobile is Basic forced into a single-column layout
-            with bigger touch targets for phone screens; Expert is the
-            full charts + sidebar layout. */}
-        <div className="inline-flex rounded-md border border-slate-700 overflow-hidden text-xs shrink-0">
-          <button
-            onClick={() => setUiMode('basic')}
-            className={
-              'px-3 py-1 ' +
-              (uiMode === 'basic'
-                ? 'bg-indigo-600 text-white'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300')
-            }
-            title="Simple view: live metrics + program picker + a few settings"
-          >
-            Basic
-          </button>
-          <button
-            onClick={() => setUiMode('mobile')}
-            className={
-              'px-3 py-1 border-l border-slate-700 ' +
-              (uiMode === 'mobile'
-                ? 'bg-indigo-600 text-white'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300')
-            }
-            title="Phone-optimized view: single column, larger touch targets"
-          >
-            Mobile
-          </button>
-          <button
-            onClick={() => setUiMode('expert')}
-            className={
-              'px-3 py-1 border-l border-slate-700 ' +
-              (uiMode === 'expert'
-                ? 'bg-indigo-600 text-white'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300')
-            }
-            title="Full charts, BLE event log, algorithm tuning, recording, presets"
-          >
-            Expert
-          </button>
-        </div>
-        <button
-          onClick={endSessionAndSave}
-          className="px-3 py-1 rounded-lg border border-red-700/50 bg-red-900/30 hover:bg-red-800/50 text-xs font-medium text-red-300 shrink-0 transition"
-          title="End session and open summary (auto-saves to cloud when signed in)"
-        >
-          End Session
-        </button>
-        {SUPABASE_CONFIGURED && (
-          <button
-            onClick={() => setShowHistory(true)}
-            className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 shrink-0 transition"
-            title="View saved sessions and progress trends"
-          >
-            History
-          </button>
-        )}
-        <AuthButton />
-        <ConnectionPanel />
-      </header>
+          <AuthButton />
+          <ConnectionPanel />
+        </header>
+      ) : (
+        <SlimHeader onShowHistory={() => setShowHistory(true)} />
+      )}
 
       {uiMode === 'basic' ? (
         <BasicMode mobile={false} />
