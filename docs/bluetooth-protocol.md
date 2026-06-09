@@ -15,6 +15,7 @@
 > - **Polar H10 path is now first-class.** iOS apps that pair their own H10 (or any external HR source) should **send IBIs to the Edge via opcode `0xCA`** rather than computing coherence app-side. The Edge runs the same coherence pipeline regardless of source and drives the lens tinting automatically based on the active PPG program ([§4.3 opcode table](#43-control-characteristic-0xff01--command-opcodes), `0xCA` / `0xCB` / `0xB7`).
 > - **Edge BLE stack:** documentation corrected from `Bluedroid` → `NimBLE` (migration PR #22). No client-side impact — the GATT surface is identical.
 > - **New Edge opcodes documented:** `0xC5` refresh earclip config, `0xCA` external-IBI injection (H10 path), `0xCB` set HR source (`0` = earclip, `1` = H10/external), `0xE0` live coherence-pipeline tuning. `0xC0` marked as reserved / no-op.
+> - **New [§4.3.1 "Edge-side algorithm tuning"](#431-edge-side-algorithm-tuning) subsection** — full `narbis_coh_params_t` byte layout, defaults, ranges, FFT-bin grid reference, Swift mirror, and notes on `0xB8` difficulty preset + `0xB9` adaptive pacer.
 > - **`0xF2` coherence frame, byte 17:** was documented as `reserved`, is now `pacer_bpm` (current adaptive-pacer target BPM, PR #31 / #32). Length is still 18 B.
 > - **Earclip `narbis_runtime_config_t`:** bumped from Path B (`config_version 3`, 48-byte struct, 50-byte wire) to Path C (`config_version 4`, 72-byte struct, 74-byte wire) with 16 new adaptive-detector + Layer-E auxiliary fields appended. First 48 bytes are byte-identical between v3 and v4 — partial v3 reads still work. v4 firmware rejects writes with `config_version < 4` though, so always set `config_version = 4` when writing. See [§3.6](#36-the-runtime-config-struct).
 > - **Relayed CONFIG frame `0xF4`:** grew from 51 B (1 + 50) to 75 B (1 + 74) as a consequence of the v4 struct.
@@ -691,6 +692,99 @@ func edgeStartBreathe(bpm: UInt8, on p: CBPeripheral, ctrl chr: CBCharacteristic
     p.writeValue(Data([0xB1, bpm]),     for: chr, type: .withResponse)  // set BPM
 }
 ```
+
+### 4.3.1 Edge-side algorithm tuning
+
+The Edge exposes three families of runtime knobs over `0xFF01` for the coherence pipeline and the lens-driver feel. All three persist to NVS so a power cycle preserves what the user picked.
+
+> **Where the algorithm lives.** Beat detection lives on whichever source produces the IBIs (the earclip's Elgendi/NCC/Kalman pipeline, or the H10 if you're injecting via `0xCA`). **Coherence and lens tinting always run on the Edge**, regardless of source — so the tuning below changes behaviour identically for both paths.
+
+#### A. `0xE0` — coherence pipeline params (12-byte struct)
+
+Single write that replaces the entire `narbis_coh_params_t`. Wire format: `[0xE0]` + 12 raw struct bytes = **13 B total**. No CRC, no length prefix. On success the new params apply on the next coherence compute (≤ 1 s) and persist to NVS. On any validation failure the firmware silently drops the write and emits a `0xE0 reject: out-of-range` line on `0xF1`.
+
+> **FFT bin grid.** Every `*_lo` / `*_hi` field is an FFT bin index on a **fixed 4 Hz × 256-point grid** (`df = 4/256 = 0.015625 Hz/bin`). The grid is compile-time — resizing it would require dynamic FFT buffers. Useful conversions:
+>
+> | Frequency | Bin |
+> |---|---|
+> | 0.016 Hz | 1 (typical VLF lower edge) |
+> | 0.04 Hz | 3 (VLF / LF boundary) |
+> | 0.10 Hz | 6.4 (mid-LF, resonant breathing) |
+> | 0.15 Hz | 10 (LF / HF boundary) |
+> | 0.40 Hz | 26 (upper HF) |
+> | ~2 Hz | 127 (Nyquist) |
+
+| Offset | Size | Field | Default | Range | What it controls |
+|---|---|---|---|---|---|
+| 0 | 1 | `min_ibis` | 20 | 5–120 | Minimum collected beats before coherence is computed. Higher = smoother but slower to first valid reading. |
+| 1 | 1 | `conf_threshold` | 50 | 0–100 | Beats with `confidence < this` are dropped at the `0xCA` / earclip-IBI entry points. Applies to both H10 and earclip paths. |
+| 2 | 1 | `vlf_band_lo` | 1 | 0–127 | VLF band integration, inclusive lo |
+| 3 | 1 | `vlf_band_hi` | 2 | ≥ `vlf_band_lo`, ≤ 127 | VLF hi |
+| 4 | 1 | `lf_band_lo` | 3 | 0–127 | LF band integration, inclusive lo |
+| 5 | 1 | `lf_band_hi` | 9 | ≥ `lf_band_lo`, ≤ 127 | LF hi |
+| 6 | 1 | `hf_band_lo` | 10 | 0–127 | HF band integration, inclusive lo |
+| 7 | 1 | `hf_band_hi` | 25 | ≥ `hf_band_lo`, ≤ 127 | HF hi |
+| 8 | 1 | `lf_peak_lo` | 3 | 0–127 | LF peak-search window (Lehrer/Vaschillo numerator), inclusive lo |
+| 9 | 1 | `lf_peak_hi` | 9 | ≥ `lf_peak_lo`, ≤ 127 | LF peak hi |
+| 10 | 1 | `peak_halfwidth` | 0 | 0–8 | `0` = single-bin peak; `N` = sum the peak ± N bins inclusive |
+| 11 | 1 | `coh_multiplier` | 100 | 10–255 | Score scaling. 100 maps the peak/total ratio onto a nominal 0–100 score. (Was 250 pre-v4.14.31 — old presets that hard-coded 250 will under-shoot now.) |
+
+Swift mirror + write helper:
+
+```swift
+struct EdgeCohParams: Equatable {
+    var minIbis: UInt8 = 20
+    var confThreshold: UInt8 = 50
+    var vlfBandLo: UInt8 = 1,  vlfBandHi: UInt8 = 2
+    var lfBandLo:  UInt8 = 3,  lfBandHi:  UInt8 = 9
+    var hfBandLo:  UInt8 = 10, hfBandHi:  UInt8 = 25
+    var lfPeakLo:  UInt8 = 3,  lfPeakHi:  UInt8 = 9
+    var peakHalfwidth: UInt8 = 0
+    var cohMultiplier: UInt8 = 100
+}
+
+func writeCohParams(_ p: EdgeCohParams, on perif: CBPeripheral, ctrl: CBCharacteristic) {
+    let bytes: [UInt8] = [
+        0xE0,
+        p.minIbis, p.confThreshold,
+        p.vlfBandLo, p.vlfBandHi,
+        p.lfBandLo,  p.lfBandHi,
+        p.hfBandLo,  p.hfBandHi,
+        p.lfPeakLo,  p.lfPeakHi,
+        p.peakHalfwidth, p.cohMultiplier,
+    ]
+    perif.writeValue(Data(bytes), for: ctrl, type: .withResponse)
+}
+```
+
+> **No read-back characteristic.** There's no GATT read for the current `narbis_coh_params_t`. The firmware emits the active params on boot and after every accepted `0xE0` write as a `0xF1` log line (`0xE0 ok: lf=[..] hf=[..] pk=[..]±N mult=M`) — parse that if you want to mirror state. The success-log fields are LF band, HF band, LF-peak window, halfwidth, multiplier; `min_ibis` and `conf_threshold` are echoed on boot but not on every write.
+
+#### B. `0xB8` — coherence difficulty preset (1-byte arg)
+
+One-tap preset that tweaks the LF-peak search width and the score scale factor without touching the rest of the struct. Persists to NVS. Takes effect on the next coherence compute (≤ 1 s).
+
+| Arg | Preset | Effect |
+|---|---|---|
+| 0 | Easy (default) | Widest LF peak window, no score penalty |
+| 1 | Medium | Slightly narrower peak window |
+| 2 | Hard | Narrow peak window + score scale-down |
+| 3 | Expert | Strictest peak window + larger scale-down |
+
+`0xB8` and `0xE0` are not orthogonal — a `0xE0` write after a `0xB8` preset overrides whatever the preset set (and a future `0xB8` write will reset those fields back to its preset values). Treat them as alternatives, not stackable.
+
+#### C. `0xB9` — adaptive pacer toggle (1-byte arg)
+
+`[0xB9, 0]` → disabled (pacer holds whichever fixed BPM was last set via `0xB1`, default 6 BPM).
+`[0xB9, 1]` → enabled (pacer's target BPM walks slowly toward the user's measured resonant respiratory frequency, in 0.2 BPM steps with a slew-rate limit, PR #31 / #32).
+
+Persists to NVS. Only takes effect at the next cycle boundary of PPG program 2 (coh-breathe) or program 4 (coh-breathe-strobe) — no-op on programs 0 / 1 / 3.
+
+The current adaptive target is exposed in the [`0xF2` coherence frame](#443-coherence-packet-0xf2--18-b) at byte 17 (`pacer_bpm`), so a tuning UI can show "Target: 6.4 BPM" live without needing a separate read.
+
+#### Related but documented elsewhere
+
+- **Beat-detection tuning on the earclip side** (Elgendi / NCC / Kalman / watchdog params) lives in `narbis_runtime_config_t` v4 — see [§3.6](#36-the-runtime-config-struct). Only matters when the IBI source is the earclip; an H10-only build can ignore it. Write earclip config via the earclip's own `CONFIG_WRITE` characteristic or relay it through the Edge with [`0xC3`](#43-control-characteristic-0xff01--command-opcodes).
+- **Brightness, strobe rate / duty, breathe BPM / inhale ratio / hold times / waveform, PPG program selection** are all single-byte opcodes in the [§4.3 opcode table](#43-control-characteristic-0xff01--command-opcodes) (`0xA2`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB7`).
 
 ### 4.4 Status characteristic `0xFF03` — notification multiplexer
 
