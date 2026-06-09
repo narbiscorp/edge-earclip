@@ -16,6 +16,11 @@
 > - **Edge BLE stack:** documentation corrected from `Bluedroid` → `NimBLE` (migration PR #22). No client-side impact — the GATT surface is identical.
 > - **New Edge opcodes documented:** `0xC5` refresh earclip config, `0xCA` external-IBI injection (H10 path), `0xCB` set HR source (`0` = earclip, `1` = H10/external), `0xE0` live coherence-pipeline tuning. `0xC0` marked as reserved / no-op.
 > - **New [§4.3.1 "Edge-side algorithm tuning"](#431-edge-side-algorithm-tuning) subsection** — full `narbis_coh_params_t` byte layout, defaults, ranges, FFT-bin grid reference, Swift mirror, and notes on `0xB8` difficulty preset + `0xB9` adaptive pacer.
+> - **New [§4.7 "Driving the Edge from an external HR source"](#47-driving-the-edge-from-an-external-hr-source-polar-h10--apple-watch--app-side-detector) end-to-end Swift example** for the H10 path (per-connect setup + per-beat forward).
+> - **Edge MTU corrected:** `247`, not `517`. Doc was wrong on this since the original draft — both Edge and earclip request the same MTU.
+> - **Edge TX power corrected:** uniform **0 dBm** across ADV / SCAN / CONN (was previously tiered `−6 dBm` ADV / `−12 dBm` CONN). Roughly 4× connected range at +1 mA idle.
+> - **§3.1.8 diagnostics bitmask:** added `0x20 DETECTOR_STATS` (adaptive-detector per-beat snapshot, v4 / Path C only).
+> - **`0xB6` pulse-on-beat note:** clarified it works with `0xCA`-injected H10 beats too, not just earclip beats via the relay.
 > - **`0xF2` coherence frame, byte 17:** was documented as `reserved`, is now `pacer_bpm` (current adaptive-pacer target BPM, PR #31 / #32). Length is still 18 B.
 > - **Earclip `narbis_runtime_config_t`:** bumped from Path B (`config_version 3`, 48-byte struct, 50-byte wire) to Path C (`config_version 4`, 72-byte struct, 74-byte wire) with 16 new adaptive-detector + Layer-E auxiliary fields appended. First 48 bytes are byte-identical between v3 and v4 — partial v3 reads still work. v4 firmware rejects writes with `config_version < 4` though, so always set `config_version = 4` when writing. See [§3.6](#36-the-runtime-config-struct).
 > - **Relayed CONFIG frame `0xF4`:** grew from 51 B (1 + 50) to 75 B (1 + 74) as a consequence of the v4 struct.
@@ -63,7 +68,7 @@
 | Standard SIG services | none | HRS `0x180D`, Battery `0x180F`, DIS `0x180A` |
 | OTA service UUID | `0x00FF` (chars `0xFF01`–`0xFF04`) | `0x00FF` (chars `0xFF01`–`0xFF03`) |
 | Encryption / bonding | none | none |
-| Negotiated MTU | requests 517 | requests 247 |
+| Negotiated MTU | requests 247 | requests 247 |
 | Connection interval (typical) | 20–30 ms, slave latency 1, 20 s timeout | per-central, picked from the role byte: DASHBOARD → LOW_LATENCY (15–30 ms), GLASSES → BATCHED (50–100 ms) |
 | Earclip ↔ Edge link | **BLE central role** (Edge is the central; earclip is peripheral). ESP-NOW removed in Path B. | Same — earclip is the peripheral |
 
@@ -157,7 +162,7 @@ let writeNoRespMax = peripheral.maximumWriteValueLength(for: .withoutResponse)
 let writeWithRespMax = peripheral.maximumWriteValueLength(for: .withResponse)
 ```
 
-This value is final only **after** services are discovered. The Edge requests an ATT MTU of 517 and the earclip requests 247, but iOS may cap lower — read the actual value before you start chunking OTA pages.
+This value is final only **after** services are discovered. Both devices request an ATT MTU of 247, but iOS may cap lower — read the actual value before you start chunking OTA pages.
 
 ### 2.5 Reconnection
 
@@ -337,11 +342,17 @@ Optional debug stream gated by the master `diagnostics_enabled` flag and the `di
 Stream IDs:
 
 ```
-0x01  PRE_FILTER     raw DC-removed PPG samples
-0x02  POST_FILTER    bandpass-filtered samples
-0x04  PEAK_CAND      Elgendi peak candidates pre-validator
-0x08  AGC_EVENT      per-AGC-step LED current changes
-0x10  FIFO_OCCUP     MAX3010x FIFO occupancy
+0x01  PRE_FILTER       raw DC-removed PPG samples
+0x02  POST_FILTER      bandpass-filtered samples
+0x04  PEAK_CAND        Elgendi peak candidates pre-validator
+0x08  AGC_EVENT        per-AGC-step LED current changes
+0x10  FIFO_OCCUP       MAX3010x FIFO occupancy at each drain
+0x20  DETECTOR_STATS   🆕 v4 (Path C) — adaptive-detector snapshot per accepted beat:
+                       NCC ×1000, adaptive-α ×1000, Kalman x̂ (ms), Kalman R (ms²),
+                       beats_learned, ncc_rejects, kalman_rejects, watchdog_resets,
+                       beats_in_template, detector_mode. Only meaningful when
+                       config_version 4 and detector_mode = ADAPTIVE (1) — silent
+                       under FIXED.
 ```
 
 Skip this characteristic unless you're building a tuning UI.
@@ -620,11 +631,10 @@ The Edge advertises one custom service, **`0x00FF`**, with four characteristics 
 | Device name | `Narbis_Edge` (exact) |
 | Advertising interval | 100–200 ms |
 | Adv type | connectable + scannable (`ADV_IND`) |
-| TX power (advertising) | −6 dBm |
-| TX power (connected) | −12 dBm |
+| TX power | **0 dBm uniform** (all TX types: ADV / SCAN / CONN). Bumped from the prior tiered `−6 dBm` adv / `−12 dBm` connected scheme to maximize range at ~+1 mA idle cost. Roughly 4× connected range and 2× advertising range vs. the old scheme. |
 | Adv flags | GENERAL_DISCOVERABLE + BR/EDR_NOT_SUPPORTED |
 | Idle teardown | After 5 minutes with no client connected, the BLE stack shuts down completely (radio off). Re-armed on magnet tap or wake. |
-| Requested MTU | 517 |
+| Requested MTU | **247** (`ble_att_set_preferred_mtu(247)`). Older revisions of this doc said 517 — that was never accurate. |
 | Connection interval | 20–30 ms |
 | Slave latency | 1 |
 | Supervision timeout | 20 s (long, because OTA partition erase can block for up to 19 s) |
@@ -666,7 +676,7 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xB3` | Breathe hold-top | 0–50 (×100 ms) | yes | |
 | `0xB4` | Breathe hold-bottom | 0–50 (×100 ms) | yes | |
 | `0xB5` | Breathe waveform | 0 sine, 1 linear | yes | |
-| `0xB6` | Pulse-on-beat mode | any | no | needs earclip beats via the BLE relay (see [§4.6](#46-the-edge-as-relay-path-b)) |
+| `0xB6` | Pulse-on-beat mode | any | no | Lens pulses once per detected beat. Needs beats reaching the Edge's coherence pipeline — either via the BLE relay from the earclip (see [§4.6](#46-the-edge-as-relay-path-b)) or via `0xCA` external-IBI injection (e.g. iOS forwarding Polar H10 R-R intervals). |
 | `0xB7` | PPG program | 0–3 | no | 0 heartbeat, 1 coh-breathe, 2 coh-lens, 3 coh-breathe-strobe |
 | `0xB8` | Coherence difficulty | 0–3 | yes | easy / medium / hard / expert |
 | `0xB9` | Adaptive pacer | 0/1 | yes | |
@@ -1155,6 +1165,60 @@ func forgetEarclip() {
     edgePeripheral.writeValue(Data([0xC1, 0]), for: edgeControl, type: .withResponse)
 }
 ```
+
+### 4.7 Driving the Edge from an external HR source (Polar H10 / Apple Watch / app-side detector)
+
+🆕 **Path B.** If iOS is already paired with an external HR source — a Polar H10, an Apple Watch with healthkit, an app-internal PPG detector, anything that emits R-R intervals — you do **not** need to compute coherence or tinting on the app side. Forward the IBIs to the Edge via `0xCA` and the Edge will run the same coherence pipeline it uses for earclip beats and drive the lens automatically based on the selected PPG program.
+
+This is the recommended path for any non-earclip HR source: one source of truth for the algorithm, identical lens behaviour regardless of source, and you get tuning (`0xE0` / `0xB8` / `0xB9`) and pacer overlay (`pacer_bpm` in `0xF2`) for free.
+
+**Per-connect setup (do this once each time iOS connects to the Edge):**
+
+```swift
+// 1. Tell the Edge that beats will be coming from iOS, not the earclip.
+//    arg = 0 (earclip / resume central scan) or 1 (external — pause central scan).
+//    Not persisted; re-assert on every reconnect.
+edgePeripheral.writeValue(Data([0xCB, 0x01]), for: edgeControl, type: .withResponse)
+
+// 2. Pick the PPG program (lens behaviour):
+//    0 heartbeat        — pulse on every beat
+//    1 coh-breathe      — lens follows the breathing pacer
+//    2 coh-lens         — lens opacity tracks the coherence score directly
+//    3 coh-breathe-strobe — pacer + strobe
+edgePeripheral.writeValue(Data([0xB7, 0x02]), for: edgeControl, type: .withResponse)
+
+// 3. (Optional) subscribe to 0xFF03 to receive 0xF2 coherence updates,
+//    0xFA link-quality, and 0xF1 firmware logs.
+edgePeripheral.setNotifyValue(true, for: edgeStatus)
+```
+
+**Per-beat (call once for each beat your HR source emits):**
+
+```swift
+// rrMs is one R-R interval from your HR source, in ms.
+// (For Polar H10's 0x2A37 Heart Rate Measurement, convert: rrMs = rrRaw1024 * 1000 / 1024.)
+func forwardBeatToEdge(rrMs: UInt16, confidence: UInt8 = 100, isArtifact: Bool = false) {
+    let flags: UInt8 = isArtifact ? 0x01 : 0x00
+    let bytes: [UInt8] = [
+        0xCA,
+        UInt8(rrMs & 0xFF),
+        UInt8(rrMs >> 8),
+        confidence,                 // 0…100; the Edge drops beats below conf_threshold (default 50)
+        flags,                      // bit 0 = ARTIFACT (Edge drops these silently)
+    ]
+    edgePeripheral.writeValue(Data(bytes), for: edgeControl, type: .withoutResponse)
+}
+```
+
+**That's the whole integration.** A few notes:
+
+- **Use `.withoutResponse`** for per-beat writes — `.withResponse` adds a round-trip per beat and you don't need the ACK.
+- **You don't need to gate yourself.** The Edge silently drops beats with `confidence < g_coh_params.conf_threshold` (default 50) or `flags & ARTIFACT`. If your source has no confidence/quality signal, just pass `confidence = 100`.
+- **R-R interval bit width.** The doc's `ibi_ms` field is `u16` — values up to 65535 ms. Polar H10's `0x2A37` carries R-R in 1/1024-second units in a `u16`; convert before forwarding.
+- **Setting source = `1` (H10) pauses** the Edge's BLE central scan for the earclip — saves power, prevents the earclip pipeline from competing if both happen to be in range. Setting it back to `0` resumes the scan.
+- **Pulse-on-beat program (`0xB7 0`)** works with `0xCA` beats — the lens pulses each time your `0xCA` write lands. No earclip required.
+- **Coherence updates** arrive on `0xFF03` as `0xF2` frames once per second (see [§4.4.3](#443-coherence-packet-0xf2--18-b)). Byte 17 carries the current adaptive-pacer BPM if `0xB9` is enabled — useful for an in-app overlay.
+- **For tuning sliders / sensitivity presets**, see [§4.3.1 Edge-side algorithm tuning](#431-edge-side-algorithm-tuning). The `0xB8` difficulty preset (Easy/Medium/Hard/Expert) is the cheapest UX hook.
 
 ---
 
