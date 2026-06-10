@@ -1219,6 +1219,7 @@ func forwardBeatToEdge(rrMs: UInt16, confidence: UInt8 = 100, isArtifact: Bool =
 - **Pulse-on-beat program (`0xB7 0`)** works with `0xCA` beats — the lens pulses each time your `0xCA` write lands. No earclip required.
 - **Coherence updates** arrive on `0xFF03` as `0xF2` frames once per second (see [§4.4.3](#443-coherence-packet-0xf2--18-b)). Byte 17 carries the current adaptive-pacer BPM if `0xB9` is enabled — useful for an in-app overlay.
 - **For tuning sliders / sensitivity presets**, see [§4.3.1 Edge-side algorithm tuning](#431-edge-side-algorithm-tuning). The `0xB8` difficulty preset (Easy/Medium/Hard/Expert) is the cheapest UX hook.
+- **If you want the algorithm app-side instead** (e.g. so you can run it on H10 R-R intervals without any glasses round-trip, and just push the computed lens duty via `0xA5`), the full pipeline — outlier gate, IBI ring, resample, FFT, band integration, peak detection, EWMA smoothing, adaptive pacer, and the four PPG-program lens mappings — is extracted verbatim with field-by-field descriptions in [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md). That doc is the complete reference for porting the glasses-side algorithm to Swift.
 
 ---
 
