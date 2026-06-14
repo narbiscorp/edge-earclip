@@ -6,16 +6,17 @@ import { playChime } from '../audio/chime';
 /*
  * BreathChime — plays the inhale/exhale cue on each paced-breath phase change.
  *
- * Renders nothing; mount once at the app root. Only fires when the chime is enabled AND a
- * breathing pacer is actually active (the app-side engine is running, or a firmware breathing
- * program / standalone breathe is selected), so it never chimes against a phantom 6-br/min
- * cycle when nothing is guiding the breath.
+ * Renders nothing; mount once at the app root. Only fires when the chime is enabled AND the
+ * app-side engine (Mode A/B) is running — NOT in Standard/firmware mode, where the glasses drive
+ * the breath cycle on a phase the dashboard can't observe (the chime would drift). This also
+ * avoids chiming against a phantom 6-br/min cycle when nothing is guiding the breath.
  */
 export default function BreathChime() {
   const enabled = useDashboardStore((s) => s.chimeEnabled);
   const inhaleVoice = useDashboardStore((s) => s.chimeInhale);
   const exhaleVoice = useDashboardStore((s) => s.chimeExhale);
   const engineRunning = useDashboardStore((s) => !!s.engineStatus?.running);
+  const engineMode = useDashboardStore((s) => s.engineMode);
   const activeProgram = useDashboardStore((s) => s.activeProgram);
   const standalone = useDashboardStore((s) => s.standaloneMode);
   const breath = useBreathPhase();
@@ -24,7 +25,9 @@ export default function BreathChime() {
 
   const pacerActive =
     engineRunning || activeProgram === 2 || activeProgram === 4 || standalone === 'breathe';
-  const active = enabled && pacerActive;
+  // Suppress in Standard/firmware mode — the glasses drive the breath cycle there on a phase we
+  // can't observe, so a chime would drift. The chime plays only when the engine owns the clock (A/B).
+  const active = enabled && pacerActive && engineMode !== 'firmware';
 
   useEffect(() => {
     if (!active) {

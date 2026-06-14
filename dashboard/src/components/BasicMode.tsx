@@ -183,6 +183,10 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
 
   const progInfo = program != null ? PROGRAM_INFO[program] : null;
   const zone = cohZone(coh);
+  /* The breathing cue + chime only make sense when the app-side engine owns the breath clock
+   * (Mode A/B). In Standard mode the firmware drives the lens on a phase the dashboard can't
+   * observe, so we hide them rather than show a cue that drifts out of sync with the glasses. */
+  const showBreathUi = engineMode !== 'firmware';
   const headerTitle = engineActive
     ? engineMode === 'modeA'
       ? 'Mode A · Follow'
@@ -209,7 +213,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             with a dynamic Inhale / Exhale cue (cyan italic-serif,
             paced by useBreathPhase so it stays in lockstep with the
             lens cycle), color-coded session clock, green LIVE chip. */}
-        <LiveHeader programTitle={headerTitle} edgeConnected={edgeConnected} cohLive={coh != null} />
+        <LiveHeader programTitle={headerTitle} edgeConnected={edgeConnected} cohLive={coh != null} showBreathCue={showBreathUi} />
 
         {/* ── SessionControls ────────────────────────────────────
             Pause / End & Save / End (no save) — wired straight to
@@ -232,8 +236,9 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           onPick={(m) => void setEngineMode(m)}
         />
 
-        {/* ── Breathing chime — on/off + inhale/exhale sound pickers. */}
-        <ChimeControls />
+        {/* ── Breathing chime — on/off + inhale/exhale sound pickers. Shown only in Mode A/B;
+            in Standard the firmware drives the lens and the chime can't be phase-locked to it. */}
+        {showBreathUi && <ChimeControls />}
 
         {/* ── Hero: coherence ring + zone pill + lens tint bar ─── */}
         <section className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-5 items-center">
@@ -242,7 +247,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           </div>
           <div className="space-y-3">
             <ZonePill coh={coh} zone={zone} />
-            <BreathCue hint={cohHint(coh)} />
+            {showBreathUi && <BreathCue hint={cohHint(coh)} />}
             {/* Tiny live readout under the bar: pacerBpm + respBpm. The
                 full breath/HR cards are at the bottom of the view; this
                 line keeps the hero from feeling sparse for users who
@@ -354,10 +359,12 @@ function LiveHeader({
   programTitle,
   edgeConnected,
   cohLive,
+  showBreathCue,
 }: {
   programTitle: string | null;
   edgeConnected: boolean;
   cohLive: boolean;
+  showBreathCue: boolean;
 }) {
   /* Tick the clock once per second when active. Paused / ended states
    * are frozen so the interval is just wasted setState calls. */
@@ -412,7 +419,7 @@ function LiveHeader({
         </div>
         <h2 className="mt-0.5 text-2xl font-semibold text-slate-100 truncate">
           {programTitle ?? 'Pick a mode'}
-          {edgeConnected && (
+          {edgeConnected && showBreathCue && (
             <span
               className="ml-2 font-serif italic font-normal text-cyan-300 transition-opacity duration-700"
               key={breath.phase}
