@@ -51,7 +51,7 @@ import {
 } from '../../../protocol/narbis_protocol';
 import { coherenceEngine, type EngineMode, type EngineStatus } from '../engine/coherenceEngine';
 import { DEFAULT_TUNABLES, type CoherenceTunables } from '../engine/tunables';
-import type { PolarAccEvent } from '../ble/polarH10';
+import type { PolarAccEvent, PolarAccInfoDetail } from '../ble/polarH10';
 import type { ChimeVoice } from '../audio/chime';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
@@ -890,6 +890,13 @@ polarH10.addEventListener('accReceived', (e) => {
     const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
     accMagBuffer.push(baseMs - (n - 1 - i) * stepMs, mag); // newest sample lands at tArrivalS
   }
+});
+
+// Surface ACC stream diagnostics (service found, device accept/reject, first frame) to the
+// BLE event log so a blank breathing-wave graph is debuggable.
+polarH10.addEventListener('accInfo', (e) => {
+  const d = (e as CustomEvent<PolarAccInfoDetail>).detail;
+  appendBleLog('polar', d.level === 'error' ? 'error' : d.level === 'warn' ? 'warn' : 'info', `ACC: ${d.message}`);
 });
 
 // Monotonic raw-PPG timestamping. The firmware doesn't send per-sample

@@ -16,7 +16,7 @@ import FilteredBeatChart from './FilteredBeatChart';
 import CoherenceChart from './CoherenceChart';
 import AccChart from './AccChart';
 import ChimeControls from './ChimeControls';
-import { useLensOpacity } from '../state/useLensOpacity';
+import BreathCue from './BreathCue';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
 import type { EngineMode, EngineStatus } from '../engine/coherenceEngine';
@@ -242,7 +242,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           </div>
           <div className="space-y-3">
             <ZonePill coh={coh} zone={zone} />
-            <LensTintBar coh={coh} tintOverride={engineActive ? engineStatus!.duty : undefined} />
+            <BreathCue hint={cohHint(coh)} />
             {/* Tiny live readout under the bar: pacerBpm + respBpm. The
                 full breath/HR cards are at the bottom of the view; this
                 line keeps the hero from feeling sparse for users who
@@ -612,34 +612,6 @@ function ZonePill({ coh, zone }: { coh: number | null; zone: CohZone | null }) {
   );
 }
 
-/* Lens tint progress bar — mirrors the firmware's effective_duty via
- * the shared useLensOpacity hook. Subtitle is coherence-driven copy:
- * "Clear — hold this rhythm" when coh ≥ 70, etc. The bar fill
- * animates in lockstep with the breath cue in the LiveHeader since
- * both ultimately read the same 40/60 cycle math. */
-function LensTintBar({ coh, tintOverride }: { coh: number | null; tintOverride?: number }) {
-  const opacity = useLensOpacity();
-  const tintPct = tintOverride != null ? Math.round(tintOverride) : Math.round(opacity * 100);
-  const hint = cohHint(coh);
-  return (
-    <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-3">
-      <div className="flex items-baseline justify-between mb-2">
-        <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400">
-          Lens tint · Coherence
-        </div>
-        <div className="text-sm tabular-nums text-slate-200">{tintPct}%</div>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-teal-300 to-emerald-400"
-          style={{ width: `${tintPct}%`, transition: 'width 200ms ease' }}
-        />
-      </div>
-      <div className="text-xs italic font-serif text-slate-400 mt-2">{hint}</div>
-    </div>
-  );
-}
-
 /* ChartCard — cinematic chrome around the Plotly chart components.
  * Header has a small-caps title on the left and a current-value
  * readout on the right (e.g. "891 ms" for IBI). Inside the body sits
@@ -773,6 +745,16 @@ function EngineModeStrip({
               {info.title} <span className="text-slate-400 font-normal">· {info.sub}</span>
             </div>
             <p className="text-[13px] leading-relaxed text-slate-300">{info.details}</p>
+            {info.references && info.references.length > 0 ? (
+              <div className="mt-1 border-t border-slate-800 pt-2">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Based on</div>
+                <ul className="list-disc list-inside text-[11px] leading-snug text-slate-400 space-y-1">
+                  {info.references.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="flex justify-end pt-1">
               <button
                 type="button"

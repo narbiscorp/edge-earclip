@@ -159,6 +159,16 @@ export default function CoherenceEnginePanel() {
               {info.title} <span className="text-slate-400 font-normal">· {info.sub}</span>
             </div>
             <p className="text-[13px] leading-relaxed text-slate-300">{info.details}</p>
+            {info.references && info.references.length > 0 ? (
+              <div className="mt-1 border-t border-slate-800 pt-2">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Based on</div>
+                <ul className="list-disc list-inside text-[11px] leading-snug text-slate-400 space-y-1">
+                  {info.references.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="flex justify-end pt-1">
               <button
                 type="button"

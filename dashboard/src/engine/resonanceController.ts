@@ -47,7 +47,9 @@ export class ResonanceController {
   // dwell bookkeeping
   private breathsThisDwell = 0;
   private dwellAmps: number[] = [];
-  private dwellValid = true;
+  private dwellArtifactOk = true; // no gated beats this dwell
+  private dwellVerified = 0; // estimate-window breaths positively verified against ACC
+  private dwellEstimate = 0; // estimate-window breaths total
 
   // search state — explicit bracket → golden-section → lock
   private phase: SearchPhase = 'probe0';
@@ -131,18 +133,19 @@ export class ResonanceController {
 
     // Collect + verify only in the estimate window (after settling).
     if (this.breathsThisDwell > settle) {
-      // POSITIVE verification: a cycle counts only if respiration is CONFIRMED at the
-      // paced rate. Low ACC confidence ⇒ UNVERIFIABLE ⇒ invalid.
+      // POSITIVE verification: a breath counts only if respiration is CONFIRMED at the paced
+      // rate (ACC confidence high enough AND measured ≈ paced). Low confidence ⇒ unverifiable.
+      this.dwellEstimate += 1;
       const verified =
         measuredBPM !== null &&
         respConfidence >= this.t.respConfidenceMin &&
         Math.abs(measuredBPM - verifyRate) <= this.t.respVerifyToleranceBPM;
-      if (!verified) this.dwellValid = false;
+      if (verified) this.dwellVerified += 1;
       if (cycleAmplitude !== null && Number.isFinite(cycleAmplitude)) {
         this.dwellAmps.push(cycleAmplitude); // never let NaN into the estimate
       }
     }
-    if (!dwellArtifactClean) this.dwellValid = false;
+    if (!dwellArtifactClean) this.dwellArtifactOk = false;
 
     if (this.breathsThisDwell < this.t.dwellBreaths) return this.commandedBPM;
 
@@ -150,10 +153,16 @@ export class ResonanceController {
     const resetDwell = () => {
       this.breathsThisDwell = 0;
       this.dwellAmps = [];
-      this.dwellValid = true;
+      this.dwellArtifactOk = true;
+      this.dwellVerified = 0;
+      this.dwellEstimate = 0;
     };
 
-    if (!this.dwellValid || this.dwellAmps.length === 0) {
+    // A dwell counts if it was artifact-clean AND a MAJORITY of its estimate-window breaths
+    // were positively verified against the ACC respiration — robust to the odd noisy breath,
+    // while still rejecting a dwell the user clearly didn't follow.
+    const verifiedEnough = this.dwellEstimate > 0 && this.dwellVerified * 2 >= this.dwellEstimate;
+    if (!this.dwellArtifactOk || !verifiedEnough || this.dwellAmps.length === 0) {
       this.unverifiedDwells += 1; // discard → re-dwell at the same rate
       if (this.unverifiedDwells >= this.t.maxUnverifiedDwells) {
         this.searchAborted = true; // stop hunting on data we can never verify
@@ -325,7 +334,9 @@ export class ResonanceController {
     this.samples = [];
     this.breathsThisDwell = 0;
     this.dwellAmps = [];
-    this.dwellValid = true;
+    this.dwellArtifactOk = true;
+    this.dwellVerified = 0;
+    this.dwellEstimate = 0;
     this.commandedBPM = this.lockedRF;
     this.lastReprobeS = nowS;
     this.lowSinceS = null;

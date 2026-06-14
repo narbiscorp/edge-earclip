@@ -23,6 +23,12 @@ export interface PolarAccEvent {
   tArrivalS: number;
 }
 
+/** Diagnostic messages from the ACC stream setup (service found, accept/reject, first frame). */
+export interface PolarAccInfoDetail {
+  message: string;
+  level: 'info' | 'warn' | 'error';
+}
+
 export interface PolarDisconnectedDetail {
   reason: 'user' | 'gatt' | 'error';
   error?: Error;
@@ -79,45 +85,50 @@ function readSignedBits(bytes: Uint8Array, bitOffset: number, size: number): num
   return value;
 }
 
+export interface AccSample {
+  x: number;
+  y: number;
+  z: number;
+}
+
 /**
  * Decode a PMD ACC data frame into x/y/z samples. Layout:
  *   [0] measurement type (0x02)  [1..8] timestamp u64  [9] frame type  [10..] payload.
  * For H10 ACC the payload is delta-frame compressed: a full reference sample (3 channels ×
- * 16-bit signed), then groups of {deltaBits u8, sampleCount u8, packed signed deltas}, each
- * delta accumulated onto the running sample.
+ * 16-bit signed), then groups of {deltaBits u8, sampleCount u8, packed signed deltas}. Each
+ * group's packed data is byte-aligned to the NEXT byte before the next group header — this is
+ * the detail the Polar SDK gets right (offset += ceil(deltaSize·channels·sampleCount / 8)).
  */
-function parseAccFrame(dv: DataView): Array<{ x: number; y: number; z: number }> {
+function parseAccFrame(dv: DataView): AccSample[] {
   if (dv.byteLength < 10 || dv.getUint8(0) !== PMD_MEAS_TYPE_ACC) return [];
   const channels = 3;
   const refBytes = ACC_RESOLUTION_BITS / 8; // 2
   const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
 
-  let off = 0;
+  let off = 0; // BYTE offset into payload
   const current: number[] = [];
   for (let c = 0; c < channels; c++) {
     // 16-bit signed little-endian reference value.
-    current.push((payload[off] | (payload[off + 1] << 8)) << 16 >> 16);
+    current.push(((payload[off] | (payload[off + 1] << 8)) << 16) >> 16);
     off += refBytes;
   }
-  const out: Array<{ x: number; y: number; z: number }> = [
-    { x: current[0], y: current[1], z: current[2] },
-  ];
+  const out: AccSample[] = [{ x: current[0], y: current[1], z: current[2] }];
 
-  let bitOff = off * 8;
-  const totalBits = payload.length * 8;
-  while (bitOff + 16 <= totalBits) {
-    const deltaSize = payload[bitOff >> 3];
-    const sampleCount = payload[(bitOff >> 3) + 1];
-    bitOff += 16;
+  while (off + 2 <= payload.length) {
+    const deltaSize = payload[off];
+    const sampleCount = payload[off + 1];
+    off += 2;
     if (deltaSize === 0 || sampleCount === 0) break;
+    let bitOff = off * 8;
     for (let s = 0; s < sampleCount; s++) {
       for (let c = 0; c < channels; c++) {
         current[c] += readSignedBits(payload, bitOff, deltaSize);
         bitOff += deltaSize;
       }
       out.push({ x: current[0], y: current[1], z: current[2] });
-      if (bitOff > totalBits) return out;
     }
+    off += Math.ceil((deltaSize * channels * sampleCount) / 8); // byte-align to next group
+    if (off > payload.length) break;
   }
   return out;
 }
@@ -211,6 +222,7 @@ export class PolarH10 extends EventTarget {
   private accCtrl: BluetoothRemoteGATTCharacteristic | null = null;
   private accData: BluetoothRemoteGATTCharacteristic | null = null;
   private accStreaming = false;
+  private accFramesSeen = 0;
 
   get status(): PolarStatus {
     return this._status;
@@ -262,29 +274,57 @@ export class PolarH10 extends EventTarget {
     }
   }
 
+  private accInfo(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    this.dispatch('accInfo', { message, level } as PolarAccInfoDetail);
+  }
+
   /** Start the PMD accelerometer stream (50 Hz, ±2 g, 16-bit). Idempotent; no-op if not
-   * connected. Emits 'accReceived' (PolarAccEvent) per data notification. */
+   * connected. Emits 'accReceived' (PolarAccEvent) per data notification, and 'accInfo'
+   * diagnostics (service found, device accept/reject, first frame) so failures are visible. */
   async startAccStream(): Promise<void> {
     if (this.accStreaming) return;
     if (!this.server) throw new Error('not connected');
-    const svc = await this.server.getPrimaryService(PMD_SERVICE_UUID);
-    const [ctrl, data] = await Promise.all([
-      svc.getCharacteristic(PMD_CONTROL_UUID),
-      svc.getCharacteristic(PMD_DATA_UUID),
-    ]);
+    this.accFramesSeen = 0;
+
+    let svc: BluetoothRemoteGATTService;
+    try {
+      svc = await this.server.getPrimaryService(PMD_SERVICE_UUID);
+    } catch (err) {
+      this.accInfo(
+        `PMD service not found (${(err as Error).message}) — reconnect the H10; if it persists this strap may not expose the accelerometer`,
+        'error',
+      );
+      throw err;
+    }
+    const ctrl = await svc.getCharacteristic(PMD_CONTROL_UUID);
+    const data = await svc.getCharacteristic(PMD_DATA_UUID);
     this.accCtrl = ctrl;
     this.accData = data;
-    // The control point indicates responses; subscribe so the stack drains them.
+
+    // Subscribe to the control point's indication first — that's how the H10 reports
+    // whether it accepted our settings (start/stop responses).
     try {
+      ctrl.addEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
+      this.listeners.push({ target: ctrl, type: 'characteristicvaluechanged', listener: this.onAccCtrlNotify });
       await ctrl.startNotifications();
-    } catch {
-      /* some stacks expose control as write-only — ignore */
+    } catch (err) {
+      this.accInfo(`PMD control subscribe failed: ${(err as Error).message}`, 'warn');
     }
+
+    // Subscribe to the data characteristic BEFORE starting the measurement.
     data.addEventListener('characteristicvaluechanged', this.onAccNotify);
     this.listeners.push({ target: data, type: 'characteristicvaluechanged', listener: this.onAccNotify });
     await data.startNotifications();
-    await ctrl.writeValueWithResponse(toBufferSource(buildAccStartCommand()));
+
+    // Request ACC start. Prefer write-with-response; some stacks only allow without-response.
+    const cmd = toBufferSource(buildAccStartCommand());
+    try {
+      await ctrl.writeValueWithResponse(cmd);
+    } catch {
+      await ctrl.writeValueWithoutResponse(cmd);
+    }
     this.accStreaming = true;
+    this.accInfo(`ACC start requested (${ACC_SAMPLE_RATE_HZ} Hz, ±${ACC_RANGE_G} g) — awaiting frames`, 'info');
   }
 
   /** Stop the PMD accelerometer stream. Idempotent; safe to call when not streaming. */
@@ -310,11 +350,29 @@ export class PolarH10 extends EventTarget {
     }
   }
 
+  /** Control-point indication: [0]=0xF0, [1]=opcode, [2]=measType, [3]=status (0 = OK). */
+  private onAccCtrlNotify = (ev: Event): void => {
+    const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
+    if (!dv || dv.byteLength < 4 || dv.getUint8(0) !== 0xf0) return;
+    const opcode = dv.getUint8(1);
+    const status = dv.getUint8(3);
+    if (opcode === 0x02) {
+      if (status === 0) this.accInfo('H10 accepted the ACC stream', 'info');
+      else this.accInfo(`H10 REJECTED the ACC start (status ${status}) — the requested settings are unsupported`, 'error');
+    }
+  };
+
   private onAccNotify = (ev: Event): void => {
     try {
       const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
       if (!dv) return;
       const samples = parseAccFrame(dv);
+      if (samples.length > 0 && this.accFramesSeen < 1) {
+        this.accInfo(`ACC streaming — ${samples.length} samples/frame (${dv.byteLength} B)`, 'info');
+      } else if (samples.length === 0 && this.accFramesSeen < 3) {
+        this.accInfo(`ACC frame not parsed (type=0x${dv.getUint8(0).toString(16)}, ${dv.byteLength} B)`, 'warn');
+      }
+      this.accFramesSeen += 1;
       if (samples.length === 0) return;
       this.dispatch('accReceived', { samples, tArrivalS: Date.now() / 1000 } as PolarAccEvent);
     } catch (err) {
@@ -406,6 +464,7 @@ export class PolarH10 extends EventTarget {
     this.server = null;
     // ACC stream characteristics are invalid once the GATT session is gone.
     this.accStreaming = false;
+    this.accFramesSeen = 0;
     this.accCtrl = null;
     this.accData = null;
     if (!opts.keepDevice) {

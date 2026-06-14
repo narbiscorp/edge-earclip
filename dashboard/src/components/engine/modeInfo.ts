@@ -12,6 +12,8 @@ export interface EngineModeInfo {
   desc: string;
   /** Full explanation shown in the info popover. */
   details: string;
+  /** Peer-reviewed references the method is based on (shown in the popover). */
+  references?: string[];
 }
 
 export const ENGINE_MODE_INFO: EngineModeInfo[] = [
@@ -30,6 +32,11 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
     desc: 'App-side coherence training that paces your breathing.',
     details:
       'Coherence biofeedback, computed in the app. Every second it measures your heart-rate variability with a Lomb–Scargle spectrum, finds the breathing rate you are naturally drifting toward, and gently paces you there (drifting ±0.2 br/min per breath, never jumping). The lens clears as your HRV becomes more coherent — the score is the field-standard coherence ratio, peak ÷ (total − peak), shown 0–100. Works with the earclip or a Polar H10.',
+    references: [
+      'McCraty R, Childre D. Coherence: bridging personal, social, and global health. Altern Ther Health Med. 2010;16(4):10–24. (the coherence-ratio method)',
+      'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
+      'Shaffer F, Ginsberg JP. An overview of heart rate variability metrics and norms. Front Public Health. 2017;5:258.',
+    ],
   },
   {
     id: 'modeB',
@@ -38,6 +45,11 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
     desc: 'Finds your personal resonance breathing rate.',
     details:
       'Resonance-frequency training (the Lehrer / Vaschillo protocol, automated). It paces you across a range of slow breathing rates (about 4–7.5 br/min), measures how big your HRV swings are at each, and climbs toward the rate that produces the largest swings — your personal resonance frequency, where heart and breath line up. Each held rate is verified against your ACTUAL breathing, measured from the Polar H10’s accelerometer, so it cannot be fooled by the ~0.1 Hz Mayer wave. Needs a Polar H10. Once found, it locks the rate and gently maintains it. Sit still while it searches.',
+    references: [
+      'Lehrer PM, Vaschillo E, Vaschillo B. Resonant frequency biofeedback training to increase cardiac variability. Appl Psychophysiol Biofeedback. 2000;25(3):177–191.',
+      'Vaschillo EG, Vaschillo B, Lehrer PM. Characteristics of resonance in HRV stimulated by biofeedback. Appl Psychophysiol Biofeedback. 2006;31(2):129–142.',
+      'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
+    ],
   },
 ];
 
@@ -60,7 +72,7 @@ export function modeBStatusText(status: EngineStatus): string {
   const tested = p && p.testedCount > 0 ? ` ${p.testedCount} rate${p.testedCount > 1 ? 's' : ''} tested.` : '';
   const hold =
     status.unverifiedDwells > 0
-      ? ` Hold still — ${status.unverifiedDwells} breath${status.unverifiedDwells > 1 ? 's' : ''} couldn’t be verified.`
+      ? ` Hold still and follow the cue — the H10 couldn’t confirm your breathing on the last ${status.unverifiedDwells} attempt${status.unverifiedDwells > 1 ? 's' : ''} at this rate, so they’re re-measured.`
       : '';
   let lead: string;
   switch (p?.phase) {
