@@ -502,9 +502,10 @@ export class PolarH10 extends EventTarget {
       if (samples.length > 0 && this.accFramesSeen < 1) {
         const s0 = samples[0];
         this.accInfo(`ACC streaming — ${samples.length} samples/frame (${dv.byteLength} B)`, 'info');
-        // Sanity: at rest on a flat surface one axis should be ≈ ±4096 (1 g at ±8 g) and the
-        // others ≈ 0. If all three are tiny or ramping, the delta decode is wrong.
-        this.accInfo(`ACC first sample x=${s0.x} y=${s0.y} z=${s0.z} (counts; ≈±4096 = 1 g)`, 'info');
+        // Sanity: the H10 reports mG, so at rest the magnitude should be ≈ 1000 (1 g) with one
+        // dominant axis. If all three stay tiny or clearly ramp, the delta decode is wrong.
+        const mag = Math.round(Math.sqrt(s0.x * s0.x + s0.y * s0.y + s0.z * s0.z));
+        this.accInfo(`ACC first sample x=${s0.x} y=${s0.y} z=${s0.z} |mag|=${mag} mG (≈1000 = 1 g)`, 'info');
       } else if (samples.length === 0 && this.accFramesSeen < 3) {
         this.accInfo(`ACC frame not parsed (type=0x${dv.getUint8(0).toString(16)}, ${dv.byteLength} B)`, 'warn');
       }

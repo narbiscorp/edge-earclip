@@ -313,6 +313,12 @@ const replayBuffers = makeBuffers();
 export const accMagBuffer = new StreamBuffer<number>(3600); // ~72 s at 50 Hz
 export const ACC_STREAM_HZ = 50;
 
+/* ACC start is deferred/debounced (the H10 link is fragile right after connect), and samples are
+ * stamped on a global monotonic clock (the H10 batches ~5 s/notification — see the accReceived
+ * handler). Module-level so they persist across notifications and reconnects. */
+let accStartTimer: ReturnType<typeof setTimeout> | null = null;
+let accSampleClockMs = 0;
+
 // Session accumulator — module-level mutable arrays avoid GC pressure from
 // spread-cloning on every beat. Consumers call the getters; the modal reads
 // them at open time for a one-shot snapshot.
@@ -510,11 +516,7 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
       if (edgeDevice.isConnected) void edgeDevice.streamLensDuty(d);
     },
   });
-  if (mode === 'modeB' && polarH10.status === 'connected') {
-    void polarH10.startAccStream().catch((err) => {
-      appendBleLog('polar', 'error', `ACC stream start failed: ${(err as Error).message}`);
-    });
-  }
+  if (mode === 'modeB') scheduleAccStart('Mode B active');
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
@@ -523,6 +525,25 @@ function stopCoherenceEngine(): void {
   if (rf != null) saveModeBRF(rf);
   coherenceEngine.stop();
   void polarH10.stopAccStream().catch(() => { /* not streaming — ignore */ });
+}
+
+/** Defer + debounce the ACC stream start. Firing the PMD setup (service discovery + control
+ * writes) immediately on connect — especially on every transient reconnect — correlated with the
+ * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in
+ * Mode B, the engine's running, and not already streaming. */
+function scheduleAccStart(reason: string): void {
+  if (accStartTimer) clearTimeout(accStartTimer);
+  accStartTimer = setTimeout(() => {
+    accStartTimer = null;
+    if (polarH10.status !== 'connected') return;
+    if (!coherenceEngine.running) return;
+    if (useDashboardStore.getState().engineMode !== 'modeB') return;
+    if (polarH10.isAccStreaming) return;
+    appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
+    void polarH10.startAccStream().catch((err) => {
+      appendBleLog('polar', 'error', `ACC stream start failed: ${(err as Error).message}`);
+    });
+  }, 2000);
 }
 
 /** Resume the app-side engine on app load if the persisted mode is modeA/modeB, so the mode
@@ -881,15 +902,24 @@ coherenceEngine.addEventListener('status', (e) => {
 // and buffer the vector-magnitude for the breathing-wave chart.
 polarH10.addEventListener('accReceived', (e) => {
   const acc = (e as CustomEvent<PolarAccEvent>).detail;
-  if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.lastSampleMs / 1000);
   const n = acc.samples.length;
-  const baseMs = acc.lastSampleMs;
+  if (n === 0) return;
   const stepMs = 1000 / (acc.sampleRateHz || ACC_STREAM_HZ);
+  // The H10 batches ~5 s of ACC per notification. Stamp samples on a GLOBAL monotonic, evenly
+  // spaced clock instead of per-frame device/arrival times — otherwise consecutive frames overlap
+  // in time and the line chart draws backwards (the sawtooth). Re-anchor if it drifts > 2 s.
+  const now = Date.now();
+  if (accSampleClockMs === 0 || Math.abs(accSampleClockMs + (n - 1) * stepMs - now) > 2000) {
+    accSampleClockMs = now - (n - 1) * stepMs;
+  }
+  const lastMs = accSampleClockMs + (n - 1) * stepMs;
+  if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, lastMs / 1000);
   for (let i = 0; i < n; i++) {
     const s = acc.samples[i];
     const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
-    accMagBuffer.push(baseMs - (n - 1 - i) * stepMs, mag); // newest sample lands at tArrivalS
+    accMagBuffer.push(accSampleClockMs + i * stepMs, mag);
   }
+  accSampleClockMs += n * stepMs;
 });
 
 // Surface ACC stream diagnostics (service found, device accept/reject, first frame) to the
@@ -1257,11 +1287,10 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
-  // If we're already in Mode B (H10 reconnected mid-session), (re)start the ACC stream.
+  // If we're already in Mode B (H10 reconnected mid-session), (re)start the ACC stream — deferred
+  // so a reconnect storm doesn't hammer the fragile post-connect link with PMD setup.
   if (coherenceEngine.running && useDashboardStore.getState().engineMode === 'modeB') {
-    void polarH10.startAccStream().catch((err) => {
-      appendBleLog('polar', 'error', `ACC stream start failed: ${(err as Error).message}`);
-    });
+    scheduleAccStart('h10 connected');
   }
 });
 
@@ -1286,6 +1315,11 @@ polarH10.addEventListener('disconnected', (e) => {
    * so a brief drop doesn't churn the glasses' central. */
   if (polarH10.status === 'disconnected') {
     resetH10OutlierState(); // don't carry the beat-median across a strap swap
+    accSampleClockMs = 0; // re-anchor the ACC clock on the next stream
+    if (accStartTimer) {
+      clearTimeout(accStartTimer);
+      accStartTimer = null;
+    }
     const st = useDashboardStore.getState();
     if (st.hrSourceForGlasses === 'h10') {
       st.setHrSourceForGlasses('earclip');
