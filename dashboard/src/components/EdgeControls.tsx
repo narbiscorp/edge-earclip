@@ -120,7 +120,7 @@ export default function EdgeControls() {
         label="Training Programs (sensor required, 0xB7)"
         hint={
           hasBeatSource
-            ? 'Heartbeat=pulse-on-beat • Coh Breathe=6 BPM coherence-paced • Coh Lens=direct coherence→opacity • Breathe+Strobe=coh breathe with strobe'
+            ? 'Heartbeat=pulse-on-beat • Coh Breathe=6 br/min coherence-paced • Coh Lens=direct coherence→opacity • Breathe+Strobe=coh breathe with strobe'
             : '⚠ No beat source — connect an earclip or Polar H10 first. Selecting a program will send the opcode but the lens will not react without IBI.'
         }
       >

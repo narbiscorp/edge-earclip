@@ -18,6 +18,7 @@ import { useLensOpacity } from '../state/useLensOpacity';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
 import type { EngineMode, EngineStatus } from '../engine/coherenceEngine';
+import { ENGINE_MODE_INFO, modeBStatusText } from './engine/modeInfo';
 
 /* Friendly labels for the four PPG programs the firmware ships. The
  * expert UI shows them as "Prog 1 / 2 / 3 / 4"; a lay user wants to
@@ -244,11 +245,11 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             {(respBpm != null || pacerBpm > 0) && (
               <div className="text-[11px] text-slate-500">
                 {pacerBpm > 0 && (
-                  <>Pacer <span className="tabular-nums text-slate-300">{pacerBpm.toFixed(1)}</span> BPM</>
+                  <>Pacer <span className="tabular-nums text-slate-300">{pacerBpm.toFixed(1)}</span> br/min</>
                 )}
                 {respBpm != null && pacerBpm > 0 && <span className="mx-2 text-slate-700">·</span>}
                 {respBpm != null && (
-                  <>Resp <span className="tabular-nums text-slate-300">{respBpm.toFixed(2)}</span> BPM</>
+                  <>Resp <span className="tabular-nums text-slate-300">{respBpm.toFixed(2)}</span> br/min</>
                 )}
               </div>
             )}
@@ -676,12 +677,6 @@ function StatChip({ label, value, unit }: { label: string; value: string; unit: 
    Mode A/B run the app-side Coherence Engine, which takes over the
    lens via 0xA5 duty. Shows a compact live readout when active.
    ────────────────────────────────────────────────────────────── */
-const ENGINE_MODE_INFO: Array<{ id: EngineMode; title: string; sub: string; desc: string }> = [
-  { id: 'firmware', title: 'Standard', sub: 'on-glasses', desc: "The glasses run their built-in coherence programs (Heartbeat / Breathe / Lens / Strobe)." },
-  { id: 'modeA', title: 'Mode A', sub: 'Follow', desc: 'App-side coherence training: paces your breathing toward the rate you are drifting to.' },
-  { id: 'modeB', title: 'Mode B', sub: 'Resonance', desc: 'Finds your personal resonance breathing rate by searching across paced rates. Needs a Polar H10 (RR + accelerometer).' },
-];
-
 function EngineModeStrip({
   mode, status, edgeConnected, polarConnected, onPick,
 }: {
@@ -692,6 +687,8 @@ function EngineModeStrip({
   onPick: (m: EngineMode) => void;
 }) {
   const active = mode !== 'firmware';
+  const [infoMode, setInfoMode] = useState<EngineMode | null>(null);
+  const info = infoMode != null ? ENGINE_MODE_INFO.find((x) => x.id === infoMode) ?? null : null;
   return (
     <section className="rounded-xl border border-slate-800/80 bg-slate-900/40 p-3">
       <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-2">Engine</div>
@@ -699,20 +696,30 @@ function EngineModeStrip({
         {ENGINE_MODE_INFO.map((o) => {
           const isActive = mode === o.id;
           return (
-            <button
-              key={o.id}
-              onClick={() => onPick(o.id)}
-              title={o.desc}
-              className={
-                'rounded-lg px-3 py-2.5 text-left border transition ' +
-                (isActive
-                  ? 'border-indigo-400/60 bg-indigo-500/15 text-indigo-100 shadow-[0_0_20px_-8px_rgba(129,140,248,0.6)]'
-                  : 'border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500 hover:text-slate-100')
-              }
-            >
-              <div className="font-medium text-sm">{o.title}</div>
-              <div className={'text-[10px] mt-0.5 ' + (isActive ? 'text-indigo-200' : 'text-slate-400')}>{o.sub}</div>
-            </button>
+            <div key={o.id} className="relative">
+              <button
+                onClick={() => onPick(o.id)}
+                title={o.desc}
+                className={
+                  'w-full rounded-lg px-3 py-2.5 pr-7 text-left border transition ' +
+                  (isActive
+                    ? 'border-indigo-400/60 bg-indigo-500/15 text-indigo-100 shadow-[0_0_20px_-8px_rgba(129,140,248,0.6)]'
+                    : 'border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500 hover:text-slate-100')
+                }
+              >
+                <div className="font-medium text-sm">{o.title}</div>
+                <div className={'text-[10px] mt-0.5 ' + (isActive ? 'text-indigo-200' : 'text-slate-400')}>{o.sub}</div>
+              </button>
+              <button
+                type="button"
+                onClick={(ev) => { ev.stopPropagation(); setInfoMode(o.id); }}
+                title={`What is ${o.title}?`}
+                aria-label={`What is ${o.title}?`}
+                className="absolute top-1 right-1 h-4 w-4 rounded-full border border-slate-500/70 text-slate-400 text-[10px] font-serif italic leading-none flex items-center justify-center hover:bg-slate-700 hover:text-slate-100"
+              >
+                i
+              </button>
+            </div>
           );
         })}
       </div>
@@ -720,22 +727,53 @@ function EngineModeStrip({
         <div className="mt-2 text-[11px] text-amber-300/90">Connect the glasses — the engine drives the lens over BLE.</div>
       ) : null}
       {mode === 'modeB' && !polarConnected ? (
-        <div className="mt-2 text-[11px] text-amber-300/90">Mode B needs a Polar H10 (validated RR + accelerometer for dwell verification).</div>
+        <div className="mt-2 text-[11px] text-amber-300/90">Mode B needs a Polar H10 (validated heartbeats + accelerometer for breath verification).</div>
       ) : null}
       {active && status?.running ? (
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
-          <span>coh <span className="text-emerald-400 font-medium">{Math.round(status.coherence)}/100</span></span>
-          <span>pacer <span className="text-cyan-300">{status.pacerBpm.toFixed(1)}</span> BPM</span>
+        <div className="mt-2 rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[11px] text-slate-300 flex flex-col gap-1">
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+            <span>coherence <span className="text-emerald-400 font-medium">{Math.round(status.coherence)}/100</span></span>
+            <span>pacing <span className="text-cyan-300">{status.pacerBpm.toFixed(1)}</span> br/min</span>
+          </div>
           {mode === 'modeB' && status.modeBState ? (
-            <span>
-              {status.modeBState === 'maintaining' && status.lockedRF != null ? (
-                <>resonance <span className="text-emerald-400 font-medium">{status.lockedRF.toFixed(1)}</span> BPM{status.boundaryLimited ? ' (edge)' : ''}</>
-              ) : (
-                <>searching…{status.unverifiedDwells > 0 ? <span className="text-amber-300"> hold still ({status.unverifiedDwells})</span> : null}</>
-              )}
-            </span>
+            <div
+              className={
+                status.searchAborted
+                  ? 'text-rose-400'
+                  : status.modeBState === 'maintaining'
+                    ? 'text-emerald-300'
+                    : 'text-amber-300'
+              }
+            >
+              {modeBStatusText(status)}
+            </div>
           ) : null}
-          {mode === 'modeB' && status.searchAborted ? <span className="text-rose-400">search stalled — check H10/ACC</span> : null}
+        </div>
+      ) : null}
+
+      {info ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+          onClick={() => setInfoMode(null)}
+        >
+          <div
+            className="max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col gap-2"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="text-sm font-semibold text-slate-100">
+              {info.title} <span className="text-slate-400 font-normal">· {info.sub}</span>
+            </div>
+            <p className="text-[13px] leading-relaxed text-slate-300">{info.details}</p>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setInfoMode(null)}
+                className="rounded bg-slate-700 hover:bg-slate-600 px-3 py-1 text-xs"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </section>
@@ -917,7 +955,7 @@ function SettingsSection({
 
       <Row
         label="Follow my breathing rate"
-        help="When on, the breathing programs (Breathing Guide, Breath + Strobe) start at 6 BPM and adjust to your actual breathing rate. Turn off for a fixed 6 BPM pace."
+        help="When on, the breathing programs (Breathing Guide, Breath + Strobe) start at 6 br/min and adjust to your actual breathing rate. Turn off for a fixed 6 br/min pace."
       >
         <label className="inline-flex items-center gap-2 cursor-pointer">
           <input
@@ -952,7 +990,7 @@ function StandaloneSection({ edgeConnected }: { edgeConnected: boolean }) {
     desc: string;
   }> = [
     { key: 'static',  title: 'Solid Tint',     desc: 'Lens darkens to a fixed level. No motion.' },
-    { key: 'breathe', title: 'Breathe (no HR)', desc: 'Lens guides 6 BPM breathing. No heart sensor needed.' },
+    { key: 'breathe', title: 'Breathe (no HR)', desc: 'Lens guides 6 br/min breathing. No heart sensor needed.' },
     { key: 'strobe',  title: 'Strobe Only',    desc: 'Flashes at the Strobe Frequency set above. Brainwave entrainment.' },
     { key: 'pulse',   title: 'Pulse on Beat',  desc: 'Flashes once per detected heartbeat. Needs a heart sensor.' },
   ];

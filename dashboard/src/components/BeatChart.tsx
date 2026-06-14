@@ -196,14 +196,14 @@ export default function BeatChart({
           >
             Resp:{' '}
             {respBpm != null
-              ? `${respBpm.toFixed(2)} BPM`
+              ? `${respBpm.toFixed(2)} br/min`
               : lastEdgeCoh == null
-                ? '— (no 0xF2 yet)'
-                : '— (waiting for resonance peak)'}
+                ? '—'
+                : '— (waiting…)'}
           </span>
           {lastEdgeCoh != null && lastEdgeCoh.pacerBpm > 0 && (
             <span className="ml-3 tabular-nums text-amber-300">
-              Pacer: {lastEdgeCoh.pacerBpm.toFixed(1)} BPM
+              Pacer: {lastEdgeCoh.pacerBpm.toFixed(1)} br/min
             </span>
           )}
         </span>

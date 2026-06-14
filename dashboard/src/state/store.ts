@@ -778,9 +778,34 @@ const setState = useDashboardStore.setState;
 
 // ---------- Coherence Engine (app-side Mode A / Mode B) ----------
 
-// Mirror the engine's live status into the store so the UI readouts update.
+// Mirror the engine's live status into the store so the UI readouts update. When the engine
+// is running it is the coherence source (the firmware 0xF2 frame stops arriving because we
+// feed beats to the engine, not the firmware pipeline), so we ALSO synthesize the same
+// channels 0xF2 used to feed — the coherence-over-time chart, the IBI resp/pacer readout,
+// the lens-tint mirror, the breath cue, and the session accumulator — from the engine.
+let lastEngineCohPushTs = 0;
 coherenceEngine.addEventListener('status', (e) => {
-  setState({ engineStatus: (e as CustomEvent<EngineStatus>).detail });
+  const st = (e as CustomEvent<EngineStatus>).detail;
+  setState({ engineStatus: st });
+  if (!st.running) return;
+  const now = Date.now();
+  if (now - lastEngineCohPushTs < 900) return; // ~1 Hz — dedupe the per-breath status events
+  lastEngineCohPushTs = now;
+  const frame: EdgeCoherenceFrame = {
+    timestamp: now,
+    coh: Math.round(st.coherence),
+    respMhz: Math.max(0, Math.round(st.respHz * 1000)),
+    vlf: 0, lf: 0, hf: 0, total: 0,
+    lfNorm: 0, hfNorm: 0, lfHf: 0,
+    nIbis: st.beats,
+    pacerBpm: st.pacerBpm,
+  };
+  edgeCoherenceBuffers.live.push(frame.timestamp, {
+    coh: frame.coh, respMhz: frame.respMhz, lf: 0, hf: 0,
+    lfNorm: 0, hfNorm: 0, lfHf: 0, nIbis: st.beats, pacerBpm: st.pacerBpm,
+  });
+  pushSessionCoh(frame.timestamp, frame.coh);
+  setState({ lastEdgeCoherence: frame });
 });
 
 // Feed the H10 accelerometer (PMD) stream into the engine for Mode B respiration verification.

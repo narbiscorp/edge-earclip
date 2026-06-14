@@ -17,12 +17,7 @@ import {
 } from './coherenceFieldSchema';
 import { validateCoherenceTunables } from './validateCoherenceTunables';
 import CoherenceField from './CoherenceField';
-
-const MODE_OPTIONS: Array<{ id: EngineMode; label: string; sub: string }> = [
-  { id: 'firmware', label: 'Firmware', sub: 'on-glasses' },
-  { id: 'modeA', label: 'Mode A', sub: 'Follow' },
-  { id: 'modeB', label: 'Mode B', sub: 'Resonance' },
-];
+import { ENGINE_MODE_INFO, modeBStatusText } from './modeInfo';
 
 export default function CoherenceEnginePanel() {
   const engineMode = useDashboardStore((s) => s.engineMode);
@@ -37,6 +32,8 @@ export default function CoherenceEnginePanel() {
     for (const sec of COH_SECTIONS) m[sec.id] = sec.defaultExpanded;
     return m;
   });
+  const [infoMode, setInfoMode] = useState<EngineMode | null>(null);
+  const info = infoMode != null ? ENGINE_MODE_INFO.find((x) => x.id === infoMode) ?? null : null;
 
   const errors = useMemo(() => validateCoherenceTunables(tunables), [tunables]);
 
@@ -62,22 +59,35 @@ export default function CoherenceEnginePanel() {
         ) : null}
       </div>
 
-      {/* Mode selector — 3 modes total. */}
-      <div className="inline-flex rounded-md border border-slate-700 overflow-hidden text-[11px]">
-        {MODE_OPTIONS.map((opt) => {
+      {/* Mode selector — 3 modes total. Each has an (i) info popover. */}
+      <div className="grid grid-cols-3 gap-1 text-[11px]">
+        {ENGINE_MODE_INFO.map((opt) => {
           const active = engineMode === opt.id;
           return (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => void setEngineMode(opt.id)}
-              className={`flex-1 px-2 py-1.5 border-l border-slate-700 first:border-l-0 ${
-                active ? 'bg-indigo-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-              }`}
-            >
-              <div className="font-medium">{opt.label}</div>
-              <div className={`text-[9px] ${active ? 'text-indigo-200' : 'text-slate-500'}`}>{opt.sub}</div>
-            </button>
+            <div key={opt.id} className="relative">
+              <button
+                type="button"
+                onClick={() => void setEngineMode(opt.id)}
+                title={opt.desc}
+                className={`w-full rounded px-2 py-1.5 pr-6 text-left border transition ${
+                  active
+                    ? 'border-indigo-400/60 bg-indigo-600 text-white'
+                    : 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300'
+                }`}
+              >
+                <div className="font-medium">{opt.title}</div>
+                <div className={`text-[9px] ${active ? 'text-indigo-200' : 'text-slate-500'}`}>{opt.sub}</div>
+              </button>
+              <button
+                type="button"
+                onClick={(ev) => { ev.stopPropagation(); setInfoMode(opt.id); }}
+                title={`What is ${opt.title}?`}
+                aria-label={`What is ${opt.title}?`}
+                className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full border border-slate-500/70 text-slate-300 text-[10px] font-serif italic leading-none flex items-center justify-center hover:bg-slate-600"
+              >
+                i
+              </button>
+            </div>
           );
         })}
       </div>
@@ -135,6 +145,32 @@ export default function CoherenceEnginePanel() {
           </div>
         );
       })}
+
+      {info ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+          onClick={() => setInfoMode(null)}
+        >
+          <div
+            className="max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 flex flex-col gap-2"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="text-sm font-semibold text-slate-100">
+              {info.title} <span className="text-slate-400 font-normal">· {info.sub}</span>
+            </div>
+            <p className="text-[13px] leading-relaxed text-slate-300">{info.details}</p>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setInfoMode(null)}
+                className="rounded bg-slate-700 hover:bg-slate-600 px-3 py-1 text-xs"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -147,30 +183,27 @@ function EngineReadout() {
     );
   }
   return (
-    <div className="rounded border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[10px] text-slate-300 flex flex-col gap-0.5">
+    <div className="rounded border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[10px] text-slate-300 flex flex-col gap-1">
       <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-        <span>coh <span className="text-emerald-400 font-medium">{status.coherence.toFixed(0)}%</span></span>
+        <span>coh <span className="text-emerald-400 font-medium">{status.coherence.toFixed(0)}/100</span></span>
         <span>CR <span className="text-slate-100">{status.cr.toFixed(2)}</span></span>
-        <span>resp <span className="text-slate-100">{(status.respHz * 60).toFixed(1)}</span> bpm</span>
-        <span>pacer <span className="text-cyan-400 font-medium">{status.pacerBpm.toFixed(1)}</span> bpm</span>
+        <span>resp <span className="text-slate-100">{(status.respHz * 60).toFixed(1)}</span> br/min</span>
+        <span>pacer <span className="text-cyan-400 font-medium">{status.pacerBpm.toFixed(1)}</span> br/min</span>
         <span>beats <span className="text-slate-100">{status.beats}</span></span>
         <span>duty <span className="text-slate-100">{status.duty}</span></span>
       </div>
       {status.mode === 'modeB' && status.modeBState ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-0.5 pt-0.5 border-t border-slate-800/60">
-          <span>
-            state{' '}
-            <span className={status.modeBState === 'maintaining' ? 'text-emerald-400' : 'text-amber-300'}>
-              {status.modeBState}
-            </span>
-          </span>
-          {status.lockedRF != null ? (
-            <span>RF <span className="text-emerald-400 font-medium">{status.lockedRF.toFixed(2)}</span> bpm{status.boundaryLimited ? ' (edge)' : ''}</span>
-          ) : null}
-          {status.unverifiedDwells > 0 ? (
-            <span className="text-amber-300">hold still ({status.unverifiedDwells})</span>
-          ) : null}
-          {status.searchAborted ? <span className="text-rose-400">search aborted</span> : null}
+        <div
+          className={
+            'pt-0.5 border-t border-slate-800/60 ' +
+            (status.searchAborted
+              ? 'text-rose-400'
+              : status.modeBState === 'maintaining'
+                ? 'text-emerald-300'
+                : 'text-amber-300')
+          }
+        >
+          {modeBStatusText(status)}
         </div>
       ) : null}
     </div>

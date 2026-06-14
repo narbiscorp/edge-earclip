@@ -45,6 +45,8 @@ export interface EngineStatus {
   beats: number; // beats currently in the analysis window
   // Mode B
   modeBState: ModeBState | null;
+  /** The breathing rate (BPM) the controller is currently pacing/testing. */
+  modeBCommandedBpm: number | null;
   lockedRF: number | null; // valid only when maintaining
   boundaryLimited: boolean;
   searchAborted: boolean;
@@ -236,6 +238,7 @@ export class CoherenceEngine extends EventTarget {
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       modeBState: this.modeB?.state ?? null,
+      modeBCommandedBpm: this.modeB ? this.modeB.commandedBPM : null,
       lockedRF: this.modeB?.state === 'maintaining' ? this.modeB.lockedRF : null,
       boundaryLimited: this.modeB?.boundaryLimited ?? false,
       searchAborted: this.modeB?.searchAborted ?? false,
