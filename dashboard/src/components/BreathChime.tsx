@@ -20,6 +20,7 @@ export default function BreathChime() {
   const standalone = useDashboardStore((s) => s.standaloneMode);
   const breath = useBreathPhase();
   const lastPhase = useRef<'inhale' | 'exhale' | null>(null);
+  const lastChimeAt = useRef(0);
 
   const pacerActive =
     engineRunning || activeProgram === 2 || activeProgram === 4 || standalone === 'breathe';
@@ -31,8 +32,14 @@ export default function BreathChime() {
       return;
     }
     if (lastPhase.current !== null && lastPhase.current !== breath.phase) {
-      if (breath.phase === 'inhale') playChime(inhaleVoice, 'inhale');
-      else playChime(exhaleVoice, 'exhale');
+      // Defense-in-depth on top of the continuous-phase fix: ignore a flip that arrives
+      // implausibly soon after the last cue (real inhale/exhale phases are ≥ ~2 s at ≤ 12 br/min).
+      const now = Date.now();
+      if (now - lastChimeAt.current >= 1200) {
+        lastChimeAt.current = now;
+        if (breath.phase === 'inhale') playChime(inhaleVoice, 'inhale');
+        else playChime(exhaleVoice, 'exhale');
+      }
     }
     lastPhase.current = breath.phase;
   }, [breath.phase, active, inhaleVoice, exhaleVoice]);

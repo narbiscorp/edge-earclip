@@ -1,23 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from './store';
 
-/** Returns the current paced-breath phase for the Live header cue. The
- * 40/60 inhale:exhale split mirrors the firmware's breathing programs
- * (Program 2 BREATHE, Program 4 BREATHE+STROBE) so the on-screen
- * "Inhale" / "Exhale" cue stays in lockstep with what the lens is
- * physically doing.
+/** Returns the current paced-breath phase for the Live header cue, the breathing-cue graph,
+ * and the inhale/exhale chime. The 40/60 inhale:exhale split mirrors the firmware's breathing
+ * programs and the app-side engine.
  *
- * Pacer rate comes from `lastEdgeCoherence.pacerBpm` when the glasses
- * is streaming coherence; otherwise we default to 6 BPM — the resonance
- * frequency every coherence-training literature converges on, and the
- * firmware's BREATHE_BPM_DEFAULT.
+ * Pacer rate comes from `lastEdgeCoherence.pacerBpm` (the engine synthesizes this when Mode A/B
+ * is running; otherwise it's the firmware 0xF2 value), defaulting to 6 BPM.
  *
- * Phase boundaries land at 0.4× and 1.0× of the cycle (4 s and 10 s at
- * 6 BPM), so a 200 ms poll interval is plenty — no need for rAF here.
- *
- * Also returns the fractional position within the current phase
- * (0..1, monotonic) for callers that want to crossfade or animate
- * subtly mid-phase. The header cue only needs the string. */
+ * IMPORTANT: the phase is accumulated CONTINUOUSLY (advanced by dt/cycleMs each tick), NOT
+ * derived from `Date.now() % cycleMs`. The modulo form jumps whenever the rate changes — which
+ * happens ~1×/sec as the pacer slews — and that jump can hop across the inhale/exhale boundary,
+ * firing a spurious, out-of-sync chime. Accumulating means a rate change only changes how fast
+ * the phase advances, never its current position. */
 export interface BreathState {
   /** 'inhale' for the first 40 % of the cycle, 'exhale' for the last 60 %. */
   phase: 'inhale' | 'exhale';
@@ -27,38 +22,37 @@ export interface BreathState {
   bpm: number;
 }
 
+function phaseToState(p: number, bpm: number): BreathState {
+  if (p < 0.4) return { phase: 'inhale', progress: p / 0.4, bpm };
+  return { phase: 'exhale', progress: (p - 0.4) / 0.6, bpm };
+}
+
 export function useBreathPhase(): BreathState {
-  const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
-  const pacerBpm =
-    lastEdgeCoh && lastEdgeCoh.pacerBpm > 0 ? lastEdgeCoh.pacerBpm : 6;
+  const pacerBpm = useDashboardStore((s) =>
+    s.lastEdgeCoherence && s.lastEdgeCoherence.pacerBpm > 0 ? s.lastEdgeCoherence.pacerBpm : 6,
+  );
+  const bpmRef = useRef(pacerBpm);
+  bpmRef.current = pacerBpm;
 
-  const compute = (): BreathState => {
-    const cycleMs = (60 / pacerBpm) * 1000;
-    const inhaleMs = cycleMs * 0.4;
-    const t = Date.now() % cycleMs;
-    if (t < inhaleMs) {
-      return { phase: 'inhale', progress: t / inhaleMs, bpm: pacerBpm };
-    }
-    return {
-      phase: 'exhale',
-      progress: (t - inhaleMs) / (cycleMs - inhaleMs),
-      bpm: pacerBpm,
-    };
-  };
-
-  const [state, setState] = useState<BreathState>(compute);
+  const phaseRef = useRef(0); // 0..1 continuous cycle position
+  const lastTsRef = useRef(Date.now());
+  const [state, setState] = useState<BreathState>(() => phaseToState(0, pacerBpm));
 
   useEffect(() => {
-    /* 200 ms is well under the shortest phase (≥4 s at 6 BPM) but coarse
-     * enough that we're not doing 60 fps work for a label that only flips
-     * twice per cycle. */
-    const id = window.setInterval(() => setState(compute()), 200);
-    /* Recompute once immediately so a pacerBpm change isn't waiting for
-     * the next tick. */
-    setState(compute());
+    /* 100 ms keeps the boundary crisp (the chime fires within 100 ms of the true edge) while
+     * staying cheap. Advance by ACTUAL elapsed time so there's no drift. */
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      const cycleMs = (60 / bpmRef.current) * 1000;
+      const dt = now - lastTsRef.current;
+      lastTsRef.current = now;
+      let p = phaseRef.current + dt / cycleMs;
+      p -= Math.floor(p); // wrap to [0,1)
+      phaseRef.current = p;
+      setState(phaseToState(p, bpmRef.current));
+    }, 100);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pacerBpm]);
+  }, []);
 
   return state;
 }

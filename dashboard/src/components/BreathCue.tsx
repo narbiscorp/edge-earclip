@@ -45,9 +45,15 @@ export default function BreathCue({ hint }: { hint?: string }) {
   useEffect(() => {
     let raf = 0;
     let lastPhase = '';
+    let phase = 0; // continuous 0..1 — advanced by elapsed time so a rate change never jumps it
+    let lastTs = Date.now();
     const tick = () => {
+      const now = Date.now();
       const cycleMs = (60 / bpmRef.current) * 1000;
-      const p = (Date.now() % cycleMs) / cycleMs;
+      phase += (now - lastTs) / cycleMs;
+      phase -= Math.floor(phase);
+      lastTs = now;
+      const p = phase;
       const x = PAD + p * (W - 2 * PAD);
       const y = H - PAD - breathFrac(p) * (H - 2 * PAD);
       orbRef.current?.setAttribute('cx', x.toFixed(1));
