@@ -165,9 +165,9 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   // ACC respiration
   accSampleHz: 50.0,
   respBandLo: 0.05,
-  respBandHi: 0.5,
+  respBandHi: 0.4, // 0.4 Hz = 24 br/min — excludes high-freq motion so the breathing peak is cleaner
   respWindowS: 45.0,
-  respConfidenceMin: 0.4,
+  respConfidenceMin: 0.3, // chest ACC breathing is subtle; 0.4 was too strict on real H10 data
 };
 
 /** Recombine the four flattened gamma scalars into the difficulty table the lens uses. */

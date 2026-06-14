@@ -57,14 +57,22 @@ export default function AccChart({ windowSec: windowSecProp }: Props = {}) {
         xs.push(ts);
         raw.push(v);
       });
-      // Display high-pass: subtract a slow EWMA (~12 s τ) so the gravity DC + posture drift
-      // drop out, leaving the breathing oscillation. α = dt/τ ≈ (1/50)/12 ≈ 0.0017.
+      // Display BAND-pass ~0.014–0.4 Hz. A slow EWMA removes the gravity DC + posture drift
+      // (high-pass); two fast EWMAs then knock down the ~1–1.5 Hz cardiac ballistogram (the H10
+      // sits over the heart, so each beat jolts it far harder than the slow breath does). What's
+      // left is the breathing oscillation.
       const y = new Array<number>(raw.length);
-      let ewma = raw.length > 0 ? raw[0] : 0;
-      const alpha = 0.0017;
+      let slow = raw.length > 0 ? raw[0] : 0;
+      let lp1 = 0;
+      let lp2 = 0;
+      const slowAlpha = 0.0017; // ~12 s τ — high-pass (drops < ~0.014 Hz)
+      const lpAlpha = 0.05; // ~0.4 Hz/pole — two poles attenuate the heartbeat, pass breathing
       for (let i = 0; i < raw.length; i++) {
-        ewma += (raw[i] - ewma) * alpha;
-        y[i] = raw[i] - ewma;
+        slow += (raw[i] - slow) * slowAlpha;
+        const hp = raw[i] - slow;
+        lp1 += (hp - lp1) * lpAlpha;
+        lp2 += (lp1 - lp2) * lpAlpha;
+        y[i] = lp2;
       }
       const traces: Data[] = [
         {
