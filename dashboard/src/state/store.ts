@@ -884,7 +884,7 @@ polarH10.addEventListener('accReceived', (e) => {
   if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.tArrivalS);
   const n = acc.samples.length;
   const baseMs = acc.tArrivalS * 1000;
-  const stepMs = 1000 / ACC_STREAM_HZ;
+  const stepMs = 1000 / (acc.sampleRateHz || ACC_STREAM_HZ);
   for (let i = 0; i < n; i++) {
     const s = acc.samples[i];
     const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);

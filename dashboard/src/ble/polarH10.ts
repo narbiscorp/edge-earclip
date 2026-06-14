@@ -21,6 +21,8 @@ export interface PolarBeatEvent {
 export interface PolarAccEvent {
   samples: Array<{ x: number; y: number; z: number }>;
   tArrivalS: number;
+  /** The sample rate the H10 actually granted (Hz) — used to space per-sample timestamps. */
+  sampleRateHz: number;
 }
 
 /** Diagnostic messages from the ACC stream setup (service found, accept/reject, first frame). */
@@ -49,28 +51,82 @@ const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
 const PMD_CONTROL_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
 const PMD_DATA_UUID = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
 
-/* ACC stream config. 50 Hz matches the engine's `accSampleHz` default; ±2 g gives the
- * finest resolution for the small chest-wall accelerations respiration produces; 16-bit. */
-const ACC_SAMPLE_RATE_HZ = 50;
-const ACC_RANGE_G = 2;
-const ACC_RESOLUTION_BITS = 16;
+/* ACC stream config — PREFERRED values. startAccStream() first asks the H10 which settings it
+ * actually supports (they can be restricted, e.g. while ECG also streams) and falls back to an
+ * offered value when a preferred one isn't available. Defaults per the PMD spec for H10. */
+const ACC_PREF_SAMPLE_RATE_HZ = 50; // H10 supports 25 / 50 / 100 / 200
+const ACC_PREF_RANGE_G = 8; // H10 supports 2 / 4 / 8
+const ACC_PREF_RESOLUTION_BITS = 16;
 const PMD_MEAS_TYPE_ACC = 0x02;
 
-/** Build the PMD control-point "request measurement start" command for ACC. */
-function buildAccStartCommand(): Uint8Array {
-  const u16 = (v: number) => [v & 0xff, (v >> 8) & 0xff];
-  return new Uint8Array([
-    0x02, PMD_MEAS_TYPE_ACC, // start measurement, ACC
-    0x00, 0x01, ...u16(ACC_SAMPLE_RATE_HZ), // SAMPLE_RATE setting
-    0x01, 0x01, ...u16(ACC_RESOLUTION_BITS), // RESOLUTION setting
-    0x02, 0x01, ...u16(ACC_RANGE_G), // RANGE setting
-    0x04, 0x01, 0x03, // CHANNELS setting = 3 (x,y,z)
-  ]);
+// PMD control-point op codes + setting-type codes (Polar PMD spec).
+const PMD_OP_GET_SETTINGS = 0x01;
+const PMD_OP_START = 0x02;
+const PMD_OP_STOP = 0x03;
+const PMD_SET_SAMPLE_RATE = 0x00;
+const PMD_SET_RESOLUTION = 0x01;
+const PMD_SET_RANGE = 0x02;
+
+const u16le = (v: number): number[] => [v & 0xff, (v >> 8) & 0xff];
+
+/** "Get measurement settings" for ACC — the H10 replies with the rates/ranges/resolutions it supports. */
+function buildGetSettingsCommand(): Uint8Array {
+  return new Uint8Array([PMD_OP_GET_SETTINGS, PMD_MEAS_TYPE_ACC]);
 }
 
-/** PMD control-point "stop measurement" command for ACC. */
+/** PMD control-point "stop measurement" for ACC. */
 function buildAccStopCommand(): Uint8Array {
-  return new Uint8Array([0x03, PMD_MEAS_TYPE_ACC]);
+  return new Uint8Array([PMD_OP_STOP, PMD_MEAS_TYPE_ACC]);
+}
+
+/** Parse a control-point response into a map of settingType → supported values (16-bit LE).
+ * Response layout: [0xF0][opcode][measType][status][ settingType, arrayLen, v0_le, v1_le, ... ]* */
+function parseSettingsResponse(dv: DataView): Map<number, number[]> {
+  const map = new Map<number, number[]>();
+  if (dv.byteLength < 5 || dv.getUint8(0) !== 0xf0) return map;
+  let off = 4;
+  while (off + 2 <= dv.byteLength) {
+    const type = dv.getUint8(off);
+    const count = dv.getUint8(off + 1);
+    off += 2;
+    const vals: number[] = [];
+    for (let i = 0; i < count && off + 2 <= dv.byteLength; i++) {
+      vals.push(dv.getUint16(off, true));
+      off += 2;
+    }
+    map.set(type, vals);
+  }
+  return map;
+}
+
+export interface AccConfig {
+  sampleRateHz: number;
+  rangeG: number;
+  resolutionBits: number;
+}
+
+/** Build the ACC start command, choosing values the device actually supports (echoing its offered
+ * settings). CHANNELS is intentionally omitted — ACC is implicitly 3-axis, and a malformed/short
+ * channels TLV is a known cause of the H10's "invalid parameter" (status 5) rejection. */
+function buildAccStart(avail: Map<number, number[]>): { cmd: Uint8Array; cfg: AccConfig } {
+  const pick = (type: number, preferred: number, best: (o: number[]) => number): number => {
+    const opts = avail.get(type);
+    if (!opts || opts.length === 0) return preferred; // device didn't constrain this setting
+    return opts.includes(preferred) ? preferred : best(opts);
+  };
+  const sampleRateHz = pick(PMD_SET_SAMPLE_RATE, ACC_PREF_SAMPLE_RATE_HZ, (o) => {
+    const le = o.filter((r) => r <= ACC_PREF_SAMPLE_RATE_HZ);
+    return le.length ? Math.max(...le) : Math.min(...o);
+  });
+  const resolutionBits = pick(PMD_SET_RESOLUTION, ACC_PREF_RESOLUTION_BITS, (o) => o[0]);
+  const rangeG = pick(PMD_SET_RANGE, ACC_PREF_RANGE_G, (o) => Math.max(...o));
+  const cmd = new Uint8Array([
+    PMD_OP_START, PMD_MEAS_TYPE_ACC,
+    PMD_SET_SAMPLE_RATE, 0x01, ...u16le(sampleRateHz),
+    PMD_SET_RESOLUTION, 0x01, ...u16le(resolutionBits),
+    PMD_SET_RANGE, 0x01, ...u16le(rangeG),
+  ]);
+  return { cmd, cfg: { sampleRateHz, rangeG, resolutionBits } };
 }
 
 /** Read `size` bits (LSB-first) from `bytes` starting at `bitOffset`, sign-extended. */
@@ -102,7 +158,7 @@ export interface AccSample {
 function parseAccFrame(dv: DataView): AccSample[] {
   if (dv.byteLength < 10 || dv.getUint8(0) !== PMD_MEAS_TYPE_ACC) return [];
   const channels = 3;
-  const refBytes = ACC_RESOLUTION_BITS / 8; // 2
+  const refBytes = 2; // H10 ACC is 16-bit signed
   const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
 
   let off = 0; // BYTE offset into payload
@@ -223,6 +279,10 @@ export class PolarH10 extends EventTarget {
   private accData: BluetoothRemoteGATTCharacteristic | null = null;
   private accStreaming = false;
   private accFramesSeen = 0;
+  private accRateHz = ACC_PREF_SAMPLE_RATE_HZ; // the rate the H10 actually granted
+  /* One pending control-point request at a time (get-settings or start); the next indication
+   * resolves it. The PMD control point is strictly request→response, so this is sufficient. */
+  private pendingCtrl: { resolve: (dv: DataView) => void; timer: ReturnType<typeof setTimeout> } | null = null;
 
   get status(): PolarStatus {
     return this._status;
@@ -278,9 +338,34 @@ export class PolarH10 extends EventTarget {
     this.dispatch('accInfo', { message, level } as PolarAccInfoDetail);
   }
 
-  /** Start the PMD accelerometer stream (50 Hz, ±2 g, 16-bit). Idempotent; no-op if not
-   * connected. Emits 'accReceived' (PolarAccEvent) per data notification, and 'accInfo'
-   * diagnostics (service found, device accept/reject, first frame) so failures are visible. */
+  /** Resolve on the next control-point indication, or null on timeout. The PMD control point is
+   * strictly request→response, so a single in-flight slot is enough. */
+  private waitForCtrlResponse(timeoutMs = 3000): Promise<DataView | null> {
+    return new Promise((resolve) => {
+      if (this.pendingCtrl) clearTimeout(this.pendingCtrl.timer);
+      const timer = setTimeout(() => {
+        this.pendingCtrl = null;
+        resolve(null);
+      }, timeoutMs);
+      this.pendingCtrl = { resolve, timer };
+    });
+  }
+
+  /** Write to the PMD control point, preferring with-response (per spec), falling back to without. */
+  private async writeCtrl(bytes: Uint8Array): Promise<void> {
+    const ch = this.accCtrl;
+    if (!ch) throw new Error('no PMD control point');
+    const buf = toBufferSource(bytes);
+    try {
+      await ch.writeValueWithResponse(buf);
+    } catch {
+      await ch.writeValueWithoutResponse(buf);
+    }
+  }
+
+  /** Start the PMD accelerometer stream. Queries the H10's supported settings first, then starts
+   * with a valid combo (preferring 50 Hz / ±8 g / 16-bit). Idempotent; no-op if already streaming.
+   * Emits 'accReceived' per data notification and 'accInfo' diagnostics so failures are visible. */
   async startAccStream(): Promise<void> {
     if (this.accStreaming) return;
     if (!this.server) throw new Error('not connected');
@@ -301,8 +386,8 @@ export class PolarH10 extends EventTarget {
     this.accCtrl = ctrl;
     this.accData = data;
 
-    // Subscribe to the control point's indication first — that's how the H10 reports
-    // whether it accepted our settings (start/stop responses).
+    // Subscribe to BOTH the control point (indications) AND data BEFORE writing anything —
+    // skipping the control subscription is the classic silent-failure.
     try {
       ctrl.addEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
       this.listeners.push({ target: ctrl, type: 'characteristicvaluechanged', listener: this.onAccCtrlNotify });
@@ -310,35 +395,69 @@ export class PolarH10 extends EventTarget {
     } catch (err) {
       this.accInfo(`PMD control subscribe failed: ${(err as Error).message}`, 'warn');
     }
-
-    // Subscribe to the data characteristic BEFORE starting the measurement.
     data.addEventListener('characteristicvaluechanged', this.onAccNotify);
     this.listeners.push({ target: data, type: 'characteristicvaluechanged', listener: this.onAccNotify });
     await data.startNotifications();
 
-    // Request ACC start. Prefer write-with-response; some stacks only allow without-response.
-    const cmd = toBufferSource(buildAccStartCommand());
-    try {
-      await ctrl.writeValueWithResponse(cmd);
-    } catch {
-      await ctrl.writeValueWithoutResponse(cmd);
+    // 1. Ask which settings the H10 supports, rather than assuming a combo it might reject.
+    let avail = new Map<number, number[]>();
+    const settingsResp = this.waitForCtrlResponse();
+    await this.writeCtrl(buildGetSettingsCommand());
+    const sdv = await settingsResp;
+    if (sdv) {
+      avail = parseSettingsResponse(sdv);
+      const rates = avail.get(PMD_SET_SAMPLE_RATE) ?? [];
+      const ranges = avail.get(PMD_SET_RANGE) ?? [];
+      this.accInfo(`H10 ACC supports rates [${rates.join(',')}] Hz, ranges [${ranges.join(',')}] g`, 'info');
+    } else {
+      this.accInfo('no settings response from H10 — using defaults', 'warn');
+    }
+
+    // 2. Start with a supported combo and confirm the device accepted it.
+    const { cmd, cfg } = buildAccStart(avail);
+    this.accRateHz = cfg.sampleRateHz;
+    const startResp = this.waitForCtrlResponse();
+    await this.writeCtrl(cmd);
+    const rdv = await startResp;
+    if (rdv && rdv.byteLength >= 4 && rdv.getUint8(0) === 0xf0) {
+      const status = rdv.getUint8(3);
+      if (status !== 0) {
+        this.accInfo(`H10 REJECTED ACC start (status ${status}) at ${cfg.sampleRateHz} Hz / ±${cfg.rangeG} g`, 'error');
+        await this.stopAccStream();
+        throw new Error(`PMD start rejected (status ${status})`);
+      }
     }
     this.accStreaming = true;
-    this.accInfo(`ACC start requested (${ACC_SAMPLE_RATE_HZ} Hz, ±${ACC_RANGE_G} g) — awaiting frames`, 'info');
+    this.accInfo(`ACC started: ${cfg.sampleRateHz} Hz, ±${cfg.rangeG} g, ${cfg.resolutionBits}-bit`, 'info');
   }
 
-  /** Stop the PMD accelerometer stream. Idempotent; safe to call when not streaming. */
+  /** Stop the PMD accelerometer stream and tear down its subscriptions. Idempotent; also used to
+   * clean up after a rejected start, so it does NOT early-return on !accStreaming. */
   async stopAccStream(): Promise<void> {
-    if (!this.accStreaming) return;
-    this.accStreaming = false;
     const ctrl = this.accCtrl;
     const data = this.accData;
+    const wasStreaming = this.accStreaming;
+    this.accStreaming = false;
     this.accCtrl = null;
     this.accData = null;
+    if (this.pendingCtrl) {
+      clearTimeout(this.pendingCtrl.timer);
+      this.pendingCtrl = null;
+    }
+    // Forget these characteristics' listener handles so a retry doesn't double-subscribe.
+    this.listeners = this.listeners.filter((l) => l.target !== ctrl && l.target !== data);
     try {
-      if (ctrl) await ctrl.writeValueWithResponse(toBufferSource(buildAccStopCommand()));
+      if (ctrl && wasStreaming) await ctrl.writeValueWithResponse(toBufferSource(buildAccStopCommand()));
     } catch {
       /* device may already be gone — ignore */
+    }
+    try {
+      if (ctrl) {
+        ctrl.removeEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
+        await ctrl.stopNotifications();
+      }
+    } catch {
+      /* ignore */
     }
     try {
       if (data) {
@@ -350,15 +469,15 @@ export class PolarH10 extends EventTarget {
     }
   }
 
-  /** Control-point indication: [0]=0xF0, [1]=opcode, [2]=measType, [3]=status (0 = OK). */
+  /** PMD control-point indication — resolves the in-flight get-settings / start request. */
   private onAccCtrlNotify = (ev: Event): void => {
     const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
-    if (!dv || dv.byteLength < 4 || dv.getUint8(0) !== 0xf0) return;
-    const opcode = dv.getUint8(1);
-    const status = dv.getUint8(3);
-    if (opcode === 0x02) {
-      if (status === 0) this.accInfo('H10 accepted the ACC stream', 'info');
-      else this.accInfo(`H10 REJECTED the ACC start (status ${status}) — the requested settings are unsupported`, 'error');
+    if (!dv) return;
+    if (this.pendingCtrl) {
+      clearTimeout(this.pendingCtrl.timer);
+      const p = this.pendingCtrl;
+      this.pendingCtrl = null;
+      p.resolve(dv);
     }
   };
 
@@ -374,7 +493,11 @@ export class PolarH10 extends EventTarget {
       }
       this.accFramesSeen += 1;
       if (samples.length === 0) return;
-      this.dispatch('accReceived', { samples, tArrivalS: Date.now() / 1000 } as PolarAccEvent);
+      this.dispatch('accReceived', {
+        samples,
+        tArrivalS: Date.now() / 1000,
+        sampleRateHz: this.accRateHz,
+      } as PolarAccEvent);
     } catch (err) {
       this.emitError(err, 'acc-parse');
     }
