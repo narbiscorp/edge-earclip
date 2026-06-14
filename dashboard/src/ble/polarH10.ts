@@ -158,20 +158,33 @@ export interface AccSample {
  * the detail the Polar SDK gets right (offset += ceil(deltaSize·channels·sampleCount / 8)).
  */
 function parseAccFrame(dv: DataView): AccSample[] {
-  if (dv.byteLength < 10 || dv.getUint8(0) !== PMD_MEAS_TYPE_ACC) return [];
+  if (dv.byteLength < 16 || dv.getUint8(0) !== PMD_MEAS_TYPE_ACC) return [];
   const channels = 3;
-  const refBytes = 2; // H10 ACC is 16-bit signed
+  const frameType = dv.getUint8(9);
   const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
+  const int16 = (o: number) => ((payload[o] | (payload[o + 1] << 8)) << 16) >> 16; // signed LE
 
-  let off = 0; // BYTE offset into payload
+  // Bit 7 of the frame type marks delta compression. The H10 in this config sends RAW frames
+  // (frame type 0x01): consecutive int16-LE x/y/z triplets in mG — decode those directly.
+  if ((frameType & 0x80) === 0) {
+    const out: AccSample[] = [];
+    const count = Math.floor(payload.length / (channels * 2));
+    for (let i = 0; i < count; i++) {
+      const o = i * 6;
+      out.push({ x: int16(o), y: int16(o + 2), z: int16(o + 4) });
+    }
+    return out;
+  }
+
+  // Delta-compressed: a full reference sample, then groups of {deltaSize, sampleCount, packed
+  // signed deltas}, each group byte-aligned to the next (Polar SDK).
+  let off = 0;
   const current: number[] = [];
   for (let c = 0; c < channels; c++) {
-    // 16-bit signed little-endian reference value.
-    current.push(((payload[off] | (payload[off + 1] << 8)) << 16) >> 16);
-    off += refBytes;
+    current.push(int16(off));
+    off += 2;
   }
   const out: AccSample[] = [{ x: current[0], y: current[1], z: current[2] }];
-
   while (off + 2 <= payload.length) {
     const deltaSize = payload[off];
     const sampleCount = payload[off + 1];
@@ -500,24 +513,7 @@ export class PolarH10 extends EventTarget {
       if (!dv) return;
       const samples = parseAccFrame(dv);
       if (samples.length > 0 && this.accFramesSeen < 1) {
-        this.accInfo(`ACC streaming — ${samples.length} samples/frame (${dv.byteLength} B)`, 'info');
-        // One-time decode diagnostic so a still-wrong wave is fixable without the hardware:
-        // raw frame head (hex), the delta-group structure my parser sees, the first decoded
-        // magnitudes, and the min/max magnitude. At rest, |mag| should hover ≈ 1000 mG.
-        const hex = Array.from(new Uint8Array(dv.buffer, dv.byteOffset, Math.min(dv.byteLength, 28)))
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        this.accInfo(`ACC head: ${hex}`, 'info');
-        const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
-        let go = 6;
-        const groups: string[] = [];
-        for (let g = 0; go + 2 <= payload.length && g < 12; g++) {
-          const ds = payload[go];
-          const sc = payload[go + 1];
-          groups.push(`${ds}b×${sc}`);
-          if (ds === 0 || sc === 0) break;
-          go += 2 + Math.ceil((ds * 3 * sc) / 8);
-        }
+        const fmt = (dv.getUint8(9) & 0x80) === 0 ? 'raw' : 'delta';
         let lo = Infinity;
         let hi = -Infinity;
         for (const s of samples) {
@@ -525,9 +521,10 @@ export class PolarH10 extends EventTarget {
           if (m < lo) lo = m;
           if (m > hi) hi = m;
         }
-        const mags = samples.slice(0, 12).map((s) => Math.round(Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z)));
-        this.accInfo(`ACC groups=[${groups.join(' ')}]`, 'info');
-        this.accInfo(`ACC |mag| mG first12=[${mags.join(' ')}] min=${Math.round(lo)} max=${Math.round(hi)}`, 'info');
+        this.accInfo(
+          `ACC streaming — ${samples.length} samples/frame, ${fmt} (|mag| ${Math.round(lo)}–${Math.round(hi)} mG, ≈1000 = 1 g)`,
+          'info',
+        );
       } else if (samples.length === 0 && this.accFramesSeen < 3) {
         this.accInfo(`ACC frame not parsed (type=0x${dv.getUint8(0).toString(16)}, ${dv.byteLength} B)`, 'warn');
       }
