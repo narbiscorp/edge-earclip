@@ -51,6 +51,7 @@ import {
 } from '../../../protocol/narbis_protocol';
 import { coherenceEngine, type EngineMode, type EngineStatus } from '../engine/coherenceEngine';
 import { DEFAULT_TUNABLES, type CoherenceTunables } from '../engine/tunables';
+import { AdaptiveDRRGate } from '../engine/adaptiveDrrGate';
 import type { PolarAccEvent, PolarAccInfoDetail } from '../ble/polarH10';
 import type { ChimeVoice } from '../audio/chime';
 
@@ -1314,7 +1315,7 @@ polarH10.addEventListener('disconnected', (e) => {
    * setter fires 0xCB to the glasses. Skipped during reconnecting state
    * so a brief drop doesn't churn the glasses' central. */
   if (polarH10.status === 'disconnected') {
-    resetH10OutlierState(); // don't carry the beat-median across a strap swap
+    h10DisplayGate.reset(); // don't carry the dRR history across a strap swap
     accSampleClockMs = 0; // re-anchor the ACC clock on the next stream
     if (accStartTimer) {
       clearTimeout(accStartTimer);
@@ -1350,43 +1351,31 @@ polarH10.addEventListener('error', (e) => {
 const H10_RR_MIN_MS = 250;
 const H10_RR_MAX_MS = 2000;
 
-/* H10 missed-beat / ectopic rejection. Polar occasionally drops an R-peak, so two ~750 ms
- * intervals arrive as one ~1500 ms "double" (or an extra detection makes a too-short beat).
- * Left raw, that single spike wrecks the coherence spectrum and the tachogram. We keep a
- * short median of recent GOOD beats and, when an interval falls outside [0.6, 1.4]× that
- * median, replace it with the median (the average of recent good beats). The artifact's own
- * value never enters the reference, so one bad beat can't drag it; the beat timestamp stays
- * valid (only the RR magnitude is corrected), so the time axis is untouched. */
-const H10_OUTLIER_HI = 1.4;
-const H10_OUTLIER_LO = 0.6;
-let h10RrRef: number[] = [];
-function h10RefMedian(): number {
-  if (h10RrRef.length === 0) return 0;
-  const s = [...h10RrRef].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
-}
-function resetH10OutlierState(): void {
-  h10RrRef = [];
-}
-function correctH10Rr(rrs: number[]): { corrected: number[]; rejected: number } {
-  const corrected: number[] = [];
+/* H10 missed-beat / ectopic rejection — the SAME adaptive Lipponen–Tarvainen gate the
+ * Coherence Engine uses (engine/adaptiveDrrGate.ts), so the tachogram + glasses-forward
+ * path and the engine never disagree about what's an artifact. Rejected beats are DROPPED
+ * (we never forward / plot a fabricated value); the matching beatTimestamps entry is dropped
+ * in lockstep so rr[] and beatTimestamps[] stay index-aligned — windowing / recording /
+ * replay all rely on the two arrays having equal length. The old fixed [0.6, 1.4]×median band
+ * was replaced because it clipped legitimate large RSA swings, crying "artifact" on perfectly
+ * good deep-breathing beats. */
+const h10DisplayGate = new AdaptiveDRRGate(DEFAULT_TUNABLES.dRRFloorMs);
+function gateH10Rr(
+  rrs: number[],
+  timestamps: number[],
+): { rr: number[]; beatTimestamps: number[]; rejected: number } {
+  const rr: number[] = [];
+  const beatTimestamps: number[] = [];
   let rejected = 0;
-  for (const rr of rrs) {
-    if (!Number.isFinite(rr) || rr <= 0) {
-      corrected.push(rr);
-      continue;
-    }
-    const ref = h10RefMedian();
-    if (ref > 0 && (rr > ref * H10_OUTLIER_HI || rr < ref * H10_OUTLIER_LO)) {
-      corrected.push(ref); // obvious outlier → replace with the local average of good beats
-      rejected += 1;
+  for (let i = 0; i < rrs.length; i++) {
+    if (h10DisplayGate.accept(rrs[i])) {
+      rr.push(rrs[i]);
+      if (i < timestamps.length) beatTimestamps.push(timestamps[i]);
     } else {
-      corrected.push(rr);
-      h10RrRef.push(rr);
-      if (h10RrRef.length > 8) h10RrRef.shift();
+      rejected += 1;
     }
   }
-  return { corrected, rejected };
+  return { rr, beatTimestamps, rejected };
 }
 
 function forwardH10BeatsToGlasses(rrs: number[]): void {
@@ -1403,17 +1392,21 @@ function forwardH10BeatsToGlasses(rrs: number[]): void {
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
   // De-spike obvious artifacts (missed-beat doubles / ectopic shorts) before they reach the
-  // tachogram, the local coherence window, or the glasses. The engine (Mode A/B) gets the
-  // RAW intervals — it runs its own adaptive artifact gate and needs to know when a cycle
-  // was dirty for Mode B dwell verification.
-  const { corrected: cleanRr, rejected } = correctH10Rr(beat.rrIntervals_ms);
+  // tachogram, the local coherence window, or the glasses, using the SAME adaptive gate the
+  // engine uses. The engine (Mode A/B) gets the RAW intervals — it runs its own gate instance
+  // and needs to know when a cycle was dirty for Mode B dwell verification. Drop rr +
+  // beatTimestamps in lockstep so the two arrays stay equal-length.
+  const { rr: cleanRr, beatTimestamps: cleanTs, rejected } = gateH10Rr(
+    beat.rrIntervals_ms,
+    beat.beatTimestamps,
+  );
   if (rejected > 0) {
-    appendBleLog('polar', 'warn', `rejected ${rejected} outlier beat${rejected > 1 ? 's' : ''} (missed-beat double / ectopic)`);
+    appendBleLog('polar', 'info', `dropped ${rejected} artifact beat${rejected > 1 ? 's' : ''} (adaptive dRR gate)`);
   }
   const record: PolarBeatRecord = {
     bpm: beat.bpm,
     rr: cleanRr,
-    beatTimestamps: beat.beatTimestamps,
+    beatTimestamps: cleanTs,
   };
   liveBuffers.polarBeats.push(beat.timestamp, record);
   pending.polarBeats += 1;
@@ -1622,11 +1615,11 @@ function isEarclipDirect(): boolean {
   return useDashboardStore.getState().connection.narbis.state === 'connected';
 }
 
-/* IIR rolling average for the relayed-IBI outlier gate. Mirrors the firmware's
- * on_earclip_ibi gate so the dashboard coherence ring sees the same filtered
- * stream as the firmware's coh_ibi_ring. Reset on earclip relay disconnect. */
-let relayIbiRollingAvgMs = 0;
-const RELAY_IBI_OUTLIER_PCT = 75;  // reject if IBI > avg × 1.75
+/* Relayed-IBI artifact gate — the SAME adaptive Lipponen–Tarvainen gate the H10 + engine paths
+ * use (engine/adaptiveDrrGate.ts), so all three beat paths share one bidirectional rule. The old
+ * one-directional IIR rolling-average (reject only IBI > avg×1.75) caught missed-beat doubles but
+ * not ectopic shorts. Reset on earclip relay disconnect. */
+const relayGate = new AdaptiveDRRGate(DEFAULT_TUNABLES.dRRFloorMs);
 
 edgeDevice.addEventListener('relayedIbi', (e) => {
   if (isEarclipDirect()) return;  // direct path already covers this
@@ -1643,16 +1636,10 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
   const cfg = useDashboardStore.getState().config;
   if (cfg != null && (r.ibi_ms < cfg.ibi_min_ms || r.ibi_ms > cfg.ibi_max_ms)) return;
 
-  /* IIR rolling-average outlier gate — catches missed-beat doubles that the
-   * earclip's delta check misses in adaptive/Kalman mode (where the
-   * beat_validator delta check is intentionally disabled). */
-  if (relayIbiRollingAvgMs === 0) {
-    relayIbiRollingAvgMs = r.ibi_ms;
-  } else if (r.ibi_ms > relayIbiRollingAvgMs * (100 + RELAY_IBI_OUTLIER_PCT) / 100) {
-    return;  /* likely missed beat — skip dashboard coherence ring */
-  } else {
-    relayIbiRollingAvgMs = (relayIbiRollingAvgMs * 7 + r.ibi_ms) / 8;
-  }
+  /* Adaptive bidirectional dRR gate — catches missed-beat doubles AND ectopic shorts that the
+   * earclip's delta check misses in adaptive/Kalman mode (where the beat_validator delta check
+   * is intentionally disabled). Drops without interpolating, same as the H10 + engine paths. */
+  if (!relayGate.accept(r.ibi_ms, r.confidence_x100)) return;
 
   const beat: NarbisBeatEvent = {
     bpm: Math.round(60000 / r.ibi_ms),
@@ -1735,7 +1722,7 @@ edgeDevice.addEventListener('centralRelayState', (e) => {
         });
     }, 2000);
   } else if (transitionedDown) {
-    relayIbiRollingAvgMs = 0;  /* stale avg would corrupt next relay session */
+    relayGate.reset();  /* stale history would corrupt the next relay session */
     if (configRefreshTimer) {
       clearTimeout(configRefreshTimer);
       configRefreshTimer = null;

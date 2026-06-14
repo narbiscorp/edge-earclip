@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_TUNABLES } from '../tunables';
 import { IBIIngest, type IBIEntry } from '../ibiIngest';
+import { AdaptiveDRRGate } from '../adaptiveDrrGate';
 import { LombScargleCore } from '../lombScargleCore';
 import { RespirationFromACC } from '../respirationFromAcc';
 import { ResonanceController } from '../resonanceController';
@@ -74,6 +75,31 @@ describe('IBIIngest — bidirectional artifact gate', () => {
     expect(ing.push(100, 100, 1)).toBe(false); // < 250 ms
     expect(ing.push(3000, 100, 2)).toBe(false); // > 2500 ms
     expect(ing.push(1000, 10, 3)).toBe(false); // confidence < threshold
+  });
+
+  it('does NOT reject a smooth large RSA swing (the false-positive bug this gate fixes)', () => {
+    // 900 ± 150 ms at 0.1 Hz — a big but physiological deep-breathing swing (≈57–80 bpm).
+    // The old fixed [0.6,1.4]×median de-spiker mislabeled these as "ectopic"; the adaptive
+    // gate must pass every one because the per-beat dRR stays well under the threshold.
+    const ing = new IBIIngest(DEFAULT_TUNABLES);
+    const beats = modulatedBeats(900, 150, 0.1, 60);
+    for (const b of beats) ing.push(b.rrMs, 100, b.beatTimeS);
+    expect(ing.window(10_000).length).toBe(beats.length);
+  });
+});
+
+describe('AdaptiveDRRGate — shared artifact gate', () => {
+  it('passes a smooth large RSA swing but still catches a lone double / ectopic short', () => {
+    const gate = new AdaptiveDRRGate(DEFAULT_TUNABLES.dRRFloorMs);
+    let rejected = 0;
+    for (const b of modulatedBeats(900, 150, 0.1, 60)) {
+      if (!gate.accept(b.rrMs)) rejected += 1;
+    }
+    expect(rejected).toBe(0); // no RSA clipping
+
+    expect(gate.accept(1700)).toBe(false); // missed-beat double
+    expect(gate.accept(400)).toBe(false); // ectopic short (lastRR not advanced by the reject)
+    expect(gate.accept(900)).toBe(true); // clean beat resumes
   });
 });
 
