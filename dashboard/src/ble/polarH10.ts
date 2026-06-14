@@ -20,7 +20,9 @@ export interface PolarBeatEvent {
  * and band-passes it). `tArrivalS` is the notification receive time in seconds. */
 export interface PolarAccEvent {
   samples: Array<{ x: number; y: number; z: number }>;
-  tArrivalS: number;
+  /** Wall-clock ms of the NEWEST sample, derived from the H10's device frame timestamp (monotonic,
+   * jitter-free) anchored to Date.now() on the first frame — NOT BLE arrival time. */
+  lastSampleMs: number;
   /** The sample rate the H10 actually granted (Hz) — used to space per-sample timestamps. */
   sampleRateHz: number;
 }
@@ -280,6 +282,10 @@ export class PolarH10 extends EventTarget {
   private accStreaming = false;
   private accFramesSeen = 0;
   private accRateHz = ACC_PREF_SAMPLE_RATE_HZ; // the rate the H10 actually granted
+  // Anchor the H10's device clock (ns, monotonic) to wall-clock on the first ACC frame, so
+  // per-sample timestamps don't jitter with BLE arrival time (frames batch ~5 s each).
+  private accAnchorDeviceNs: number | null = null;
+  private accAnchorWallMs = 0;
   /* One pending control-point request at a time (get-settings or start); the next indication
    * resolves it. The PMD control point is strictly request→response, so this is sufficient. */
   private pendingCtrl: { resolve: (dv: DataView) => void; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -409,6 +415,12 @@ export class PolarH10 extends EventTarget {
       const rates = avail.get(PMD_SET_SAMPLE_RATE) ?? [];
       const ranges = avail.get(PMD_SET_RANGE) ?? [];
       this.accInfo(`H10 ACC supports rates [${rates.join(',')}] Hz, ranges [${ranges.join(',')}] g`, 'info');
+      if (avail.size === 0) {
+        const hex = Array.from(new Uint8Array(sdv.buffer, sdv.byteOffset, Math.min(sdv.byteLength, 20)))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.accInfo(`ACC settings response unparsed: ${hex}`, 'warn');
+      }
     } else {
       this.accInfo('no settings response from H10 — using defaults', 'warn');
     }
@@ -440,6 +452,7 @@ export class PolarH10 extends EventTarget {
     this.accStreaming = false;
     this.accCtrl = null;
     this.accData = null;
+    this.accAnchorDeviceNs = null;
     if (this.pendingCtrl) {
       clearTimeout(this.pendingCtrl.timer);
       this.pendingCtrl = null;
@@ -487,15 +500,34 @@ export class PolarH10 extends EventTarget {
       if (!dv) return;
       const samples = parseAccFrame(dv);
       if (samples.length > 0 && this.accFramesSeen < 1) {
+        const s0 = samples[0];
         this.accInfo(`ACC streaming — ${samples.length} samples/frame (${dv.byteLength} B)`, 'info');
+        // Sanity: at rest on a flat surface one axis should be ≈ ±4096 (1 g at ±8 g) and the
+        // others ≈ 0. If all three are tiny or ramping, the delta decode is wrong.
+        this.accInfo(`ACC first sample x=${s0.x} y=${s0.y} z=${s0.z} (counts; ≈±4096 = 1 g)`, 'info');
       } else if (samples.length === 0 && this.accFramesSeen < 3) {
         this.accInfo(`ACC frame not parsed (type=0x${dv.getUint8(0).toString(16)}, ${dv.byteLength} B)`, 'warn');
       }
       this.accFramesSeen += 1;
       if (samples.length === 0) return;
+
+      // Device frame timestamp = time of the LAST sample (ns, u64 LE at offset 1). Read as two
+      // u32s (avoids BigInt); precise enough for relative timing. Anchor to wall-clock once.
+      let lastSampleMs = Date.now();
+      if (dv.byteLength >= 9) {
+        const tsLow = dv.getUint32(1, true);
+        const tsHigh = dv.getUint32(5, true);
+        const tsNs = tsHigh * 4294967296 + tsLow;
+        if (this.accAnchorDeviceNs === null) {
+          this.accAnchorDeviceNs = tsNs;
+          this.accAnchorWallMs = Date.now();
+        }
+        lastSampleMs = this.accAnchorWallMs + (tsNs - this.accAnchorDeviceNs) / 1e6;
+      }
+
       this.dispatch('accReceived', {
         samples,
-        tArrivalS: Date.now() / 1000,
+        lastSampleMs,
         sampleRateHz: this.accRateHz,
       } as PolarAccEvent);
     } catch (err) {
@@ -588,6 +620,7 @@ export class PolarH10 extends EventTarget {
     // ACC stream characteristics are invalid once the GATT session is gone.
     this.accStreaming = false;
     this.accFramesSeen = 0;
+    this.accAnchorDeviceNs = null;
     this.accCtrl = null;
     this.accData = null;
     if (!opts.keepDevice) {

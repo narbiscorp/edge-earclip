@@ -881,9 +881,9 @@ coherenceEngine.addEventListener('status', (e) => {
 // and buffer the vector-magnitude for the breathing-wave chart.
 polarH10.addEventListener('accReceived', (e) => {
   const acc = (e as CustomEvent<PolarAccEvent>).detail;
-  if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.tArrivalS);
+  if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.lastSampleMs / 1000);
   const n = acc.samples.length;
-  const baseMs = acc.tArrivalS * 1000;
+  const baseMs = acc.lastSampleMs;
   const stepMs = 1000 / (acc.sampleRateHz || ACC_STREAM_HZ);
   for (let i = 0; i < n; i++) {
     const s = acc.samples[i];
