@@ -37,6 +37,10 @@ on:
 permissions:
   contents: write   # required by softprops/action-gh-release to create releases
 
+# Opt JS actions into Node 24 ahead of GitHub's 2026-06-16 forced migration (see dashboard-deploy.yml).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-release:
     runs-on: ubuntu-latest

@@ -12,6 +12,10 @@ on:
       - 'protocol/**'
       - '.github/workflows/dashboard-build.yml'
 
+# Opt JS actions into Node 24 ahead of GitHub's 2026-06-16 forced migration (see dashboard-deploy.yml).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest
