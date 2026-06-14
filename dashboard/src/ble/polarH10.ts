@@ -500,12 +500,34 @@ export class PolarH10 extends EventTarget {
       if (!dv) return;
       const samples = parseAccFrame(dv);
       if (samples.length > 0 && this.accFramesSeen < 1) {
-        const s0 = samples[0];
         this.accInfo(`ACC streaming — ${samples.length} samples/frame (${dv.byteLength} B)`, 'info');
-        // Sanity: the H10 reports mG, so at rest the magnitude should be ≈ 1000 (1 g) with one
-        // dominant axis. If all three stay tiny or clearly ramp, the delta decode is wrong.
-        const mag = Math.round(Math.sqrt(s0.x * s0.x + s0.y * s0.y + s0.z * s0.z));
-        this.accInfo(`ACC first sample x=${s0.x} y=${s0.y} z=${s0.z} |mag|=${mag} mG (≈1000 = 1 g)`, 'info');
+        // One-time decode diagnostic so a still-wrong wave is fixable without the hardware:
+        // raw frame head (hex), the delta-group structure my parser sees, the first decoded
+        // magnitudes, and the min/max magnitude. At rest, |mag| should hover ≈ 1000 mG.
+        const hex = Array.from(new Uint8Array(dv.buffer, dv.byteOffset, Math.min(dv.byteLength, 28)))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join(' ');
+        this.accInfo(`ACC head: ${hex}`, 'info');
+        const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
+        let go = 6;
+        const groups: string[] = [];
+        for (let g = 0; go + 2 <= payload.length && g < 12; g++) {
+          const ds = payload[go];
+          const sc = payload[go + 1];
+          groups.push(`${ds}b×${sc}`);
+          if (ds === 0 || sc === 0) break;
+          go += 2 + Math.ceil((ds * 3 * sc) / 8);
+        }
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const s of samples) {
+          const m = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
+          if (m < lo) lo = m;
+          if (m > hi) hi = m;
+        }
+        const mags = samples.slice(0, 12).map((s) => Math.round(Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z)));
+        this.accInfo(`ACC groups=[${groups.join(' ')}]`, 'info');
+        this.accInfo(`ACC |mag| mG first12=[${mags.join(' ')}] min=${Math.round(lo)} max=${Math.round(hi)}`, 'info');
       } else if (samples.length === 0 && this.accFramesSeen < 3) {
         this.accInfo(`ACC frame not parsed (type=0x${dv.getUint8(0).toString(16)}, ${dv.byteLength} B)`, 'warn');
       }
