@@ -45,16 +45,36 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
  * surfaced under the Engine box so the user follows the search as it happens. */
 export function modeBStatusText(status: EngineStatus): string {
   if (status.searchAborted) {
-    return 'Search stopped — your breathing could not be verified. Check the H10 strap and sit still, then re-select Mode B.';
+    return 'Paused — your breathing could not be confirmed from the H10. Sit still, keep the strap snug, then re-select Mode B.';
   }
   if (status.modeBState === 'maintaining' && status.lockedRF != null) {
-    return `Locked at ${status.lockedRF.toFixed(1)} br/min — maintaining your resonance${
-      status.boundaryLimited ? ' (at the search-band edge)' : ''
+    return `Found it — holding your resonance at ${status.lockedRF.toFixed(1)} br/min and tracking small drifts${
+      status.boundaryLimited ? ' (this is at the edge of the search range)' : ''
     }.`;
   }
-  const testing =
-    status.modeBCommandedBpm != null ? ` testing ${status.modeBCommandedBpm.toFixed(1)} br/min` : '';
+  // Searching.
+  const rate = status.modeBCommandedBpm != null ? status.modeBCommandedBpm.toFixed(1) : '—';
+  const p = status.modeBProgress;
+  const breath = p ? ` (breath ${Math.min(p.breath, p.dwellBreaths)} of ${p.dwellBreaths})` : '';
+  const best = p && p.bestRate != null ? ` Strongest response so far: ${p.bestRate.toFixed(1)} br/min.` : '';
+  const tested = p && p.testedCount > 0 ? ` ${p.testedCount} rate${p.testedCount > 1 ? 's' : ''} tested.` : '';
   const hold =
-    status.unverifiedDwells > 0 ? ` · hold still (${status.unverifiedDwells} unverified)` : '';
-  return `Searching for your resonance —${testing}${hold}`;
+    status.unverifiedDwells > 0
+      ? ` Hold still — ${status.unverifiedDwells} breath${status.unverifiedDwells > 1 ? 's' : ''} couldn’t be verified.`
+      : '';
+  let lead: string;
+  switch (p?.phase) {
+    case 'baseline':
+      lead = `Pacing you at ${rate} br/min to read your baseline${breath}.`;
+      break;
+    case 'climbing':
+      lead = `Climbing toward your resonance — holding ${rate} br/min${breath} and comparing how strong your heart-rate swings are.${best}`;
+      break;
+    case 'refining':
+      lead = `Zeroing in — fine-tuning around ${rate} br/min${breath}.${best}`;
+      break;
+    default:
+      lead = `Pacing you at ${rate} br/min and measuring your heart-rate swings${breath}.`;
+  }
+  return lead + tested + hold;
 }

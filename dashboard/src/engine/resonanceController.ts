@@ -14,6 +14,22 @@ export type ModeBState = 'searching' | 'maintaining';
 
 type SearchPhase = 'probe0' | 'findDir' | 'bracketOut' | 'refine';
 
+/** Plain-language progress for the UI while the controller searches. */
+export interface SearchProgress {
+  phase: 'baseline' | 'climbing' | 'refining';
+  breath: number; // breaths elapsed in the current dwell
+  dwellBreaths: number; // breaths held per dwell
+  bestRate: number | null; // strongest-response rate found so far (BPM)
+  testedCount: number; // distinct rates tested so far
+}
+
+const PHASE_LABEL: Record<SearchPhase, SearchProgress['phase']> = {
+  probe0: 'baseline',
+  findDir: 'baseline',
+  bracketOut: 'climbing',
+  refine: 'refining',
+};
+
 interface Sample {
   bpm: number;
   amp: number;
@@ -70,6 +86,18 @@ export class ResonanceController {
   /** Persist this per user (localStorage) for warm-start. */
   storedRF(): number {
     return this.lockedRF;
+  }
+
+  /** Plain-language progress snapshot for the UI (valid while searching). */
+  searchProgress(): SearchProgress {
+    const c = this.collapsed();
+    return {
+      phase: PHASE_LABEL[this.phase],
+      breath: this.breathsThisDwell,
+      dwellBreaths: this.t.dwellBreaths,
+      bestRate: c.length > 0 ? this.bestRate() : null,
+      testedCount: c.length,
+    };
   }
 
   /**

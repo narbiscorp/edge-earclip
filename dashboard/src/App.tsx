@@ -15,8 +15,11 @@ import EdgeControls from './components/EdgeControls';
 import GlassesLog from './components/GlassesLog';
 import CoherenceEnginePanel from './components/engine/CoherenceEnginePanel';
 import CoherencePresetBar from './components/engine/CoherencePresetBar';
+import ChimeControls from './components/ChimeControls';
+import BreathChime from './components/BreathChime';
 import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
+import AccChart from './components/AccChart';
 import SessionSummaryModal from './components/SessionSummaryModal';
 import SlimHeader from './components/SlimHeader';
 import AuthButton from './auth/AuthButton';
@@ -26,7 +29,7 @@ import { useAuthStore } from './auth/authStore';
 import { SUPABASE_CONFIGURED } from './lib/supabase';
 import { metricsRunner } from './state/metricsRunner';
 import { useRecordingStore } from './state/recording';
-import { useDashboardStore } from './state/store';
+import { useDashboardStore, initCoherenceEngine } from './state/store';
 // Side-effect import: subscribes the pending-sync queue to window 'online'
 // and auth-state events. Must be imported somewhere in the app.
 import './sessions/pendingSyncQueue';
@@ -35,6 +38,7 @@ export default function App() {
   const checkForOrphans = useRecordingStore((s) => s.checkForOrphanedSessions);
   const uiMode = useDashboardStore((s) => s.uiMode);
   const setUiMode = useDashboardStore((s) => s.setUiMode);
+  const engineMode = useDashboardStore((s) => s.engineMode);
   const showSessionSummary = useDashboardStore((s) => s.showSessionSummary);
   const endSessionAndSave = useDashboardStore((s) => s.endSessionAndSave);
   const showLogin = useAuthStore((s) => s.showLogin);
@@ -46,11 +50,16 @@ export default function App() {
   useEffect(() => {
     metricsRunner.start();
     void checkForOrphans();
+    // Resume the app-side Coherence Engine if the persisted mode is Mode A/B, so the UI
+    // reflects a running engine on load instead of a selected-but-off one.
+    initCoherenceEngine();
     return () => metricsRunner.stop();
   }, [checkForOrphans]);
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100 relative">
+      {/* Renders nothing — plays the inhale/exhale chime when enabled + a pacer is active. */}
+      <BreathChime />
       <RecoveryBanner />
       {/* Header is mode-aware: Basic and Mobile get the cinematic SlimHeader
           (brand + device pills + cog tray + kebab menu); Expert keeps the
@@ -126,10 +135,12 @@ export default function App() {
               <BeatChart />
               <MetricsChart />
               <CoherenceChart />
+              {engineMode === 'modeB' && <AccChart />}
             </section>
             <aside className="flex flex-col gap-2 p-3 border-l border-slate-800 overflow-auto">
               <CoherenceEnginePanel />
               <CoherencePresetBar />
+              <ChimeControls />
               <EdgeControls />
               <GlassesLog />
               <ConfigPanel />

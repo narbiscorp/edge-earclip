@@ -52,6 +52,7 @@ import {
 import { coherenceEngine, type EngineMode, type EngineStatus } from '../engine/coherenceEngine';
 import { DEFAULT_TUNABLES, type CoherenceTunables } from '../engine/tunables';
 import type { PolarAccEvent } from '../ble/polarH10';
+import type { ChimeVoice } from '../audio/chime';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
 export type DataSource = 'live' | 'replay';
@@ -218,6 +219,14 @@ export interface DashboardState {
   /** Latest live engine status (CR, coh%, pacer, Mode B state), or null when the engine is off. */
   engineStatus: EngineStatus | null;
 
+  /** Breathing-pacer chime: on/off + the voice played on each phase. Persisted. */
+  chimeEnabled: boolean;
+  chimeInhale: ChimeVoice;
+  chimeExhale: ChimeVoice;
+  setChimeEnabled: (on: boolean) => void;
+  setChimeInhale: (v: ChimeVoice) => void;
+  setChimeExhale: (v: ChimeVoice) => void;
+
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
   /** Disconnect and release the Web Bluetooth permission grant for the
@@ -298,6 +307,11 @@ function makeBuffers(): BufferSet {
 
 const liveBuffers = makeBuffers();
 const replayBuffers = makeBuffers();
+
+/** Polar H10 accelerometer vector-magnitude (raw counts), for the breathing-wave chart in
+ * Mode B. Live only; the chart high-passes it to show the inhale/exhale oscillation. */
+export const accMagBuffer = new StreamBuffer<number>(3600); // ~72 s at 50 Hz
+export const ACC_STREAM_HZ = 50;
 
 // Session accumulator — module-level mutable arrays avoid GC pressure from
 // spread-cloning on every beat. Consumers call the getters; the modal reads
@@ -459,6 +473,28 @@ function saveModeBRF(rf: number): void {
   try { localStorage.setItem(MODEB_RF_KEY, String(rf)); } catch { /* quota / private mode */ }
 }
 
+const CHIME_KEY = 'breathChime';
+interface ChimeSettings { enabled: boolean; inhale: ChimeVoice; exhale: ChimeVoice; }
+function loadChime(): ChimeSettings {
+  const fallback: ChimeSettings = { enabled: false, inhale: 'chime', exhale: 'ding' };
+  try {
+    const raw = localStorage.getItem(CHIME_KEY);
+    if (!raw) return fallback;
+    const p = JSON.parse(raw) as Partial<ChimeSettings>;
+    return {
+      enabled: !!p.enabled,
+      inhale: p.inhale ?? fallback.inhale,
+      exhale: p.exhale ?? fallback.exhale,
+    };
+  } catch {
+    return fallback;
+  }
+}
+function saveChime(s: ChimeSettings): void {
+  try { localStorage.setItem(CHIME_KEY, JSON.stringify(s)); } catch { /* quota / private mode */ }
+}
+const _chimeInit = loadChime();
+
 /** Start (or restart) the ported engine for the given app-side mode. The engine ingests
  * beats from whichever HR source feeds the glasses and streams lens duty over 0xA5. */
 function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
@@ -487,6 +523,18 @@ function stopCoherenceEngine(): void {
   if (rf != null) saveModeBRF(rf);
   coherenceEngine.stop();
   void polarH10.stopAccStream().catch(() => { /* not streaming — ignore */ });
+}
+
+/** Resume the app-side engine on app load if the persisted mode is modeA/modeB, so the mode
+ * highlight + live readout reflect a genuinely-running engine instead of a selected-but-off one
+ * (the bug where Mode B showed no status until you toggled modes). Called once from App mount. */
+export function initCoherenceEngine(): void {
+  const s = useDashboardStore.getState();
+  if (s.engineMode === 'firmware' || coherenceEngine.running) return;
+  if (s.engineMode === 'modeB' && s.hrSourceForGlasses !== 'h10') {
+    s.setHrSourceForGlasses('h10');
+  }
+  startCoherenceEngine(s.engineMode);
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
@@ -521,6 +569,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   engineMode: loadEngineMode(),
   coherenceTunables: loadCoherenceTunables(),
   engineStatus: null,
+  chimeEnabled: _chimeInit.enabled,
+  chimeInhale: _chimeInit.inhale,
+  chimeExhale: _chimeInit.exhale,
   showSessionSummary: false,
   sessionPaused: false,
   sessionEnded: false,
@@ -666,7 +717,10 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   setEngineMode: async (mode) => {
     const prev = useDashboardStore.getState().engineMode;
-    if (mode === prev) return;
+    // Re-selecting the active mode is a no-op ONLY if the engine is genuinely running for it.
+    // On a fresh load the persisted mode is set but the engine isn't started yet, so allow the
+    // click to start it (otherwise the readout never appears until you toggle to another mode).
+    if (mode === prev && (mode === 'firmware' || coherenceEngine.running)) return;
     set({ engineMode: mode });
     saveEngineMode(mode);
     if (mode === 'firmware') {
@@ -690,6 +744,21 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     set({ coherenceTunables: t });
     saveCoherenceTunables(t);
     coherenceEngine.setTunables(t);
+  },
+  setChimeEnabled: (on) => {
+    set({ chimeEnabled: on });
+    const s = useDashboardStore.getState();
+    saveChime({ enabled: on, inhale: s.chimeInhale, exhale: s.chimeExhale });
+  },
+  setChimeInhale: (v) => {
+    set({ chimeInhale: v });
+    const s = useDashboardStore.getState();
+    saveChime({ enabled: s.chimeEnabled, inhale: v, exhale: s.chimeExhale });
+  },
+  setChimeExhale: (v) => {
+    set({ chimeExhale: v });
+    const s = useDashboardStore.getState();
+    saveChime({ enabled: s.chimeEnabled, inhale: s.chimeInhale, exhale: v });
   },
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
@@ -808,10 +877,19 @@ coherenceEngine.addEventListener('status', (e) => {
   setState({ lastEdgeCoherence: frame });
 });
 
-// Feed the H10 accelerometer (PMD) stream into the engine for Mode B respiration verification.
+// Feed the H10 accelerometer (PMD) stream into the engine for Mode B respiration verification,
+// and buffer the vector-magnitude for the breathing-wave chart.
 polarH10.addEventListener('accReceived', (e) => {
   const acc = (e as CustomEvent<PolarAccEvent>).detail;
   if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.tArrivalS);
+  const n = acc.samples.length;
+  const baseMs = acc.tArrivalS * 1000;
+  const stepMs = 1000 / ACC_STREAM_HZ;
+  for (let i = 0; i < n; i++) {
+    const s = acc.samples[i];
+    const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
+    accMagBuffer.push(baseMs - (n - 1 - i) * stepMs, mag); // newest sample lands at tArrivalS
+  }
 });
 
 // Monotonic raw-PPG timestamping. The firmware doesn't send per-sample

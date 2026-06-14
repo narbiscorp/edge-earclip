@@ -19,7 +19,7 @@ import { LombScargleCore } from './lombScargleCore';
 import { FollowPacer } from './followPacer';
 import { FastAmplitudeTracker } from './fastAmplitude';
 import { RespirationFromACC } from './respirationFromAcc';
-import { ResonanceController, type ModeBState } from './resonanceController';
+import { ResonanceController, type ModeBState, type SearchProgress } from './resonanceController';
 import { Program2Lens, breatheFraction, breatheDuty } from './lensPrograms';
 
 export type { EngineMode } from './tunables';
@@ -47,6 +47,8 @@ export interface EngineStatus {
   modeBState: ModeBState | null;
   /** The breathing rate (BPM) the controller is currently pacing/testing. */
   modeBCommandedBpm: number | null;
+  /** Search progress (phase / dwell breath / best rate so far), or null when not searching. */
+  modeBProgress: SearchProgress | null;
   lockedRF: number | null; // valid only when maintaining
   boundaryLimited: boolean;
   searchAborted: boolean;
@@ -239,6 +241,7 @@ export class CoherenceEngine extends EventTarget {
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       modeBState: this.modeB?.state ?? null,
       modeBCommandedBpm: this.modeB ? this.modeB.commandedBPM : null,
+      modeBProgress: this.modeB && this.modeB.state === 'searching' ? this.modeB.searchProgress() : null,
       lockedRF: this.modeB?.state === 'maintaining' ? this.modeB.lockedRF : null,
       boundaryLimited: this.modeB?.boundaryLimited ?? false,
       searchAborted: this.modeB?.searchAborted ?? false,

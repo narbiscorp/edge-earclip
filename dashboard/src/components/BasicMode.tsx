@@ -14,6 +14,8 @@ import {
 import BeatChart from './BeatChart';
 import FilteredBeatChart from './FilteredBeatChart';
 import CoherenceChart from './CoherenceChart';
+import AccChart from './AccChart';
+import ChimeControls from './ChimeControls';
 import { useLensOpacity } from '../state/useLensOpacity';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
@@ -230,6 +232,9 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           onPick={(m) => void setEngineMode(m)}
         />
 
+        {/* ── Breathing chime — on/off + inhale/exhale sound pickers. */}
+        <ChimeControls />
+
         {/* ── Hero: coherence ring + zone pill + lens tint bar ─── */}
         <section className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-5 items-center">
           <div className="flex justify-center sm:justify-start">
@@ -277,6 +282,10 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         >
           <CoherenceChart compact windowSec={30} />
         </ChartCard>
+
+        {/* Breathing wave from the H10 accelerometer — the independent respiration signal
+            Mode B verifies each dwell against. Only meaningful in Mode B (ACC streaming). */}
+        {engineMode === 'modeB' && <AccChart windowSec={30} />}
 
         {/* ── Bottom metric strip ────────────────────────────────
             HEART (bpm) · BREATH (per min) · RMSSD (ms). Compact
