@@ -242,6 +242,17 @@ export class EdgeDevice extends EventTarget {
    * for older firmware that doesn't emit 0xF9. Reset on disconnect so a
    * reconnect to old firmware re-enables the 0xF1 path. */
   private lastF9IbiTs = 0;
+  /* Last lens duty (0..100) sent via streamLensDuty, and an in-flight guard. The
+   * Coherence Engine streams duty at ~12 Hz; coalesce identical values and never
+   * queue overlapping GATT writes (Web Bluetooth throws "operation already in
+   * progress" otherwise). Reset on disconnect so the next session re-sends. */
+  private lastDutySent = -1;
+  private dutyWriteInFlight = false;
+  /* Serializes ALL writes to the CTRL characteristic. Web Bluetooth rejects a
+   * second GATT write while one is in flight ("operation already in progress");
+   * the H10→glasses injectIbi path fires several writes per notification, which
+   * used to collide. Every write chains onto this promise so they run in order. */
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   get status(): EdgeStatus { return this._status; }
   get deviceName(): string | null { return this._deviceName; }
@@ -314,8 +325,15 @@ export class EdgeDevice extends EventTarget {
     if (payload && payloadLen) buf.set(payload, 1);
     // bytes beyond opcode+payload are zero from Uint8Array() initialization,
     // which serves as the firmware's "no arg" default.
-    await this.chCtrl.writeValueWithResponse(toBufferSource(buf));
-    this.dispatch('ctrlSent', { opcode, length: total });
+    // Chain onto the serial write queue so concurrent callers (e.g. several
+    // injectIbi calls from one H10 notification) never overlap a GATT op.
+    const task = this.writeQueue.then(async () => {
+      if (!this.chCtrl) throw new Error('not connected');
+      await this.chCtrl.writeValueWithResponse(toBufferSource(buf));
+      this.dispatch('ctrlSent', { opcode, length: total });
+    });
+    this.writeQueue = task.catch(() => { /* keep the chain alive after a failure */ });
+    return task;
   }
 
   /** Convenience wrapper for the forget+rescan opcode. */
@@ -473,6 +491,42 @@ export class EdgeDevice extends EventTarget {
       flags & 0xff,
     ]);
     await this.sendCtrlCommand(CTRL.INJECT_IBI, payload);
+  }
+
+  /** Stream an immediate static lens duty (0..100) via opcode 0xA5 — the workhorse the
+   * app-side Coherence Engine uses to "own" the lens (the glasses become a display). Built
+   * for a ~12 Hz call rate: coalesces unchanged values, drops a frame if a write is still
+   * in flight (next frame catches up), and prefers write-without-response when the CTRL
+   * characteristic supports it to avoid the round-trip stall. Silently no-ops if not
+   * connected. Does NOT log to the BLE event log (too high-rate). */
+  async streamLensDuty(duty0to100: number): Promise<void> {
+    if (!this.chCtrl) return;
+    const v = clamp(Math.round(duty0to100), 0, 100);
+    if (v === this.lastDutySent || this.dutyWriteInFlight) return;
+    this.lastDutySent = v;
+    this.dutyWriteInFlight = true;
+    const buf = new Uint8Array([CTRL.STATIC_DUTY, v]);
+    // Goes through the same serial queue as sendCtrlCommand so a duty frame and a
+    // control write never collide; the in-flight guard above still drops stale frames.
+    const task = this.writeQueue.then(async () => {
+      const ch = this.chCtrl;
+      if (!ch) return;
+      if (ch.properties?.writeWithoutResponse) {
+        await ch.writeValueWithoutResponse(toBufferSource(buf));
+      } else {
+        await ch.writeValueWithResponse(toBufferSource(buf));
+      }
+    });
+    this.writeQueue = task.catch(() => {});
+    try {
+      await task;
+    } catch {
+      // Drop this frame; the next one retries. At 12 Hz a transient GATT
+      // contention is normal and self-heals.
+      this.lastDutySent = -1;
+    } finally {
+      this.dutyWriteInFlight = false;
+    }
   }
 
   private async openSession(): Promise<void> {
@@ -667,6 +721,8 @@ export class EdgeDevice extends EventTarget {
 
   private cleanupConnection(opts: { keepDevice?: boolean } = {}): void {
     this.lastF9IbiTs = 0;
+    this.lastDutySent = -1;
+    this.dutyWriteInFlight = false;
     for (const h of this.listeners) {
       h.target.removeEventListener(h.type, h.listener);
     }

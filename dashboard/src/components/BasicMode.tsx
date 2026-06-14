@@ -17,6 +17,7 @@ import CoherenceChart from './CoherenceChart';
 import { useLensOpacity } from '../state/useLensOpacity';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
+import type { EngineMode, EngineStatus } from '../engine/coherenceEngine';
 
 /* Friendly labels for the four PPG programs the firmware ships. The
  * expert UI shows them as "Prog 1 / 2 / 3 / 4"; a lay user wants to
@@ -105,6 +106,9 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const hrSource = useDashboardStore((s) => s.hrSourceForGlasses);
   const program = useDashboardStore((s) => s.activeProgram);
   const setActiveProgram = useDashboardStore((s) => s.setActiveProgram);
+  const engineMode = useDashboardStore((s) => s.engineMode);
+  const setEngineMode = useDashboardStore((s) => s.setEngineMode);
+  const engineStatus = useDashboardStore((s) => s.engineStatus);
   const lastMetrics = useLastMetrics();
 
   /* Derived metrics. Each can be null when its data source isn't reporting.
@@ -116,10 +120,17 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const hrBpm = effectiveHrSource === 'h10'
     ? (lastPolarBeat?.bpm ?? null)
     : (lastBeat?.bpm ?? null);
-  const coh = lastEdgeCoh?.coh ?? null;
-  const respBpm = lastEdgeCoh != null && lastEdgeCoh.respMhz > 0
-    ? (lastEdgeCoh.respMhz * 60) / 1000
-    : null;
+  /* When the app-side Coherence Engine (Mode A/B) is driving, the firmware 0xF2 frame
+   * goes stale (we feed beats to the engine, not the firmware pipeline), so read coherence
+   * / pacer / respiration from the engine's live status instead. Both are 0–100 / BPM. */
+  const engineActive = engineMode !== 'firmware' && !!engineStatus?.running;
+  const coh = engineActive ? engineStatus!.coherence : (lastEdgeCoh?.coh ?? null);
+  const respBpm = engineActive
+    ? (engineStatus!.respHz > 0 ? engineStatus!.respHz * 60 : null)
+    : lastEdgeCoh != null && lastEdgeCoh.respMhz > 0
+      ? (lastEdgeCoh.respMhz * 60) / 1000
+      : null;
+  const pacerBpm = engineActive ? engineStatus!.pacerBpm : (lastEdgeCoh?.pacerBpm ?? 0);
   /* RMSSD comes from the worker pipeline (1 Hz updates). Null until the
    * worker has produced a result on the current beat source. */
   const rmssd = lastMetrics?.rmssd ?? null;
@@ -168,8 +179,12 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
     : 'max-w-3xl mx-auto p-6 space-y-5';
 
   const progInfo = program != null ? PROGRAM_INFO[program] : null;
-  const cohScore10 = coh != null ? coh / 10 : null;
   const zone = cohZone(coh);
+  const headerTitle = engineActive
+    ? engineMode === 'modeA'
+      ? 'Mode A · Follow'
+      : 'Mode B · Resonance'
+    : (progInfo?.title ?? null);
 
   return (
     <div className="flex-1 overflow-auto bg-gradient-to-b from-slate-950 to-slate-900 text-slate-100">
@@ -191,7 +206,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             with a dynamic Inhale / Exhale cue (cyan italic-serif,
             paced by useBreathPhase so it stays in lockstep with the
             lens cycle), color-coded session clock, green LIVE chip. */}
-        <LiveHeader programTitle={progInfo?.title ?? null} edgeConnected={edgeConnected} cohLive={coh != null} />
+        <LiveHeader programTitle={headerTitle} edgeConnected={edgeConnected} cohLive={coh != null} />
 
         {/* ── SessionControls ────────────────────────────────────
             Pause / End & Save / End (no save) — wired straight to
@@ -201,24 +216,37 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
             own row on mobile without crowding the clock. */}
         <SessionControls />
 
+        {/* ── Engine mode ────────────────────────────────────────
+            The 3 selectable modes: Standard (the glasses' built-in
+            firmware programs) / Mode A (Follow) / Mode B (Resonance).
+            Mode A/B run the app-side Coherence Engine, which takes
+            over the lens. Sits up top so it's the first choice. */}
+        <EngineModeStrip
+          mode={engineMode}
+          status={engineStatus}
+          edgeConnected={edgeConnected}
+          polarConnected={polarConn === 'connected'}
+          onPick={(m) => void setEngineMode(m)}
+        />
+
         {/* ── Hero: coherence ring + zone pill + lens tint bar ─── */}
         <section className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-5 items-center">
           <div className="flex justify-center sm:justify-start">
-            <CoherenceRing score10={cohScore10} zone={zone} />
+            <CoherenceRing score={coh} zone={zone} />
           </div>
           <div className="space-y-3">
             <ZonePill coh={coh} zone={zone} />
-            <LensTintBar coh={coh} />
+            <LensTintBar coh={coh} tintOverride={engineActive ? engineStatus!.duty : undefined} />
             {/* Tiny live readout under the bar: pacerBpm + respBpm. The
                 full breath/HR cards are at the bottom of the view; this
                 line keeps the hero from feeling sparse for users who
                 haven't scrolled down yet. */}
-            {(respBpm != null || (lastEdgeCoh && lastEdgeCoh.pacerBpm > 0)) && (
+            {(respBpm != null || pacerBpm > 0) && (
               <div className="text-[11px] text-slate-500">
-                {lastEdgeCoh && lastEdgeCoh.pacerBpm > 0 && (
-                  <>Pacer <span className="tabular-nums text-slate-300">{lastEdgeCoh.pacerBpm.toFixed(1)}</span> BPM</>
+                {pacerBpm > 0 && (
+                  <>Pacer <span className="tabular-nums text-slate-300">{pacerBpm.toFixed(1)}</span> BPM</>
                 )}
-                {respBpm != null && lastEdgeCoh && lastEdgeCoh.pacerBpm > 0 && <span className="mx-2 text-slate-700">·</span>}
+                {respBpm != null && pacerBpm > 0 && <span className="mx-2 text-slate-700">·</span>}
                 {respBpm != null && (
                   <>Resp <span className="tabular-nums text-slate-300">{respBpm.toFixed(2)}</span> BPM</>
                 )}
@@ -244,7 +272,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         </ChartCard>
         <ChartCard
           title="Coherence · Over Time"
-          valueLabel={cohScore10 != null ? `${cohScore10.toFixed(1)}/10` : '—'}
+          valueLabel={coh != null ? `${Math.round(coh)}/100` : '—'}
         >
           <CoherenceChart compact windowSec={30} />
         </ChartCard>
@@ -266,7 +294,8 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         <ProgramStrip
           program={program}
           onPick={(p) => void setActiveProgram(p)}
-          disabled={!edgeConnected}
+          disabled={!edgeConnected || engineActive}
+          engineActive={engineActive}
         />
 
         {/* ── Advanced (collapsed by default) ────────────────────
@@ -487,25 +516,24 @@ function SessionControls() {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   CoherenceRing — animated SVG progress ring. Score is X.X/10
-   (coh is 0–100 internally; we divide for display). Stroke color
-   shifts cyan → teal → emerald with the zone. Progress drives
-   stroke-dashoffset directly, so the redraw is one attribute
-   change per render — cheap enough to update on every coherence
-   frame without throttling.
+   CoherenceRing — animated SVG progress ring. Score is X/100
+   (coh is 0–100). Stroke color shifts cyan → teal → emerald with
+   the zone. Progress drives stroke-dashoffset directly, so the
+   redraw is one attribute change per render — cheap enough to
+   update on every coherence frame without throttling.
    ────────────────────────────────────────────────────────────── */
 function CoherenceRing({
-  score10,
+  score,
   zone,
 }: {
-  score10: number | null;
+  score: number | null;
   zone: CohZone | null;
 }) {
   const R = 64;
   const STROKE = 10;
   const SIZE = 160;
   const CIRC = 2 * Math.PI * R;
-  const pct = score10 != null ? Math.max(0, Math.min(1, score10 / 10)) : 0;
+  const pct = score != null ? Math.max(0, Math.min(1, score / 100)) : 0;
   const offset = CIRC * (1 - pct);
   const color = zoneColor(zone);
   return (
@@ -546,9 +574,9 @@ function CoherenceRing({
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <div className="flex items-baseline">
           <span className="text-4xl font-semibold tabular-nums text-slate-50">
-            {score10 != null ? score10.toFixed(1) : '—'}
+            {score != null ? Math.round(score) : '—'}
           </span>
-          <span className="text-base text-slate-400 ml-0.5">/10</span>
+          <span className="text-base text-slate-400 ml-0.5">/100</span>
         </div>
         <div className="text-[10px] tracking-[0.22em] uppercase text-slate-500 mt-0.5">
           Coherence
@@ -579,9 +607,9 @@ function ZonePill({ coh, zone }: { coh: number | null; zone: CohZone | null }) {
  * "Clear — hold this rhythm" when coh ≥ 70, etc. The bar fill
  * animates in lockstep with the breath cue in the LiveHeader since
  * both ultimately read the same 40/60 cycle math. */
-function LensTintBar({ coh }: { coh: number | null }) {
+function LensTintBar({ coh, tintOverride }: { coh: number | null; tintOverride?: number }) {
   const opacity = useLensOpacity();
-  const tintPct = Math.round(opacity * 100);
+  const tintPct = tintOverride != null ? Math.round(tintOverride) : Math.round(opacity * 100);
   const hint = cohHint(coh);
   return (
     <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-3">
@@ -642,21 +670,99 @@ function StatChip({ label, value, unit }: { label: string; value: string; unit: 
   );
 }
 
+/* ──────────────────────────────────────────────────────────────
+   EngineModeStrip — the top-level 3-mode chooser: Standard (the
+   glasses' firmware programs), Mode A (Follow), Mode B (Resonance).
+   Mode A/B run the app-side Coherence Engine, which takes over the
+   lens via 0xA5 duty. Shows a compact live readout when active.
+   ────────────────────────────────────────────────────────────── */
+const ENGINE_MODE_INFO: Array<{ id: EngineMode; title: string; sub: string; desc: string }> = [
+  { id: 'firmware', title: 'Standard', sub: 'on-glasses', desc: "The glasses run their built-in coherence programs (Heartbeat / Breathe / Lens / Strobe)." },
+  { id: 'modeA', title: 'Mode A', sub: 'Follow', desc: 'App-side coherence training: paces your breathing toward the rate you are drifting to.' },
+  { id: 'modeB', title: 'Mode B', sub: 'Resonance', desc: 'Finds your personal resonance breathing rate by searching across paced rates. Needs a Polar H10 (RR + accelerometer).' },
+];
+
+function EngineModeStrip({
+  mode, status, edgeConnected, polarConnected, onPick,
+}: {
+  mode: EngineMode;
+  status: EngineStatus | null;
+  edgeConnected: boolean;
+  polarConnected: boolean;
+  onPick: (m: EngineMode) => void;
+}) {
+  const active = mode !== 'firmware';
+  return (
+    <section className="rounded-xl border border-slate-800/80 bg-slate-900/40 p-3">
+      <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-2">Engine</div>
+      <div className="grid grid-cols-3 gap-2">
+        {ENGINE_MODE_INFO.map((o) => {
+          const isActive = mode === o.id;
+          return (
+            <button
+              key={o.id}
+              onClick={() => onPick(o.id)}
+              title={o.desc}
+              className={
+                'rounded-lg px-3 py-2.5 text-left border transition ' +
+                (isActive
+                  ? 'border-indigo-400/60 bg-indigo-500/15 text-indigo-100 shadow-[0_0_20px_-8px_rgba(129,140,248,0.6)]'
+                  : 'border-slate-700 bg-slate-800/40 text-slate-300 hover:border-slate-500 hover:text-slate-100')
+              }
+            >
+              <div className="font-medium text-sm">{o.title}</div>
+              <div className={'text-[10px] mt-0.5 ' + (isActive ? 'text-indigo-200' : 'text-slate-400')}>{o.sub}</div>
+            </button>
+          );
+        })}
+      </div>
+      {active && !edgeConnected ? (
+        <div className="mt-2 text-[11px] text-amber-300/90">Connect the glasses — the engine drives the lens over BLE.</div>
+      ) : null}
+      {mode === 'modeB' && !polarConnected ? (
+        <div className="mt-2 text-[11px] text-amber-300/90">Mode B needs a Polar H10 (validated RR + accelerometer for dwell verification).</div>
+      ) : null}
+      {active && status?.running ? (
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
+          <span>coh <span className="text-emerald-400 font-medium">{Math.round(status.coherence)}/100</span></span>
+          <span>pacer <span className="text-cyan-300">{status.pacerBpm.toFixed(1)}</span> BPM</span>
+          {mode === 'modeB' && status.modeBState ? (
+            <span>
+              {status.modeBState === 'maintaining' && status.lockedRF != null ? (
+                <>resonance <span className="text-emerald-400 font-medium">{status.lockedRF.toFixed(1)}</span> BPM{status.boundaryLimited ? ' (edge)' : ''}</>
+              ) : (
+                <>searching…{status.unverifiedDwells > 0 ? <span className="text-amber-300"> hold still ({status.unverifiedDwells})</span> : null}</>
+              )}
+            </span>
+          ) : null}
+          {mode === 'modeB' && status.searchAborted ? <span className="text-rose-400">search stalled — check H10/ACC</span> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /* Slim program-picker strip — replaces the four big mode cards. Active
  * program glows cyan to match the ring; the description hides behind a
  * tooltip on the button. */
 function ProgramStrip({
-  program, onPick, disabled,
+  program, onPick, disabled, engineActive,
 }: {
   program: PpgProgram | null;
   onPick: (p: PpgProgram) => void;
   disabled: boolean;
+  engineActive: boolean;
 }) {
   return (
     <section className="rounded-xl border border-slate-800/80 bg-slate-900/40 p-3">
       <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-2">
-        Pick a mode
+        Standard programs
       </div>
+      {engineActive ? (
+        <div className="text-[11px] text-slate-500 mb-2">
+          The Coherence Engine is driving the lens. Set <span className="text-slate-300">Engine → Standard</span> to use these.
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {([1, 2, 3, 4] as PpgProgram[]).map((p) => {
           const info = PROGRAM_INFO[p];

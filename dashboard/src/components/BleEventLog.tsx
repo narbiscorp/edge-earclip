@@ -107,48 +107,51 @@ export default function BleEventLog() {
 
   return (
     <div className="rounded bg-slate-900/70 border border-slate-700 flex flex-col text-[11px]">
-      <div className="flex items-center gap-2 px-2 py-1 border-b border-slate-700">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 border-b border-slate-700">
         <span className="text-slate-300 font-medium">BLE event log</span>
         <span className="text-slate-500">{visible.length} / {log.length}</span>
-        <div className="flex-1" />
-        <FilterChip current={filter} value="all"     label="all"     onSelect={setFilter} />
-        <FilterChip current={filter} value="earclip" label="earclip" onSelect={setFilter} />
-        <FilterChip current={filter} value="edge"    label="edge"    onSelect={setFilter} />
-        <FilterChip current={filter} value="polar"   label="polar"   onSelect={setFilter} />
-        <FilterChip current={filter} value="system"  label="system"  onSelect={setFilter} />
-        <button
-          className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5"
-          onClick={() => setPaused((p) => !p)}
-          title={paused ? 'resume autoscroll' : 'pause autoscroll'}
-        >
-          {paused ? 'resume' : 'pause'}
-        </button>
-        <button
-          className="rounded bg-emerald-700 hover:bg-emerald-600 px-2 py-0.5 disabled:opacity-50"
-          disabled={visible.length === 0}
-          onClick={async () => {
-            const ok = await copyEntries(visible);
-            setCopyFlash(ok ? `copied ${visible.length}` : 'copy failed');
-            setTimeout(() => setCopyFlash(''), 1500);
-          }}
-          title="Copy visible entries (matching current filter) to clipboard"
-        >
-          {copyFlash || 'copy'}
-        </button>
-        <button
-          className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5 disabled:opacity-50"
-          disabled={visible.length === 0}
-          onClick={() => downloadEntries(visible)}
-          title="Download visible entries as a .txt file"
-        >
-          download
-        </button>
-        <button
-          className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5"
-          onClick={() => clearBleLog()}
-        >
-          clear
-        </button>
+        <div className="flex flex-wrap items-center gap-1">
+          <FilterChip current={filter} value="all"     label="all"     onSelect={setFilter} />
+          <FilterChip current={filter} value="earclip" label="earclip" onSelect={setFilter} />
+          <FilterChip current={filter} value="edge"    label="edge"    onSelect={setFilter} />
+          <FilterChip current={filter} value="polar"   label="polar"   onSelect={setFilter} />
+          <FilterChip current={filter} value="system"  label="system"  onSelect={setFilter} />
+        </div>
+        <div className="flex flex-wrap items-center gap-1 ml-auto">
+          <button
+            className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5"
+            onClick={() => setPaused((p) => !p)}
+            title={paused ? 'resume autoscroll' : 'pause autoscroll'}
+          >
+            {paused ? 'resume' : 'pause'}
+          </button>
+          <button
+            className="rounded bg-emerald-700 hover:bg-emerald-600 px-2 py-0.5 disabled:opacity-50"
+            disabled={visible.length === 0}
+            onClick={async () => {
+              const ok = await copyEntries(visible);
+              setCopyFlash(ok ? `copied ${visible.length}` : 'copy failed');
+              setTimeout(() => setCopyFlash(''), 1500);
+            }}
+            title="Copy visible entries (matching current filter) to clipboard"
+          >
+            {copyFlash || 'copy'}
+          </button>
+          <button
+            className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5 disabled:opacity-50"
+            disabled={visible.length === 0}
+            onClick={() => downloadEntries(visible)}
+            title="Download visible entries as a .txt file"
+          >
+            download
+          </button>
+          <button
+            className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-0.5"
+            onClick={() => clearBleLog()}
+          >
+            clear
+          </button>
+        </div>
       </div>
       <div
         ref={scrollRef}

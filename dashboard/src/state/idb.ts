@@ -1,9 +1,12 @@
 import { openDB, type IDBPDatabase } from 'idb';
 
 export const DB_NAME = 'narbis-dashboard';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORE_PRESETS = 'presets';
+/** Coherence Engine tunable presets (full CoherenceTunables snapshots). Separate from
+ * STORE_PRESETS, which holds firmware NarbisRuntimeConfig presets. */
+export const STORE_COHERENCE_PRESETS = 'coherence_presets';
 export const STORE_RECORDING_SESSIONS = 'recording_sessions';
 export const STORE_RECORDING_CHUNKS = 'recording_chunks';
 export const STORE_RECORDING_BLOBS = 'recording_blobs';
@@ -41,6 +44,11 @@ export function getDb(): Promise<IDBPDatabase> {
         if (oldVersion < 3) {
           if (!db.objectStoreNames.contains(STORE_PENDING_SYNC_SESSIONS)) {
             db.createObjectStore(STORE_PENDING_SYNC_SESSIONS, { keyPath: 'id' });
+          }
+        }
+        if (oldVersion < 4) {
+          if (!db.objectStoreNames.contains(STORE_COHERENCE_PRESETS)) {
+            db.createObjectStore(STORE_COHERENCE_PRESETS, { keyPath: 'id' });
           }
         }
       },

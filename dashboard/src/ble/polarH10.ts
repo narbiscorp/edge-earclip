@@ -15,6 +15,14 @@ export interface PolarBeatEvent {
   timestamp: number;
 }
 
+/** A block of accelerometer samples from one PMD data notification. `x/y/z` are raw
+ * device counts (scale is irrelevant downstream — the engine takes the vector magnitude
+ * and band-passes it). `tArrivalS` is the notification receive time in seconds. */
+export interface PolarAccEvent {
+  samples: Array<{ x: number; y: number; z: number }>;
+  tArrivalS: number;
+}
+
 export interface PolarDisconnectedDetail {
   reason: 'user' | 'gatt' | 'error';
   error?: Error;
@@ -27,6 +35,92 @@ export interface PolarErrorDetail {
 
 const HEART_RATE_MEASUREMENT_UUID = 0x2a37;
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+/* Polar Measurement Data (PMD) service — exposes the H10 accelerometer (used by the
+ * Coherence Engine's Mode B for an independent respiration channel). The HR Measurement
+ * characteristic alone does not carry ACC. */
+const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+const PMD_CONTROL_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
+const PMD_DATA_UUID = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
+
+/* ACC stream config. 50 Hz matches the engine's `accSampleHz` default; ±2 g gives the
+ * finest resolution for the small chest-wall accelerations respiration produces; 16-bit. */
+const ACC_SAMPLE_RATE_HZ = 50;
+const ACC_RANGE_G = 2;
+const ACC_RESOLUTION_BITS = 16;
+const PMD_MEAS_TYPE_ACC = 0x02;
+
+/** Build the PMD control-point "request measurement start" command for ACC. */
+function buildAccStartCommand(): Uint8Array {
+  const u16 = (v: number) => [v & 0xff, (v >> 8) & 0xff];
+  return new Uint8Array([
+    0x02, PMD_MEAS_TYPE_ACC, // start measurement, ACC
+    0x00, 0x01, ...u16(ACC_SAMPLE_RATE_HZ), // SAMPLE_RATE setting
+    0x01, 0x01, ...u16(ACC_RESOLUTION_BITS), // RESOLUTION setting
+    0x02, 0x01, ...u16(ACC_RANGE_G), // RANGE setting
+    0x04, 0x01, 0x03, // CHANNELS setting = 3 (x,y,z)
+  ]);
+}
+
+/** PMD control-point "stop measurement" command for ACC. */
+function buildAccStopCommand(): Uint8Array {
+  return new Uint8Array([0x03, PMD_MEAS_TYPE_ACC]);
+}
+
+/** Read `size` bits (LSB-first) from `bytes` starting at `bitOffset`, sign-extended. */
+function readSignedBits(bytes: Uint8Array, bitOffset: number, size: number): number {
+  let value = 0;
+  for (let i = 0; i < size; i++) {
+    const idx = bitOffset + i;
+    const bit = (bytes[idx >> 3] >> (idx & 7)) & 1;
+    value |= bit << i;
+  }
+  if (size < 32 && value & (1 << (size - 1))) value -= 1 << size;
+  return value;
+}
+
+/**
+ * Decode a PMD ACC data frame into x/y/z samples. Layout:
+ *   [0] measurement type (0x02)  [1..8] timestamp u64  [9] frame type  [10..] payload.
+ * For H10 ACC the payload is delta-frame compressed: a full reference sample (3 channels ×
+ * 16-bit signed), then groups of {deltaBits u8, sampleCount u8, packed signed deltas}, each
+ * delta accumulated onto the running sample.
+ */
+function parseAccFrame(dv: DataView): Array<{ x: number; y: number; z: number }> {
+  if (dv.byteLength < 10 || dv.getUint8(0) !== PMD_MEAS_TYPE_ACC) return [];
+  const channels = 3;
+  const refBytes = ACC_RESOLUTION_BITS / 8; // 2
+  const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
+
+  let off = 0;
+  const current: number[] = [];
+  for (let c = 0; c < channels; c++) {
+    // 16-bit signed little-endian reference value.
+    current.push((payload[off] | (payload[off + 1] << 8)) << 16 >> 16);
+    off += refBytes;
+  }
+  const out: Array<{ x: number; y: number; z: number }> = [
+    { x: current[0], y: current[1], z: current[2] },
+  ];
+
+  let bitOff = off * 8;
+  const totalBits = payload.length * 8;
+  while (bitOff + 16 <= totalBits) {
+    const deltaSize = payload[bitOff >> 3];
+    const sampleCount = payload[(bitOff >> 3) + 1];
+    bitOff += 16;
+    if (deltaSize === 0 || sampleCount === 0) break;
+    for (let s = 0; s < sampleCount; s++) {
+      for (let c = 0; c < channels; c++) {
+        current[c] += readSignedBits(payload, bitOff, deltaSize);
+        bitOff += deltaSize;
+      }
+      out.push({ x: current[0], y: current[1], z: current[2] });
+      if (bitOff > totalBits) return out;
+    }
+  }
+  return out;
+}
 
 /* Beat-clock thresholds. RESET re-anchors after a gap big enough that the
  * cumulative-RR clock is no longer trustworthy (strap removed, browser
@@ -112,9 +206,18 @@ export class PolarH10 extends EventTarget {
    * means "no beat seen yet"; the next notification will anchor. Cleared
    * on connect and on any disconnect (intentional or GATT-dropped). */
   private lastBeatTimestamp: number | null = null;
+  /* PMD accelerometer streaming (Coherence Engine Mode B). Lazily set up on
+   * startAccStream(); torn down on stopAccStream() and on disconnect. */
+  private accCtrl: BluetoothRemoteGATTCharacteristic | null = null;
+  private accData: BluetoothRemoteGATTCharacteristic | null = null;
+  private accStreaming = false;
 
   get status(): PolarStatus {
     return this._status;
+  }
+
+  get isAccStreaming(): boolean {
+    return this.accStreaming;
   }
 
   get deviceName(): string | null {
@@ -132,7 +235,7 @@ export class PolarH10 extends EventTarget {
     try {
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ services: [HEART_RATE_SERVICE] }, { namePrefix: 'Polar' }],
-        optionalServices: [HEART_RATE_SERVICE],
+        optionalServices: [HEART_RATE_SERVICE, PMD_SERVICE_UUID],
       });
       this.device = device;
       this._deviceName = device.name ?? 'Polar H10';
@@ -158,6 +261,66 @@ export class PolarH10 extends EventTarget {
       this.intentionalDisconnect = false;
     }
   }
+
+  /** Start the PMD accelerometer stream (50 Hz, ±2 g, 16-bit). Idempotent; no-op if not
+   * connected. Emits 'accReceived' (PolarAccEvent) per data notification. */
+  async startAccStream(): Promise<void> {
+    if (this.accStreaming) return;
+    if (!this.server) throw new Error('not connected');
+    const svc = await this.server.getPrimaryService(PMD_SERVICE_UUID);
+    const [ctrl, data] = await Promise.all([
+      svc.getCharacteristic(PMD_CONTROL_UUID),
+      svc.getCharacteristic(PMD_DATA_UUID),
+    ]);
+    this.accCtrl = ctrl;
+    this.accData = data;
+    // The control point indicates responses; subscribe so the stack drains them.
+    try {
+      await ctrl.startNotifications();
+    } catch {
+      /* some stacks expose control as write-only — ignore */
+    }
+    data.addEventListener('characteristicvaluechanged', this.onAccNotify);
+    this.listeners.push({ target: data, type: 'characteristicvaluechanged', listener: this.onAccNotify });
+    await data.startNotifications();
+    await ctrl.writeValueWithResponse(toBufferSource(buildAccStartCommand()));
+    this.accStreaming = true;
+  }
+
+  /** Stop the PMD accelerometer stream. Idempotent; safe to call when not streaming. */
+  async stopAccStream(): Promise<void> {
+    if (!this.accStreaming) return;
+    this.accStreaming = false;
+    const ctrl = this.accCtrl;
+    const data = this.accData;
+    this.accCtrl = null;
+    this.accData = null;
+    try {
+      if (ctrl) await ctrl.writeValueWithResponse(toBufferSource(buildAccStopCommand()));
+    } catch {
+      /* device may already be gone — ignore */
+    }
+    try {
+      if (data) {
+        data.removeEventListener('characteristicvaluechanged', this.onAccNotify);
+        await data.stopNotifications();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private onAccNotify = (ev: Event): void => {
+    try {
+      const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
+      if (!dv) return;
+      const samples = parseAccFrame(dv);
+      if (samples.length === 0) return;
+      this.dispatch('accReceived', { samples, tArrivalS: Date.now() / 1000 } as PolarAccEvent);
+    } catch (err) {
+      this.emitError(err, 'acc-parse');
+    }
+  };
 
   private async openSession(): Promise<void> {
     if (!this.device?.gatt) throw new Error('no GATT server');
@@ -241,6 +404,10 @@ export class PolarH10 extends EventTarget {
     }
     this.listeners = [];
     this.server = null;
+    // ACC stream characteristics are invalid once the GATT session is gone.
+    this.accStreaming = false;
+    this.accCtrl = null;
+    this.accData = null;
     if (!opts.keepDevice) {
       if (this.device) {
         this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);
@@ -266,6 +433,14 @@ export class PolarH10 extends EventTarget {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Copy into a fresh ArrayBuffer so the value satisfies BufferSource under TS's strict
+ * (non-shared) ArrayBuffer typing — same approach edgeDevice uses. */
+function toBufferSource(buf: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(out).set(buf);
+  return out;
 }
 
 export const polarH10 = new PolarH10();

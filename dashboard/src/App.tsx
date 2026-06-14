@@ -13,6 +13,8 @@ import DebugPanel from './components/DebugPanel';
 import BleEventLog from './components/BleEventLog';
 import EdgeControls from './components/EdgeControls';
 import GlassesLog from './components/GlassesLog';
+import CoherenceEnginePanel from './components/engine/CoherenceEnginePanel';
+import CoherencePresetBar from './components/engine/CoherencePresetBar';
 import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
 import SessionSummaryModal from './components/SessionSummaryModal';
@@ -126,6 +128,8 @@ export default function App() {
               <CoherenceChart />
             </section>
             <aside className="flex flex-col gap-2 p-3 border-l border-slate-800 overflow-auto">
+              <CoherenceEnginePanel />
+              <CoherencePresetBar />
               <EdgeControls />
               <GlassesLog />
               <ConfigPanel />

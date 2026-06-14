@@ -49,6 +49,9 @@ import {
   NARBIS_BEAT_FLAG_ARTIFACT,
   type NarbisCoherenceParams,
 } from '../../../protocol/narbis_protocol';
+import { coherenceEngine, type EngineMode, type EngineStatus } from '../engine/coherenceEngine';
+import { DEFAULT_TUNABLES, type CoherenceTunables } from '../engine/tunables';
+import type { PolarAccEvent } from '../ble/polarH10';
 
 export type ConnectionState = NarbisStatus | PolarStatus | EdgeStatus;
 export type DataSource = 'live' | 'replay';
@@ -205,6 +208,16 @@ export interface DashboardState {
    * etc. Persisted to localStorage. */
   uiMode: 'basic' | 'expert' | 'mobile';
 
+  /** App-side Coherence Engine mode. 'firmware' = the glasses' own coherence pipeline
+   * drives the lens (the existing behavior). 'modeA' (Follow) / 'modeB' (Find resonance)
+   * = the ported engine runs in the dashboard and streams lens duty over 0xA5. Mutually
+   * exclusive with activeProgram/standaloneMode. Persisted to localStorage. */
+  engineMode: EngineMode;
+  /** Every Coherence Engine tunable (Mode A + Mode B). Persisted; saved/loaded as presets. */
+  coherenceTunables: CoherenceTunables;
+  /** Latest live engine status (CR, coh%, pacer, Mode B state), or null when the engine is off. */
+  engineStatus: EngineStatus | null;
+
   connectNarbis: () => Promise<void>;
   disconnectNarbis: () => Promise<void>;
   /** Disconnect and release the Web Bluetooth permission grant for the
@@ -240,6 +253,11 @@ export interface DashboardState {
     dutyPct?: number,
   ) => Promise<void>;
   setUiMode: (mode: 'basic' | 'expert' | 'mobile') => void;
+  /** Select the app-side engine mode (firmware/modeA/modeB). Starts/stops the engine,
+   * takes over or hands back the lens, and (Mode B) asserts the H10 + ACC source. */
+  setEngineMode: (mode: EngineMode) => Promise<void>;
+  /** Update every engine tunable, persist, and push the new values to the running engine live. */
+  setCoherenceTunables: (t: CoherenceTunables) => void;
   setConfig: (config: NarbisRuntimeConfig) => void;
   setDataSource: (source: DataSource) => void;
   setWindowSec: (seconds: number) => void;
@@ -397,6 +415,80 @@ function saveUiMode(mode: 'basic' | 'expert' | 'mobile'): void {
   try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* quota / private mode */ }
 }
 
+// ---------- Coherence Engine (app-side Mode A / Mode B) persistence + lifecycle ----------
+
+const ENGINE_MODE_KEY = 'coherenceEngineMode';
+function loadEngineMode(): EngineMode {
+  try {
+    const v = localStorage.getItem(ENGINE_MODE_KEY);
+    return v === 'modeA' || v === 'modeB' ? v : 'firmware';
+  } catch {
+    return 'firmware';
+  }
+}
+function saveEngineMode(m: EngineMode): void {
+  try { localStorage.setItem(ENGINE_MODE_KEY, m); } catch { /* quota / private mode */ }
+}
+
+const COH_TUNABLES_KEY = 'coherenceTunables';
+function loadCoherenceTunables(): CoherenceTunables {
+  try {
+    const raw = localStorage.getItem(COH_TUNABLES_KEY);
+    if (!raw) return { ...DEFAULT_TUNABLES };
+    const parsed = JSON.parse(raw) as Partial<CoherenceTunables>;
+    // Merge over defaults so a field added in a later version inherits its default.
+    return { ...DEFAULT_TUNABLES, ...parsed };
+  } catch {
+    return { ...DEFAULT_TUNABLES };
+  }
+}
+function saveCoherenceTunables(t: CoherenceTunables): void {
+  try { localStorage.setItem(COH_TUNABLES_KEY, JSON.stringify(t)); } catch { /* quota / private mode */ }
+}
+
+const MODEB_RF_KEY = 'coherenceModeBRF';
+function loadModeBRF(): number | null {
+  try {
+    const v = localStorage.getItem(MODEB_RF_KEY);
+    return v != null && v !== '' ? Number(v) : null;
+  } catch {
+    return null;
+  }
+}
+function saveModeBRF(rf: number): void {
+  try { localStorage.setItem(MODEB_RF_KEY, String(rf)); } catch { /* quota / private mode */ }
+}
+
+/** Start (or restart) the ported engine for the given app-side mode. The engine ingests
+ * beats from whichever HR source feeds the glasses and streams lens duty over 0xA5. */
+function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
+  const s = useDashboardStore.getState();
+  const source = s.hrSourceForGlasses === 'h10' ? 'polarH10' : 'edgeRelay';
+  coherenceEngine.start({
+    mode,
+    source,
+    tunables: s.coherenceTunables,
+    brightness: 100,
+    priorRF: mode === 'modeB' ? loadModeBRF() : null,
+    onDuty: (d) => {
+      if (edgeDevice.isConnected) void edgeDevice.streamLensDuty(d);
+    },
+  });
+  if (mode === 'modeB' && polarH10.status === 'connected') {
+    void polarH10.startAccStream().catch((err) => {
+      appendBleLog('polar', 'error', `ACC stream start failed: ${(err as Error).message}`);
+    });
+  }
+}
+
+/** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
+function stopCoherenceEngine(): void {
+  const rf = coherenceEngine.storedRF();
+  if (rf != null) saveModeBRF(rf);
+  coherenceEngine.stop();
+  void polarH10.stopAccStream().catch(() => { /* not streaming — ignore */ });
+}
+
 export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null, phase: null, reconnectAttempt: null },
@@ -426,6 +518,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   lastPolarBeat: null,
   lastBeatAt: null,
   uiMode: loadUiMode(),
+  engineMode: loadEngineMode(),
+  coherenceTunables: loadCoherenceTunables(),
+  engineStatus: null,
   showSessionSummary: false,
   sessionPaused: false,
   sessionEnded: false,
@@ -504,6 +599,12 @@ export const useDashboardStore = create<DashboardState>((set) => ({
         appendBleLog('edge', 'error', `setHrSource(${source}) failed: ${(err as Error).message}`);
       });
     }
+    // If the app-side engine is already running, restart it on the new source so it
+    // ingests from the right feed (and starts/stops the ACC stream as needed).
+    if (coherenceEngine.running) {
+      const m = useDashboardStore.getState().engineMode;
+      if (m === 'modeA' || m === 'modeB') startCoherenceEngine(m);
+    }
   },
   setCoherenceParams: async (params) => {
     set({ coherenceParams: params });
@@ -562,6 +663,33 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   setUiMode: (mode) => {
     set({ uiMode: mode });
     saveUiMode(mode);
+  },
+  setEngineMode: async (mode) => {
+    const prev = useDashboardStore.getState().engineMode;
+    if (mode === prev) return;
+    set({ engineMode: mode });
+    saveEngineMode(mode);
+    if (mode === 'firmware') {
+      stopCoherenceEngine();
+      set({ engineStatus: null });
+      appendBleLog('system', 'info', 'coherence engine OFF — firmware drives the lens');
+      // Hand the lens back to firmware: re-run the default-program auto-start.
+      scheduleAutoStartProgram('coherence engine off');
+      return;
+    }
+    // Entering Mode A / Mode B — the engine owns the lens; clear any firmware program.
+    set({ activeProgram: null, standaloneMode: null });
+    if (mode === 'modeB' && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
+      // Mode B needs validated H10 RR + the independent ACC respiration channel.
+      useDashboardStore.getState().setHrSourceForGlasses('h10');
+    }
+    startCoherenceEngine(mode);
+    appendBleLog('system', 'info', `coherence engine ON — ${mode === 'modeA' ? 'Mode A (Follow)' : 'Mode B (Find resonance)'}`);
+  },
+  setCoherenceTunables: (t) => {
+    set({ coherenceTunables: t });
+    saveCoherenceTunables(t);
+    coherenceEngine.setTunables(t);
   },
   setConfig: (config) => set({ config }),
   setDataSource: (source) => set({ dataSource: source }),
@@ -647,6 +775,19 @@ function errorMessage(err: unknown): string {
 }
 
 const setState = useDashboardStore.setState;
+
+// ---------- Coherence Engine (app-side Mode A / Mode B) ----------
+
+// Mirror the engine's live status into the store so the UI readouts update.
+coherenceEngine.addEventListener('status', (e) => {
+  setState({ engineStatus: (e as CustomEvent<EngineStatus>).detail });
+});
+
+// Feed the H10 accelerometer (PMD) stream into the engine for Mode B respiration verification.
+polarH10.addEventListener('accReceived', (e) => {
+  const acc = (e as CustomEvent<PolarAccEvent>).detail;
+  if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, acc.tArrivalS);
+});
 
 // Monotonic raw-PPG timestamping. The firmware doesn't send per-sample
 // timestamps in the raw payload, only sample_rate_hz + N samples; we
@@ -783,6 +924,11 @@ narbisDevice.addEventListener('beatReceived', (e) => {
   pending.lastBeat = beat;
   scheduleCounterFlush();
   setState({ lastBeatAt: beat.timestamp });
+  // Feed the engine when it's running off the earclip source (Mode A only — Mode B
+  // requires H10 + ACC and asserts the h10 source).
+  if (coherenceEngine.running && useDashboardStore.getState().hrSourceForGlasses === 'earclip') {
+    coherenceEngine.onRR(beat.ibi_ms, beat.confidence, beat.timestamp / 1000);
+  }
 });
 
 narbisDevice.addEventListener('sqiReceived', (e) => {
@@ -958,6 +1104,10 @@ function scheduleAutoStartProgram(reason: string): void {
   autoStartTimer = setTimeout(() => {
     autoStartTimer = null;
     if (!edgeDevice.isConnected) return;
+    if (useDashboardStore.getState().engineMode !== 'firmware') {
+      appendBleLog('system', 'info', 'auto-start skipped — coherence engine is driving the lens');
+      return;
+    }
     const s = useDashboardStore.getState();
     /* Honor user intent: if they've clicked a program or standalone
      * during the delay window, leave them alone. */
@@ -997,6 +1147,12 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
+  // If we're already in Mode B (H10 reconnected mid-session), (re)start the ACC stream.
+  if (coherenceEngine.running && useDashboardStore.getState().engineMode === 'modeB') {
+    void polarH10.startAccStream().catch((err) => {
+      appendBleLog('polar', 'error', `ACC stream start failed: ${(err as Error).message}`);
+    });
+  }
 });
 
 polarH10.addEventListener('disconnected', (e) => {
@@ -1019,6 +1175,7 @@ polarH10.addEventListener('disconnected', (e) => {
    * setter fires 0xCB to the glasses. Skipped during reconnecting state
    * so a brief drop doesn't churn the glasses' central. */
   if (polarH10.status === 'disconnected') {
+    resetH10OutlierState(); // don't carry the beat-median across a strap swap
     const st = useDashboardStore.getState();
     if (st.hrSourceForGlasses === 'h10') {
       st.setHrSourceForGlasses('earclip');
@@ -1048,6 +1205,46 @@ polarH10.addEventListener('error', (e) => {
  * defaults (conf=100, flags=0) — H10's strap-side detector is solid. */
 const H10_RR_MIN_MS = 250;
 const H10_RR_MAX_MS = 2000;
+
+/* H10 missed-beat / ectopic rejection. Polar occasionally drops an R-peak, so two ~750 ms
+ * intervals arrive as one ~1500 ms "double" (or an extra detection makes a too-short beat).
+ * Left raw, that single spike wrecks the coherence spectrum and the tachogram. We keep a
+ * short median of recent GOOD beats and, when an interval falls outside [0.6, 1.4]× that
+ * median, replace it with the median (the average of recent good beats). The artifact's own
+ * value never enters the reference, so one bad beat can't drag it; the beat timestamp stays
+ * valid (only the RR magnitude is corrected), so the time axis is untouched. */
+const H10_OUTLIER_HI = 1.4;
+const H10_OUTLIER_LO = 0.6;
+let h10RrRef: number[] = [];
+function h10RefMedian(): number {
+  if (h10RrRef.length === 0) return 0;
+  const s = [...h10RrRef].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+function resetH10OutlierState(): void {
+  h10RrRef = [];
+}
+function correctH10Rr(rrs: number[]): { corrected: number[]; rejected: number } {
+  const corrected: number[] = [];
+  let rejected = 0;
+  for (const rr of rrs) {
+    if (!Number.isFinite(rr) || rr <= 0) {
+      corrected.push(rr);
+      continue;
+    }
+    const ref = h10RefMedian();
+    if (ref > 0 && (rr > ref * H10_OUTLIER_HI || rr < ref * H10_OUTLIER_LO)) {
+      corrected.push(ref); // obvious outlier → replace with the local average of good beats
+      rejected += 1;
+    } else {
+      corrected.push(rr);
+      h10RrRef.push(rr);
+      if (h10RrRef.length > 8) h10RrRef.shift();
+    }
+  }
+  return { corrected, rejected };
+}
+
 function forwardH10BeatsToGlasses(rrs: number[]): void {
   if (rrs.length === 0) return;
   if (!edgeDevice.isConnected) return;
@@ -1061,9 +1258,17 @@ function forwardH10BeatsToGlasses(rrs: number[]): void {
 
 polarH10.addEventListener('beatReceived', (e) => {
   const beat = (e as CustomEvent<PolarBeatEvent>).detail;
+  // De-spike obvious artifacts (missed-beat doubles / ectopic shorts) before they reach the
+  // tachogram, the local coherence window, or the glasses. The engine (Mode A/B) gets the
+  // RAW intervals — it runs its own adaptive artifact gate and needs to know when a cycle
+  // was dirty for Mode B dwell verification.
+  const { corrected: cleanRr, rejected } = correctH10Rr(beat.rrIntervals_ms);
+  if (rejected > 0) {
+    appendBleLog('polar', 'warn', `rejected ${rejected} outlier beat${rejected > 1 ? 's' : ''} (missed-beat double / ectopic)`);
+  }
   const record: PolarBeatRecord = {
     bpm: beat.bpm,
-    rr: beat.rrIntervals_ms,
+    rr: cleanRr,
     beatTimestamps: beat.beatTimestamps,
   };
   liveBuffers.polarBeats.push(beat.timestamp, record);
@@ -1073,7 +1278,15 @@ polarH10.addEventListener('beatReceived', (e) => {
    * coarse-grained (one per beat, ~1 Hz) so we don't need RAF batching. */
   setState({ lastPolarBeat: record, lastBeatAt: beat.timestamp });
   if (useDashboardStore.getState().hrSourceForGlasses === 'h10') {
-    forwardH10BeatsToGlasses(beat.rrIntervals_ms);
+    if (coherenceEngine.running) {
+      // Engine owns the lens (streams 0xA5 duty); feed it the RAW H10 beats — its own
+      // artifact gate de-spikes, and Mode B needs the gated-beat tally.
+      coherenceEngine.onH10RR(beat.rrIntervals_ms, 100, beat.timestamp / 1000);
+    } else {
+      // Firmware coherence path — forward the de-spiked intervals so a missed-beat double
+      // doesn't wreck the on-glasses spectrum.
+      forwardH10BeatsToGlasses(cleanRr);
+    }
   }
 
   /* Accumulate H10 beats into the session array so End Session summary
@@ -1085,7 +1298,7 @@ polarH10.addEventListener('beatReceived', (e) => {
   const hasEarclipSource =
     s.connection.narbis.state === 'connected' || s.connection.edge.earclipRelay === true;
   if (!hasEarclipSource) {
-    const rrs = beat.rrIntervals_ms;
+    const rrs = cleanRr;
     let totalMs = 0;
     for (const rr of rrs) totalMs += rr;
     let acc = 0;
@@ -1311,6 +1524,10 @@ edgeDevice.addEventListener('relayedIbi', (e) => {
   setState({ lastBeatAt: beat.timestamp });
   pending.lastBeat = beat;
   scheduleCounterFlush();
+  // Feed the engine when running off the (relayed) earclip source.
+  if (coherenceEngine.running && useDashboardStore.getState().hrSourceForGlasses === 'earclip') {
+    coherenceEngine.onRR(beat.ibi_ms, beat.confidence, beat.timestamp / 1000);
+  }
 });
 
 /* Path B: glasses-to-earclip relay link state. Fires on connect/disconnect
