@@ -15,8 +15,10 @@
  */
 
 /** Which engine drives the lens. `firmware` = the glasses' own coherence pipeline
- * (the existing on-glasses behavior); `modeA`/`modeB` = the ported app-side engine. */
-export type EngineMode = 'firmware' | 'modeA' | 'modeB';
+ * (the existing on-glasses behavior); `modeA`/`modeB`/`modeC` = the ported app-side engine.
+ * `modeC` (Settle & Find) = Mode A warm-up until a stability + ACC gate passes, then the exact
+ * Mode B resonance search seeded at the settled rate. */
+export type EngineMode = 'firmware' | 'modeA' | 'modeB' | 'modeC';
 
 export interface CoherenceTunables {
   // --- Ingest / artifact ---
@@ -102,6 +104,12 @@ export interface CoherenceTunables {
   respMinHz: number; // ACC peaks below this are de-weighted (rejects sub-breathing postural sway)
   respNearPeakHz: number; // ± window treated as the breathing peak (confidence numerator + selection)
   respHarmonicExcludeMult: number; // confidence denominator excludes power ≥ this × peak (drops harmonics)
+
+  // --- Mode C "Settle & Find" warm-up gate ---
+  modeCWarmupS: number; // min Follow warm-up before the gate can pass
+  modeCWarmupMaxS: number; // cap: relaxes ONLY the stability requirement — the ACC gate is NEVER relaxed
+  modeCStabilityWindowS: number; // rolling window for the detected-rate SD + ACC-confidence fraction
+  modeCStabilityBpmSd: number; // detected-rate SD (BPM) must be ≤ this over the window to count as "stable"
 }
 
 export const DEFAULT_TUNABLES: CoherenceTunables = {
@@ -178,6 +186,14 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   respMinHz: 0.08, // 4.8 br/min — below this is usually postural sway; breathing is de-weighted gently, not cut
   respNearPeakHz: 0.04, // ±0.04 Hz treated as "the peak"
   respHarmonicExcludeMult: 1.6, // confidence denominator excludes ≥1.6× the peak (drops 2×/3× harmonics)
+  // Mode C "Settle & Find" warm-up gate. NOTE: these stability defaults are TIGHT — 0.4 BPM SD
+  // over 30 s is ~6–8 breaths and tighter than most genuinely steady breathers hold, so many
+  // sessions will transition on the cap rather than the real gate. Left as specified; revisit
+  // against real warm-up traces (likely loosen to ~0.6–0.8).
+  modeCWarmupS: 120.0,
+  modeCWarmupMaxS: 240.0,
+  modeCStabilityWindowS: 30.0,
+  modeCStabilityBpmSd: 0.4,
 };
 
 /** Recombine the four flattened gamma scalars into the difficulty table the lens uses. */

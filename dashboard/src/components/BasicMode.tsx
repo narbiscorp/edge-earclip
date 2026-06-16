@@ -20,7 +20,7 @@ import BreathCue from './BreathCue';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
 import type { EngineMode, EngineStatus } from '../engine/coherenceEngine';
-import { ENGINE_MODE_INFO, modeBStatusText } from './engine/modeInfo';
+import { ENGINE_MODE_INFO, modeBStatusText, modeCStatusText } from './engine/modeInfo';
 
 /* Friendly labels for the four PPG programs the firmware ships. The
  * expert UI shows them as "Prog 1 / 2 / 3 / 4"; a lay user wants to
@@ -190,7 +190,9 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const headerTitle = engineActive
     ? engineMode === 'modeA'
       ? 'Mode A · Follow'
-      : 'Mode B · Resonance'
+      : engineMode === 'modeB'
+        ? 'Mode B · Resonance'
+        : 'Mode C · Settle & Find'
     : (progInfo?.title ?? null);
 
   return (
@@ -288,9 +290,10 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           <CoherenceChart compact windowSec={30} />
         </ChartCard>
 
-        {/* Breathing wave from the H10 accelerometer — the independent respiration signal
-            Mode B verifies each dwell against. Only meaningful in Mode B (ACC streaming). */}
-        {engineMode === 'modeB' && <AccChart windowSec={30} />}
+        {/* Breathing wave from the H10 accelerometer — the independent respiration signal the
+            search verifies each dwell against (Mode B), and the warm-up gate watches (Mode C).
+            Both stream ACC. */}
+        {(engineMode === 'modeB' || engineMode === 'modeC') && <AccChart windowSec={30} />}
 
         {/* ── Bottom metric strip ────────────────────────────────
             HEART (bpm) · BREATH (per min) · RMSSD (ms). Compact
@@ -680,7 +683,7 @@ function EngineModeStrip({
   return (
     <section className="rounded-xl border border-slate-800/80 bg-slate-900/40 p-3">
       <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-2">Engine</div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {ENGINE_MODE_INFO.map((o) => {
           const isActive = mode === o.id;
           return (
@@ -734,6 +737,20 @@ function EngineModeStrip({
               }
             >
               {modeBStatusText(status)}
+            </div>
+          ) : mode === 'modeC' ? (
+            <div
+              className={
+                status.modeCPhase === 'maintaining'
+                  ? 'text-emerald-300'
+                  : status.modeCPhase === 'searching'
+                    ? 'text-amber-300'
+                    : status.modeCAccConfident
+                      ? 'text-cyan-300'
+                      : 'text-slate-400'
+              }
+            >
+              {modeCStatusText(status)}
             </div>
           ) : null}
         </div>

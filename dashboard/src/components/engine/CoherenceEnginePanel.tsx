@@ -17,7 +17,7 @@ import {
 } from './coherenceFieldSchema';
 import { validateCoherenceTunables } from './validateCoherenceTunables';
 import CoherenceField from './CoherenceField';
-import { ENGINE_MODE_INFO, modeBStatusText } from './modeInfo';
+import { ENGINE_MODE_INFO, modeBStatusText, modeCStatusText } from './modeInfo';
 
 export default function CoherenceEnginePanel() {
   const engineMode = useDashboardStore((s) => s.engineMode);
@@ -59,8 +59,8 @@ export default function CoherenceEnginePanel() {
         ) : null}
       </div>
 
-      {/* Mode selector — 3 modes total. Each has an (i) info popover. */}
-      <div className="grid grid-cols-3 gap-1 text-[11px]">
+      {/* Mode selector — 4 modes total. Each has an (i) info popover. */}
+      <div className="grid grid-cols-2 gap-1 text-[11px]">
         {ENGINE_MODE_INFO.map((opt) => {
           const active = engineMode === opt.id;
           return (
@@ -105,9 +105,9 @@ export default function CoherenceEnginePanel() {
               Connect the glasses — the engine drives the lens over BLE.
             </div>
           ) : null}
-          {engineMode === 'modeB' && !polarConnected ? (
+          {(engineMode === 'modeB' || engineMode === 'modeC') && !polarConnected ? (
             <div className="rounded border border-amber-700/40 bg-amber-900/10 px-2 py-1 text-[10px] text-amber-300">
-              Mode B needs a Polar H10 (validated RR + accelerometer for dwell verification).
+              {engineMode === 'modeB' ? 'Mode B' : 'Mode C'} needs a Polar H10 (validated RR + accelerometer for dwell verification).
             </div>
           ) : null}
           <EngineReadout />
@@ -234,6 +234,21 @@ function EngineReadout() {
           }
         >
           {modeBStatusText(status)}
+        </div>
+      ) : status.mode === 'modeC' ? (
+        <div
+          className={
+            'pt-0.5 border-t border-slate-800/60 ' +
+            (status.modeCPhase === 'maintaining'
+              ? 'text-emerald-300'
+              : status.modeCPhase === 'searching'
+                ? 'text-amber-300'
+                : status.modeCAccConfident
+                  ? 'text-cyan-300'
+                  : 'text-slate-400')
+          }
+        >
+          {modeCStatusText(status)}
         </div>
       ) : null}
     </div>

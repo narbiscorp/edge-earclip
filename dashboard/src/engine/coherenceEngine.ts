@@ -24,7 +24,7 @@ import { ResonanceController, type ModeBState, type SearchProgress } from './res
 export type { EngineMode } from './tunables';
 
 export type HRVSource = 'polarH10' | 'edgeRelay' | 'appleWatch';
-export type ActiveEngineMode = 'modeA' | 'modeB';
+export type ActiveEngineMode = 'modeA' | 'modeB' | 'modeC';
 export type LensStyle = 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
 
 /** Desired lens state the engine emits each update. The host (edgeDevice.driveLens) coalesces it
@@ -39,7 +39,10 @@ export interface LensState {
   strobeDutyPct: number;
 }
 
-/** Mode B needs validated RR + an independent respiration channel (H10 ACC). */
+/** Mode C internal phase: Follow warm-up → seeded verified search → maintain. */
+export type ModeCPhase = 'warmup' | 'searching' | 'maintaining';
+
+/** Mode B (and the Mode C search) need validated RR + an independent respiration channel (H10 ACC). */
 function allowsModeB(source: HRVSource): boolean {
   return source === 'polarH10';
 }
@@ -71,6 +74,13 @@ export interface EngineStatus {
   accRespConfidence: number;
   /** Fraction of the current dwell's estimate-window breaths verified vs ACC, or null. */
   modeBVerifiedRatio: number | null;
+  // Mode C
+  /** Current Mode C phase, or null outside Mode C. In 'warmup' the Mode B fields above are all
+   * defaulted (no controller exists yet) so the UI never renders stale resonance data. */
+  modeCPhase: ModeCPhase | null;
+  /** Warm-up gate telemetry (false outside Mode C warm-up). ACC confidence is MANDATORY for entry. */
+  modeCAccConfident: boolean;
+  modeCStable: boolean;
 }
 
 export interface StartOptions {
@@ -122,6 +132,15 @@ export class CoherenceEngine extends EventTarget {
   // Mode B cycle-clean tally (engine-owned, derived from its own gate)
   private gatedBeatsThisCycle = 0;
 
+  // Mode C "Settle & Find" warm-up state. While `mode === 'modeC'` and `modeB == null` the engine
+  // runs the Mode A Follow path and accumulates these 1 Hz samples for the transition gate. The
+  // detected rate is the UNSMOOTHED LS LF-readback peak (NOT the slew-limited pacer output).
+  private warmupStartS = 0;
+  private warmupResp: Array<{ s: number; bpm: number }> = [];
+  private warmupAcc: Array<{ s: number; ok: boolean }> = [];
+  private modeCAccConfident = false;
+  private modeCStable = false;
+
   // published outputs
   private _coherence = 0;
   private _cr = 0;
@@ -158,6 +177,9 @@ export class CoherenceEngine extends EventTarget {
     this.onLens = opts.onLens;
     this.rebuild();
 
+    // Mode B creates its controller up front. Mode C does NOT — it starts in the Follow warm-up
+    // (modeB == null) and the breath-boundary gate creates the controller later, seeded at the
+    // settled rate. Mode A never has a controller.
     if (this.mode === 'modeB' && allowsModeB(this.source)) {
       this.modeB = new ResonanceController(this.t, opts.priorRF ?? undefined);
       // Snap the pacer to the controller's start rate so the first dwell isn't measured mid-slew.
@@ -175,6 +197,12 @@ export class CoherenceEngine extends EventTarget {
     this._accMeasuredBpm = null;
     this._accRespConfidence = 0;
     this.gatedBeatsThisCycle = 0;
+    // Mode C warm-up clock + sample windows start fresh (harmless/unused in Mode A/B).
+    this.warmupStartS = this.cycleStartMs / 1000;
+    this.warmupResp = [];
+    this.warmupAcc = [];
+    this.modeCAccConfident = false;
+    this.modeCStable = false;
 
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
@@ -283,6 +311,18 @@ export class CoherenceEngine extends EventTarget {
       accMeasuredBpm: this._accMeasuredBpm,
       accRespConfidence: this._accRespConfidence,
       modeBVerifiedRatio: this.modeB?.verifiedRatio ?? null,
+      // Mode C phase is derived from the controller's existence/state — in 'warmup' (modeB == null)
+      // every Mode B field above is already null/defaulted, so no stale resonance data leaks out.
+      modeCPhase:
+        this.mode !== 'modeC'
+          ? null
+          : this.modeB == null
+            ? 'warmup'
+            : this.modeB.state === 'maintaining'
+              ? 'maintaining'
+              : 'searching',
+      modeCAccConfident: this.mode === 'modeC' && this.modeB == null ? this.modeCAccConfident : false,
+      modeCStable: this.mode === 'modeC' && this.modeB == null ? this.modeCStable : false,
     };
   }
 
@@ -292,13 +332,39 @@ export class CoherenceEngine extends EventTarget {
   private tick1Hz(): void {
     const r = this.ls.compute(this.ingest.window(this.t.coherenceWindowS));
     if (r) {
-      this.pacer.push(r.respPeakMhz); // feeds the follow pacer
+      // The detected rate feeds the Follow pacer ONLY while no controller exists (Mode A, and
+      // Mode C before the gate fires). Once a controller exists (Mode B, or Mode C after handoff)
+      // the controller is the sole pacer source via onBreathBoundary's setTargetBPM — guarding
+      // here makes that source switch explicit instead of relying on the per-breath ring collapse.
+      // (In Mode B this is a no-op: setTargetBPM overwrites the ring every breath regardless.)
+      if (this.modeB == null) this.pacer.push(r.respPeakMhz);
       this._coherence = r.cohPercent;
       this._cr = r.cr;
       this._respHz = r.respPeakHz;
     }
+    // Mode C warm-up: sample the UNSMOOTHED detected rate + the independent ACC respiration
+    // confidence at 1 Hz for the transition gate (deliberately NOT the slew-limited pacer output,
+    // which reads "stable" by construction even for an erratic breather).
+    if (this.mode === 'modeC' && this.modeB == null) {
+      this.collectWarmupSample(r ? r.respPeakHz : null, nowMs() / 1000);
+    }
     this.emitLens();
     this.emitStatus();
+  }
+
+  /** Mode C warm-up: record one 1 Hz gate sample and refresh the gate readout. */
+  private collectWarmupSample(respHz: number | null, nowS: number): void {
+    if (respHz != null && respHz > 0) {
+      this.warmupResp.push({ s: nowS, bpm: respHz * 60.0 });
+    }
+    const est = this.resp.estimate();
+    this.warmupAcc.push({ s: nowS, ok: est != null && est.confidence >= this.t.respConfidenceMin });
+    const cutoff = nowS - this.t.modeCStabilityWindowS;
+    while (this.warmupResp.length > 0 && this.warmupResp[0].s < cutoff) this.warmupResp.shift();
+    while (this.warmupAcc.length > 0 && this.warmupAcc[0].s < cutoff) this.warmupAcc.shift();
+    const g = evaluateModeCGate(this.warmupResp, this.warmupAcc, nowS - this.warmupStartS, nowS, this.t);
+    this.modeCAccConfident = g.accConfident;
+    this.modeCStable = g.stable;
   }
 
   /** Per breathing-cycle boundary. Advances the pacer (and Mode B controller), returns nothing. */
@@ -306,7 +372,15 @@ export class CoherenceEngine extends EventTarget {
     const cycleClean = this.gatedBeatsThisCycle === 0;
     this.gatedBeatsThisCycle = 0;
 
-    if (this.modeB) {
+    // Mode C warm-up (no controller yet) → run the Follow path and evaluate the transition gate.
+    // On a pass, hand off atomically THIS tick (create the seeded controller + hard-snap the
+    // pacer). Until then this branch is byte-for-byte Mode A: it falls through to latch + emit.
+    let handedOff = false;
+    if (this.mode === 'modeC' && this.modeB == null) {
+      handedOff = this.tryModeCHandoff(nowS);
+    }
+
+    if (this.modeB && !handedOff) {
       const amp = this.amplitude.amplitude(
         this.ingest.window(this.t.coherenceWindowS),
         this.modeB.commandedBPM,
@@ -324,9 +398,44 @@ export class CoherenceEngine extends EventTarget {
         nowS,
       });
       this.pacer.setTargetBPM(bpm); // Mode B drives; pacer slews smoothly
+
+      // Mode C ONLY: a search that gives up (persistently unverifiable breathing) drops the
+      // controller and returns to the honest Follow warm-up, re-running the gate — never sit
+      // stuck in 'searching'. Mode B keeps its own searchAborted behavior unchanged.
+      if (this.mode === 'modeC' && this.modeB.searchAborted) {
+        this.enterModeCWarmup(nowS);
+      }
     }
     this.cycleMs = this.pacer.latch();
     this.emitStatus();
+  }
+
+  /**
+   * Mode C warm-up→search gate, evaluated once per breath. Returns true (and performs the atomic
+   * handoff) when the gate passes:
+   *   1. create the EXISTING Mode B controller seeded at the settled rate,
+   *   2. HARD-snap the pacer to the seed (not a glide),
+   * after which tick1Hz's `this.modeB == null` guard stops the detected-rate pushes and the
+   * controller becomes the sole pacer source — i.e. "Mode A until the gate, then Mode B".
+   */
+  private tryModeCHandoff(nowS: number): boolean {
+    const g = evaluateModeCGate(this.warmupResp, this.warmupAcc, nowS - this.warmupStartS, nowS, this.t);
+    this.modeCAccConfident = g.accConfident;
+    this.modeCStable = g.stable;
+    if (!g.canTransition) return false;
+    this.modeB = new ResonanceController(this.t, g.seedBPM);
+    this.pacer.snapToBPM(g.seedBPM);
+    return true;
+  }
+
+  /** Mode C: drop any controller and reset the Follow warm-up (clock + gate windows). */
+  private enterModeCWarmup(nowS: number): void {
+    this.modeB = null;
+    this.warmupStartS = nowS;
+    this.warmupResp = [];
+    this.warmupAcc = [];
+    this.modeCAccConfident = false;
+    this.modeCStable = false;
   }
 
   /** Breath-clock tick: detect cycle boundaries (pacer latch / Mode B controller). The lens
@@ -389,6 +498,69 @@ function nowMs(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
     : Date.now();
+}
+
+export interface ModeCGateResult {
+  /** ACC respiration confident across a rolling fraction of the stability window. MANDATORY. */
+  accConfident: boolean;
+  /** Detected-rate SD over the window is within modeCStabilityBpmSd. */
+  stable: boolean;
+  /** Windowed-mean detected rate, clamped to the resonance search band — seeds the controller. */
+  seedBPM: number;
+  /** accConfident && elapsed≥modeCWarmupS && (stable || elapsed≥modeCWarmupMaxS). */
+  canTransition: boolean;
+}
+
+/** Fraction of the stability window's ACC samples that must be confident (NOT a single frame). */
+const MODE_C_ACC_CONFIDENT_FRACTION = 0.6;
+
+/**
+ * Pure Mode C warm-up→search gate. Decides whether to leave the Follow warm-up and start the
+ * seeded resonance search, from the UNSMOOTHED detected breathing rate (LS LF-readback peak, BPM)
+ * and the independent ACC respiration confidence over the trailing stability window:
+ *
+ *   canTransition = accConfident && elapsed≥modeCWarmupS && (stable || elapsed≥modeCWarmupMaxS)
+ *
+ * ACC confidence is MANDATORY and is NEVER relaxed — the cap relaxes ONLY `stable`. With no
+ * confident ACC the user simply stays in warm-up indefinitely (an honest wait, strictly better
+ * than racking up unverifiable dwells). `seedBPM` is the windowed-mean detected rate (clamped to
+ * the search band) so the search begins where the user actually settled.
+ */
+export function evaluateModeCGate(
+  resp: ReadonlyArray<{ s: number; bpm: number }>,
+  acc: ReadonlyArray<{ s: number; ok: boolean }>,
+  elapsedS: number,
+  nowS: number,
+  t: CoherenceTunables,
+): ModeCGateResult {
+  const winLo = nowS - t.modeCStabilityWindowS;
+  const respIn = resp.filter((e) => e.s >= winLo);
+  const accIn = acc.filter((e) => e.s >= winLo);
+  // Require the window to be populated (~1 Hz samples) so neither sub-gate fires on a sparse window.
+  const minSamples = Math.max(2, Math.floor(t.modeCStabilityWindowS * 0.5));
+
+  const accCount = accIn.length;
+  const confidentCount = accIn.reduce((n, e) => n + (e.ok ? 1 : 0), 0);
+  const accConfident =
+    accCount >= minSamples && confidentCount >= MODE_C_ACC_CONFIDENT_FRACTION * accCount;
+
+  let stable = false;
+  let mean = 0;
+  if (respIn.length >= minSamples) {
+    mean = respIn.reduce((s, e) => s + e.bpm, 0) / respIn.length;
+    const variance =
+      respIn.reduce((s, e) => s + (e.bpm - mean) * (e.bpm - mean), 0) / (respIn.length - 1);
+    stable = Math.sqrt(Math.max(0, variance)) <= t.modeCStabilityBpmSd;
+  }
+  // Seed at the windowed mean (fall back to the canonical 6.0 only if no detected-rate samples
+  // exist at all — beats absent). Always clamp into the band the controller searches.
+  const rawSeed = respIn.length > 0 ? mean : 6.0;
+  const seedBPM = Math.min(t.searchHiBPM, Math.max(t.searchLoBPM, rawSeed));
+
+  const canTransition =
+    accConfident && elapsedS >= t.modeCWarmupS && (stable || elapsedS >= t.modeCWarmupMaxS);
+
+  return { accConfident, stable, seedBPM, canTransition };
 }
 
 /** Shared singleton — mirrors `edgeDevice` / `polarH10`. */
