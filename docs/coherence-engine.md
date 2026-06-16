@@ -320,7 +320,7 @@ firmware commands, writing an opcode **only when its value changed**:
 
 | Lens style | Firmware command | Notes |
 |---|---|---|
-| `breathingGuide` | `0xB0` BREATHE + `0xB1` rate + `0xA2` depth | firmware renders the 100 Hz cosine |
+| `breathingGuide` | `0xB0` BREATHE + `0xB1` rate + `0xA2` depth + `0xBA` phase sync | firmware renders the 100 Hz cosine |
 | `coherenceLens` | `0xA5` static-duty setpoint (slow, ~1 Hz) | steady tint, no waveform |
 | `breatheStrobe` | breathe + `0xAB`/`0xAC` strobe | *strobe overlay pending a firmware opcode* |
 
@@ -332,13 +332,19 @@ depthPct = brightness · (1 − (coh/100)^γ)        γ = gammaTable[difficulty]
 ```
 
 Because the firmware renders the smooth waveform locally, the BLE link carries only occasional
-parameter writes — never per-tick PWM. (Integer-BPM caveat: `0xB1` is whole-BPM, so the fractional
-pacer rounds for the lens; a fractional-BPM firmware opcode is a planned follow-up.)
+parameter writes — never per-tick PWM. (`0xB1` is whole-BPM, but the engine also sends the **exact**
+cycle length in ms via `0xBA` BREATHE_SYNC — see *Cue sync* below — so on firmware ≥ 4.15.5 the lens
+runs at the fractional pacer rate, not a rounded one.)
 
 **Cue sync.** The on-screen breathing orb (`BreathCue`) and audio chime (`BreathChime` via
 `useBreathPhase`) read `coherenceEngine.breathCyclePos()` directly — the engine is the single clock
-authority — so the screen rate matches the lens. *Absolute* phase-lock to the physical lens needs the
-firmware to emit its breath phase (planned); today the cue is rate-synced and internally consistent.
+authority — so the screen rate matches the lens. The glasses are phase-locked to that same clock: at
+each cycle boundary — and on Mode A/B start / glasses-connect — `emitSync()` sends the firmware a
+**`0xBA` BREATHE_SYNC** (`[cycle_ms u16 LE][inhale_pct u8]`), which restarts the firmware's breathe
+cosine at the on-screen inhale boundary and renders at the *exact* cycle length, so orb, chime, and
+lens share one clock. Re-anchoring only at the boundary (waveform ~0) plus a firmware lens slew-rate
+limiter (~250 ms fade) means resyncs never snap, even as the pacer drifts. Glasses on firmware
+**< 4.15.5** ignore `0xBA` and stay rate-synced only (the prior behavior — no regression).
 
 See [`bluetooth-protocol.md` §4.7](./bluetooth-protocol.md) for the opcode-level integration.
 
