@@ -1,4 +1,5 @@
 import type {
+  AccPacketRecord,
   Annotation,
   BatteryRecord,
   BeatRecord,
@@ -53,6 +54,10 @@ const METRICS_HEADER = [
   'hm_coherence',
   'resonance_coherence',
   'sqi_avg',
+  'acc_measured_bpm',
+  'acc_resp_confidence',
+  'modeb_verified_ratio',
+  'modeb_state',
 ];
 
 const BATTERY_HEADER = ['timestamp_ms', 'mv', 'soc_pct', 'charging', 'source'];
@@ -60,6 +65,8 @@ const BATTERY_HEADER = ['timestamp_ms', 'mv', 'soc_pct', 'charging', 'source'];
 const ANNOTATION_HEADER = ['timestamp_ms', 'event_type', 'annotation_text', 'source'];
 
 const H10_BEAT_HEADER = ['timestamp_ms', 'bpm', 'rr_intervals_ms'];
+
+const ACC_HEADER = ['timestamp_ms', 'sample_rate_hz', 'x', 'y', 'z'];
 
 const COMPARISON_HEADER = ['timestamp_ms', 'earclip_ibi_ms', 'h10_ibi_ms', 'dt_ms'];
 
@@ -150,6 +157,10 @@ export function writeMetricsCSV(metrics: MetricsRecord[]): string {
         fmtNum(s.hmCoherence, 4),
         fmtNum(s.resonanceCoherence, 4),
         m.sqi_avg !== null ? fmtNum(m.sqi_avg / 100, 4) : '',
+        fmtNum(s.accMeasuredBpm, 2),
+        fmtNum(s.accRespConfidence, 3),
+        fmtNum(s.modeBVerifiedRatio, 3),
+        s.modeBState ?? '',
       ]),
     );
   }
@@ -210,6 +221,22 @@ export function writeH10MetricsCSV(metrics: MetricsRecord[]): string {
   return writeMetricsCSV(metrics);
 }
 
+/** Raw H10 accelerometer, one row per sample. Per-sample timestamps are interpolated backward from
+ * each packet's `timestamp` (its newest sample) at 1000/sampleRateHz — same scheme as raw PPG. */
+export function writeAccSamplesCSV(packets: AccPacketRecord[]): string {
+  const lines: string[] = [ACC_HEADER.join(',')];
+  for (const p of packets) {
+    const period = p.sampleRateHz > 0 ? 1000 / p.sampleRateHz : 0;
+    const n = p.samples.length;
+    for (let i = 0; i < n; i++) {
+      const ts = p.timestamp - (n - 1 - i) * period;
+      const s = p.samples[i];
+      lines.push(csvRow([ts, p.sampleRateHz, s.x, s.y, s.z]));
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
 export interface ComparisonRow {
   timestamp: number;
   earclip_ibi_ms: number;
@@ -253,5 +280,6 @@ export const FILE_NAMES = {
   replay: 'replay.json',
   h10Beats: 'reference_h10/h10_beats.csv',
   h10Metrics: 'reference_h10/h10_metrics_1hz.csv',
+  accSamples: 'reference_h10/acc_samples.csv',
   comparison: 'comparison.csv',
 } as const;

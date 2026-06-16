@@ -8,7 +8,7 @@ import {
   type NarbisDiagnosticEvent,
 } from '../ble/narbisDevice';
 import { edgeDevice, type RelayedBattery } from '../ble/edgeDevice';
-import { polarH10, type PolarBeatEvent } from '../ble/polarH10';
+import { polarH10, type PolarBeatEvent, type PolarAccEvent } from '../ble/polarH10';
 import {
   metricsRunner,
   METRICS_WINDOW_SEC,
@@ -35,6 +35,7 @@ import {
   RECORDING_SCHEMA_VERSION,
 } from '../recording/manifest';
 import type {
+  AccPacketRecord,
   Annotation,
   AnnotationEventType,
   BatteryRecord,
@@ -64,6 +65,7 @@ const DEFAULT_STREAMS: RecordingMeta['streams'] = {
   sqi: true,
   filtered: true,
   polar: true,
+  acc: true,
   metrics: true,
 };
 
@@ -81,6 +83,7 @@ export interface RecordingCounts {
   battery: number;
   filtered: number;
   polarBeats: number;
+  accPackets: number;
   metrics: number;
   annotations: number;
 }
@@ -126,6 +129,7 @@ const ZERO_COUNTS: RecordingCounts = {
   battery: 0,
   filtered: 0,
   polarBeats: 0,
+  accPackets: 0,
   metrics: 0,
   annotations: 0,
 };
@@ -137,6 +141,7 @@ class SessionAccumulator {
   battery: BatteryRecord[] = [];
   filtered: FilteredRecord[] = [];
   polarBeats: PolarBeatRecordTimed[] = [];
+  accPackets: AccPacketRecord[] = [];
   metrics: MetricsRecord[] = [];
   annotations: Annotation[] = [];
   configEvents: ConfigChangeEntry[] = [];
@@ -149,6 +154,7 @@ class SessionAccumulator {
       this.battery.length === 0 &&
       this.filtered.length === 0 &&
       this.polarBeats.length === 0 &&
+      this.accPackets.length === 0 &&
       this.metrics.length === 0 &&
       this.annotations.length === 0 &&
       this.configEvents.length === 0
@@ -162,6 +168,7 @@ class SessionAccumulator {
     this.battery = [];
     this.filtered = [];
     this.polarBeats = [];
+    this.accPackets = [];
     this.metrics = [];
     this.annotations = [];
     this.configEvents = [];
@@ -191,6 +198,7 @@ interface RecorderRuntime {
   onDiag: (e: Event) => void;
   onConfig: (e: Event) => void;
   onPolar: (e: Event) => void;
+  onAcc: (e: Event) => void;
   onMetric: (e: Event) => void;
 }
 
@@ -549,6 +557,7 @@ function createRuntime(
     onDiag: () => {},
     onConfig: () => {},
     onPolar: () => {},
+    onAcc: () => {},
     onMetric: () => {},
   };
   r.onBeat = makeOnBeat(r);
@@ -559,6 +568,7 @@ function createRuntime(
   r.onDiag = makeOnDiag(r);
   r.onConfig = makeOnConfig(r);
   r.onPolar = makeOnPolar(r);
+  r.onAcc = makeOnAcc(r);
   r.onMetric = makeOnMetric(r);
   return r;
 }
@@ -575,6 +585,7 @@ function attachListeners(r: RecorderRuntime): void {
   if (r.meta.streams.filtered) narbisDevice.addEventListener('diagnosticReceived', r.onDiag);
   narbisDevice.addEventListener('configChanged', r.onConfig);
   if (r.meta.streams.polar) polarH10.addEventListener('beatReceived', r.onPolar);
+  if (r.meta.streams.acc) polarH10.addEventListener('accReceived', r.onAcc);
   if (r.meta.streams.metrics) metricsRunner.addEventListener('metricsUpdated', r.onMetric);
 }
 
@@ -587,6 +598,7 @@ function detachListeners(r: RecorderRuntime): void {
   narbisDevice.removeEventListener('diagnosticReceived', r.onDiag);
   narbisDevice.removeEventListener('configChanged', r.onConfig);
   polarH10.removeEventListener('beatReceived', r.onPolar);
+  polarH10.removeEventListener('accReceived', r.onAcc);
   metricsRunner.removeEventListener('metricsUpdated', r.onMetric);
 }
 
@@ -718,6 +730,19 @@ function makeOnPolar(r: RecorderRuntime) {
   };
 }
 
+function makeOnAcc(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const pkt = (ev as CustomEvent<PolarAccEvent>).detail;
+    r.acc.accPackets.push({
+      timestamp: pkt.lastSampleMs,
+      sampleRateHz: pkt.sampleRateHz,
+      samples: pkt.samples.map((s) => ({ x: s.x, y: s.y, z: s.z })),
+    });
+    // ~24 B packet base + ~18 B JSON per 3-axis int16 sample.
+    bump(r, 'accPackets', 24 + pkt.samples.length * 18);
+  };
+}
+
 function makeOnMetric(r: RecorderRuntime) {
   return (ev: Event) => {
     const detail = (ev as CustomEvent<MetricsUpdatedDetail>).detail;
@@ -791,6 +816,7 @@ async function flushChunk(): Promise<void> {
   if (r.acc.battery.length) chunk.battery = r.acc.battery;
   if (r.acc.filtered.length) chunk.filtered = r.acc.filtered;
   if (r.acc.polarBeats.length) chunk.polarBeats = r.acc.polarBeats;
+  if (r.acc.accPackets.length) chunk.accPackets = r.acc.accPackets;
   if (r.acc.metrics.length) chunk.metrics = r.acc.metrics;
   if (r.acc.annotations.length) chunk.annotations = r.acc.annotations;
   if (r.acc.configEvents.length) chunk.configEvents = r.acc.configEvents;
@@ -813,6 +839,7 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.battery[0]?.timestamp,
     acc.filtered[0]?.timestamp,
     acc.polarBeats[0]?.timestamp,
+    acc.accPackets[0]?.timestamp,
     acc.metrics[0]?.timestamp,
     acc.annotations[0]?.timestamp,
     acc.configEvents[0]?.timestamp,
@@ -829,6 +856,7 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.battery)?.timestamp,
     last(acc.filtered)?.timestamp,
     last(acc.polarBeats)?.timestamp,
+    last(acc.accPackets)?.timestamp,
     last(acc.metrics)?.timestamp,
     last(acc.annotations)?.timestamp,
     last(acc.configEvents)?.timestamp,

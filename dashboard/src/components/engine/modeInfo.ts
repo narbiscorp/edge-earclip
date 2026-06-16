@@ -57,7 +57,9 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
  * surfaced under the Engine box so the user follows the search as it happens. */
 export function modeBStatusText(status: EngineStatus): string {
   if (status.searchAborted) {
-    return 'Paused — your breathing could not be confirmed from the H10. Sit still, keep the strap snug, then re-select Mode B.';
+    return status.searchAbortReason === 'unmeasured'
+      ? 'Paused — the H10 accelerometer never came online, so your breathing could not be read at all. Check the strap is snug and the H10 is charged, then re-select Mode B.'
+      : 'Paused — your breathing could not be confirmed from the H10. Sit still, keep the strap snug, then re-select Mode B.';
   }
   if (status.modeBState === 'maintaining' && status.lockedRF != null) {
     return `Found it — holding your resonance at ${status.lockedRF.toFixed(1)} br/min and tracking small drifts${
@@ -71,9 +73,11 @@ export function modeBStatusText(status: EngineStatus): string {
   const best = p && p.bestRate != null ? ` Strongest response so far: ${p.bestRate.toFixed(1)} br/min.` : '';
   const tested = p && p.testedCount > 0 ? ` ${p.testedCount} rate${p.testedCount > 1 ? 's' : ''} tested.` : '';
   const hold =
-    status.unverifiedDwells > 0
-      ? ` Hold still and follow the cue — the H10 couldn’t confirm your breathing on the last ${status.unverifiedDwells} attempt${status.unverifiedDwells > 1 ? 's' : ''} at this rate, so they’re re-measured.`
-      : '';
+    status.unmeasuredDwells > 0
+      ? ' Warming up the breathing sensor — sit still while the H10 accelerometer comes online (a few seconds).'
+      : status.unverifiedDwells > 0
+        ? ` Hold still and follow the cue — the H10 couldn’t confirm your breathing on the last ${status.unverifiedDwells} attempt${status.unverifiedDwells > 1 ? 's' : ''} at this rate, so they’re re-measured.`
+        : '';
   let lead: string;
   switch (p?.phase) {
     case 'baseline':

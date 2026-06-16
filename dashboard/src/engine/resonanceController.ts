@@ -41,8 +41,10 @@ export class ResonanceController {
   commandedBPM: number;
   lockedRF = 0;
   boundaryLimited = false; // RF locked at a search-range edge
-  unverifiedDwells = 0; // surfaces to UI: persistent ⇒ "please hold still"
-  searchAborted = false; // search gave up (persistent unverifiable dwells)
+  unverifiedDwells = 0; // measured-but-disagreed dwells ⇒ "hold still / follow the cue"
+  unmeasuredDwells = 0; // ACC gave no usable estimate (warming up / dropout) — re-dwell, don't penalize
+  searchAborted = false; // search gave up
+  searchAbortReason: 'unverified' | 'unmeasured' | null = null; // why it gave up (drives the UI message)
 
   // dwell bookkeeping
   private breathsThisDwell = 0;
@@ -50,6 +52,7 @@ export class ResonanceController {
   private dwellArtifactOk = true; // no gated beats this dwell
   private dwellVerified = 0; // estimate-window breaths positively verified against ACC
   private dwellEstimate = 0; // estimate-window breaths total
+  private dwellMeasured = 0; // estimate-window breaths with ANY usable ACC estimate (non-null)
 
   // search state — explicit bracket → golden-section → lock
   private phase: SearchPhase = 'probe0';
@@ -88,6 +91,12 @@ export class ResonanceController {
   /** Persist this per user (localStorage) for warm-start. */
   storedRF(): number {
     return this.lockedRF;
+  }
+
+  /** Fraction of the current dwell's estimate-window breaths positively verified against the ACC
+   * respiration, or null before the estimate window has started. For the live diagnostics readout. */
+  get verifiedRatio(): number | null {
+    return this.dwellEstimate > 0 ? this.dwellVerified / this.dwellEstimate : null;
   }
 
   /** Plain-language progress snapshot for the UI (valid while searching). */
@@ -136,10 +145,12 @@ export class ResonanceController {
       // POSITIVE verification: a breath counts only if respiration is CONFIRMED at the paced
       // rate (ACC confidence high enough AND measured ≈ paced). Low confidence ⇒ unverifiable.
       this.dwellEstimate += 1;
+      const measured = measuredBPM !== null && Number.isFinite(measuredBPM);
+      if (measured) this.dwellMeasured += 1; // distinguishes "no ACC at all" from "ACC disagreed"
       const verified =
-        measuredBPM !== null &&
+        measured &&
         respConfidence >= this.t.respConfidenceMin &&
-        Math.abs(measuredBPM - verifyRate) <= this.t.respVerifyToleranceBPM;
+        Math.abs((measuredBPM as number) - verifyRate) <= this.t.respVerifyToleranceBPM;
       if (verified) this.dwellVerified += 1;
       if (cycleAmplitude !== null && Number.isFinite(cycleAmplitude)) {
         this.dwellAmps.push(cycleAmplitude); // never let NaN into the estimate
@@ -156,7 +167,23 @@ export class ResonanceController {
       this.dwellArtifactOk = true;
       this.dwellVerified = 0;
       this.dwellEstimate = 0;
+      this.dwellMeasured = 0;
     };
+
+    // The ACC respiration channel produced NO usable estimate this whole dwell — the H10
+    // accelerometer is still warming up (stream just started), dropped out, or is too noisy to
+    // read. Re-dwell at the same rate WITHOUT charging the verification-failure budget: that
+    // budget means "you breathed at the wrong rate," not "we couldn't see your breathing at all."
+    if (this.dwellMeasured === 0) {
+      this.unmeasuredDwells += 1;
+      if (this.unmeasuredDwells >= this.t.maxUnverifiedDwells) {
+        this.searchAborted = true; // ACC never came online — stop hunting blind
+        this.searchAbortReason = 'unmeasured';
+      }
+      resetDwell();
+      return this.commandedBPM;
+    }
+    this.unmeasuredDwells = 0;
 
     // A dwell counts if it was artifact-clean AND a MAJORITY of its estimate-window breaths
     // were positively verified against the ACC respiration — robust to the odd noisy breath,
@@ -166,6 +193,7 @@ export class ResonanceController {
       this.unverifiedDwells += 1; // discard → re-dwell at the same rate
       if (this.unverifiedDwells >= this.t.maxUnverifiedDwells) {
         this.searchAborted = true; // stop hunting on data we can never verify
+        this.searchAbortReason = 'unverified';
       }
       resetDwell();
       return this.commandedBPM;
@@ -337,6 +365,7 @@ export class ResonanceController {
     this.dwellArtifactOk = true;
     this.dwellVerified = 0;
     this.dwellEstimate = 0;
+    this.dwellMeasured = 0;
     this.commandedBPM = this.lockedRF;
     this.lastReprobeS = nowS;
     this.lowSinceS = null;

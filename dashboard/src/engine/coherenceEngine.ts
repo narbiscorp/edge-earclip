@@ -63,7 +63,14 @@ export interface EngineStatus {
   lockedRF: number | null; // valid only when maintaining
   boundaryLimited: boolean;
   searchAborted: boolean;
-  unverifiedDwells: number;
+  unverifiedDwells: number; // measured-but-disagreed dwells
+  unmeasuredDwells: number; // ACC produced no usable estimate (warming up / dropout)
+  searchAbortReason: 'unverified' | 'unmeasured' | null;
+  /** ACC respiration estimate at the last breath boundary — the Mode B verification input. */
+  accMeasuredBpm: number | null;
+  accRespConfidence: number;
+  /** Fraction of the current dwell's estimate-window breaths verified vs ACC, or null. */
+  modeBVerifiedRatio: number | null;
 }
 
 export interface StartOptions {
@@ -120,6 +127,9 @@ export class CoherenceEngine extends EventTarget {
   private _cr = 0;
   private _respHz = 0;
   private _lastDuty = 0;
+  // ACC respiration estimate cached at each breath boundary (Mode B verification input), for status.
+  private _accMeasuredBpm: number | null = null;
+  private _accRespConfidence = 0;
 
   get running(): boolean {
     return this.secTimer !== null;
@@ -162,6 +172,8 @@ export class CoherenceEngine extends EventTarget {
     this._cr = 0;
     this._respHz = 0;
     this._lastDuty = 0;
+    this._accMeasuredBpm = null;
+    this._accRespConfidence = 0;
     this.gatedBeatsThisCycle = 0;
 
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
@@ -183,6 +195,8 @@ export class CoherenceEngine extends EventTarget {
     this.onLens = null;
     this.ingest.reset();
     this.resp.reset();
+    this._accMeasuredBpm = null;
+    this._accRespConfidence = 0;
     this.emitStatus();
   }
 
@@ -264,6 +278,11 @@ export class CoherenceEngine extends EventTarget {
       boundaryLimited: this.modeB?.boundaryLimited ?? false,
       searchAborted: this.modeB?.searchAborted ?? false,
       unverifiedDwells: this.modeB?.unverifiedDwells ?? 0,
+      unmeasuredDwells: this.modeB?.unmeasuredDwells ?? 0,
+      searchAbortReason: this.modeB?.searchAbortReason ?? null,
+      accMeasuredBpm: this._accMeasuredBpm,
+      accRespConfidence: this._accRespConfidence,
+      modeBVerifiedRatio: this.modeB?.verifiedRatio ?? null,
     };
   }
 
@@ -293,11 +312,13 @@ export class CoherenceEngine extends EventTarget {
         this.modeB.commandedBPM,
       );
       const r = this.resp.estimate();
+      this._accMeasuredBpm = r ? r.bpm : null; // cache for the status readout + metrics record
+      this._accRespConfidence = r ? r.confidence : 0;
       const pacedBPM = this.pacer.currentQuintet / 5.0;
       const bpm = this.modeB.onBreathCycle({
         cycleAmplitude: amp,
-        measuredBPM: r ? r.bpm : null,
-        respConfidence: r ? r.confidence : 0,
+        measuredBPM: this._accMeasuredBpm,
+        respConfidence: this._accRespConfidence,
         pacedBPM,
         dwellArtifactClean: cycleClean,
         nowS,

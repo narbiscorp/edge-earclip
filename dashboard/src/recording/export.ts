@@ -8,6 +8,7 @@ import {
 } from './aggregator';
 import {
   FILE_NAMES,
+  writeAccSamplesCSV,
   writeAnnotationsCSV,
   writeBatteryCSV,
   writeBeatsCSV,
@@ -22,6 +23,7 @@ import {
 } from './format';
 import { buildManifest, sessionFolderName, summarize } from './manifest';
 import type {
+  AccPacketRecord,
   Annotation,
   BatteryRecord,
   BeatRecord,
@@ -59,6 +61,7 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
   const sqi = concatStream(chunks, 'sqi') as SqiRecord[];
   const battery = concatStream(chunks, 'battery') as BatteryRecord[];
   const polarBeats = concatStream(chunks, 'polarBeats') as PolarBeatRecordTimed[];
+  const accPackets = concatStream(chunks, 'accPackets') as AccPacketRecord[];
   const metrics = concatStream(chunks, 'metrics') as MetricsRecord[];
   const annotations = concatStream(chunks, 'annotations') as Annotation[];
   const configEvents = concatStream(chunks, 'configEvents') as ConfigChangeEntry[];
@@ -91,6 +94,9 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
     add(FILE_NAMES.h10Metrics, writeH10MetricsCSV([]));
     const comparison = alignH10ToEarclip(beats, polarBeats);
     add(FILE_NAMES.comparison, writeComparisonCSV(comparison));
+  }
+  if (session.streams.acc && accPackets.length > 0) {
+    add(FILE_NAMES.accSamples, writeAccSamplesCSV(accPackets));
   }
 
   const endedAt = session.endedAt ?? Date.now();
