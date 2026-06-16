@@ -263,8 +263,8 @@ export interface DashboardState {
     dutyPct?: number,
   ) => Promise<void>;
   setUiMode: (mode: 'basic' | 'expert' | 'mobile') => void;
-  /** Select the app-side engine mode (firmware/modeA/modeB). Starts/stops the engine,
-   * takes over or hands back the lens, and (Mode B) asserts the H10 + ACC source. */
+  /** Select the app-side engine mode (firmware/modeA/modeB/modeC). Starts/stops the engine,
+   * takes over or hands back the lens, and (Mode B/Mode C) asserts the H10 + ACC source. */
   setEngineMode: (mode: EngineMode) => Promise<void>;
   /** Update every engine tunable, persist, and push the new values to the running engine live. */
   setCoherenceTunables: (t: CoherenceTunables) => void;
@@ -442,7 +442,7 @@ const ENGINE_MODE_KEY = 'coherenceEngineMode';
 function loadEngineMode(): EngineMode {
   try {
     const v = localStorage.getItem(ENGINE_MODE_KEY);
-    return v === 'modeA' || v === 'modeB' ? v : 'firmware';
+    return v === 'modeA' || v === 'modeB' || v === 'modeC' ? v : 'firmware';
   } catch {
     return 'firmware';
   }
@@ -504,7 +504,7 @@ const _chimeInit = loadChime();
 
 /** Start (or restart) the ported engine for the given app-side mode. The engine ingests
  * beats from whichever HR source feeds the glasses and streams lens duty over 0xA5. */
-function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
+function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
   const s = useDashboardStore.getState();
   const source = s.hrSourceForGlasses === 'h10' ? 'polarH10' : 'edgeRelay';
   edgeDevice.resetLensState(); // fresh full re-send of the lens params on (re)start
@@ -513,6 +513,8 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
     source,
     tunables: s.coherenceTunables,
     brightness: 100,
+    // Mode B warm-starts from the stored RF. Mode C seeds from the warm-up settled rate instead,
+    // so it gets no priorRF (its controller isn't created until the gate fires).
     priorRF: mode === 'modeB' ? loadModeBRF() : null,
     // Engine commands the firmware's breathe/static program (it renders the smooth cycle); we no
     // longer stream per-tick PWM. driveLens coalesces, depth comes from the engine's coherence.
@@ -520,7 +522,8 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
       if (edgeDevice.isConnected) void edgeDevice.driveLens(state);
     },
   });
-  if (mode === 'modeB') scheduleAccStart('Mode B active');
+  // Mode B AND Mode C verify breathing against the H10 accelerometer — start the ACC stream.
+  if (mode === 'modeB' || mode === 'modeC') scheduleAccStart(`${mode} active`);
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
@@ -542,7 +545,8 @@ function scheduleAccStart(reason: string): void {
     accStartTimer = null;
     if (polarH10.status !== 'connected') return;
     if (!coherenceEngine.running) return;
-    if (useDashboardStore.getState().engineMode !== 'modeB') return;
+    const em = useDashboardStore.getState().engineMode;
+    if (em !== 'modeB' && em !== 'modeC') return;
     if (polarH10.isAccStreaming) return;
     appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
     void polarH10.startAccStream().catch((err) => {
@@ -557,7 +561,7 @@ function scheduleAccStart(reason: string): void {
 export function initCoherenceEngine(): void {
   const s = useDashboardStore.getState();
   if (s.engineMode === 'firmware' || coherenceEngine.running) return;
-  if (s.engineMode === 'modeB' && s.hrSourceForGlasses !== 'h10') {
+  if ((s.engineMode === 'modeB' || s.engineMode === 'modeC') && s.hrSourceForGlasses !== 'h10') {
     s.setHrSourceForGlasses('h10');
   }
   startCoherenceEngine(s.engineMode);
@@ -680,7 +684,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     // ingests from the right feed (and starts/stops the ACC stream as needed).
     if (coherenceEngine.running) {
       const m = useDashboardStore.getState().engineMode;
-      if (m === 'modeA' || m === 'modeB') startCoherenceEngine(m);
+      if (m === 'modeA' || m === 'modeB' || m === 'modeC') startCoherenceEngine(m);
     }
   },
   setCoherenceParams: async (params) => {
@@ -757,14 +761,16 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       scheduleAutoStartProgram('coherence engine off');
       return;
     }
-    // Entering Mode A / Mode B — the engine owns the lens; clear any firmware program.
+    // Entering Mode A / Mode B / Mode C — the engine owns the lens; clear any firmware program.
     set({ activeProgram: null, standaloneMode: null });
-    if (mode === 'modeB' && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
-      // Mode B needs validated H10 RR + the independent ACC respiration channel.
+    if ((mode === 'modeB' || mode === 'modeC') && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
+      // Mode B and Mode C need validated H10 RR + the independent ACC respiration channel.
       useDashboardStore.getState().setHrSourceForGlasses('h10');
     }
     startCoherenceEngine(mode);
-    appendBleLog('system', 'info', `coherence engine ON — ${mode === 'modeA' ? 'Mode A (Follow)' : 'Mode B (Find resonance)'}`);
+    const label =
+      mode === 'modeA' ? 'Mode A (Follow)' : mode === 'modeB' ? 'Mode B (Find resonance)' : 'Mode C (Settle & Find)';
+    appendBleLog('system', 'info', `coherence engine ON — ${label}`);
   },
   setCoherenceTunables: (t) => {
     set({ coherenceTunables: t });
@@ -1292,9 +1298,10 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
-  // If we're already in Mode B (H10 reconnected mid-session), (re)start the ACC stream — deferred
-  // so a reconnect storm doesn't hammer the fragile post-connect link with PMD setup.
-  if (coherenceEngine.running && useDashboardStore.getState().engineMode === 'modeB') {
+  // If we're already in Mode B/Mode C (H10 reconnected mid-session), (re)start the ACC stream —
+  // deferred so a reconnect storm doesn't hammer the fragile post-connect link with PMD setup.
+  const em = useDashboardStore.getState().engineMode;
+  if (coherenceEngine.running && (em === 'modeB' || em === 'modeC')) {
     scheduleAccStart('h10 connected');
   }
 });
