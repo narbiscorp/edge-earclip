@@ -346,58 +346,215 @@ See [`bluetooth-protocol.md` §4.7](./bluetooth-protocol.md) for the opcode-leve
 
 ## 12. Mode A — Follow
 
-**Coherence biofeedback that paces you toward your own drifting resonance.** Each second the engine
-measures your strongest HRV frequency (the §9 LF read-back); the §10 pacer guides your breathing
-toward it (glide near, snap when clearly off). Lens depth tracks your §8 coherence — it clears as you
-get more coherent. This is the everyday training mode: breathe with the cue, watch the lens clear.
+> **In one line.** Mode A is *coherence biofeedback*: it watches the breathing rate at which your own
+> HRV is strongest right now, paces you toward it, and clears the lens as your coherence rises. You
+> don't pick a rate — the engine follows yours.
+
+### 12.1 What it's for
+Most paced-breathing tools make you breathe at a fixed rate (usually 6 br/min). But the rate that
+actually maximizes *your* HRV — your resonance frequency — varies between people and drifts within a
+session (posture, alertness, blood CO₂). Mode A is the everyday "just train" mode: it continuously
+estimates where your HRV is strongest and nudges the breathing cue toward it, while the lens gives a
+moment-to-moment coherence reward. It's the engine analog of a HeartMath emWave / Inner Balance
+coherence session, but with the Edge lens as the display and an *adaptive* (not fixed) pacer.
+
+If you instead want the engine to *find and lock* your single best rate, that's **Mode B**. Mode A
+**follows**; Mode B **searches**.
+
+### 12.2 The closed loop, step by step
+Every second (`tick1Hz`):
+1. **Ingest + clean** — new beats pass the §6 artifact gate into the ring.
+2. **Spectrum** — the §7 Lomb–Scargle PSD is computed over the trailing `coherenceWindowS` (64 s).
+3. **Coherence** — §8 CR → `coh%`; this sets lens depth (clearer as `coh%` rises).
+4. **Read-back** — the §9 LF-only peak (`respPeakHz`, 0.04–0.15 Hz) is pushed into the pacer's
+   `pacerAvgN`-sample ring (out-of-band values are dropped, so noise/too-fast breaths don't feed it).
+
+Every breath-cycle boundary (`onBreathBoundary`):
+5. **Latch the pace** — the §10 pacer turns the averaged read-back into a quintet target and moves the
+   commanded rate toward it (glide ±0.2 BPM, or snap — see §12.3). New cycle = `300000 / quintet` ms.
+6. **Drive + sync** — `emitLens` pushes the new rate + the coherence-derived depth to the firmware
+   breathe program (§11); the on-screen cue + chime re-lock to the engine clock.
+
+The loop in words: *you breathe with the cue → your RSA appears at that rate → the LS read-back detects
+it → the pacer holds/adjusts → the lens rewards the resulting coherence.*
+
+### 12.3 Why a gentle glide *and* an occasional snap
+There's a feedback subtlety: because you follow the cue, your RSA then appears *at the cue's rate*, so a
+naive pacer could chase its own tail. Two choices keep it stable:
+- **LF-only, averaged read-back** (0.04–0.15 Hz over `pacerAvgN` ≈ 15 s) — a transient or a too-fast
+  self-selected breath can't yank the target.
+- **A two-speed pacer.** Near target it **glides** ±0.2 BPM/breath — slow enough that the cue never
+  lurches and the chase loop stays stable. But when you've clearly moved (the smoothed target sits ≥
+  `pacerJumpThresholdBPM` away for `pacerJumpSustainBreaths` consecutive breaths) it **snaps** straight
+  there, so you're not stuck crawling 0.2 BPM/breath for a minute when your real rate is 2 BPM off. The
+  sustain count is the wall against one bad reading triggering a jump.
+
+### 12.4 What you see
+- **The breathing cue** (orb + Inhale/Exhale label) animates at the engine's current pace — the thing
+  to breathe with; the optional **chime** marks each inhale/exhale boundary. Both are phase-locked to
+  the engine clock, so they match the lens rate.
+- **The lens** (and its on-screen mirror) clears as coherence rises: at `coh` 0 it tints fully on the
+  inhale peak; at `coh` 100 it stays clear. The depth curve is shaped by the **Difficulty** setting.
+- **The coherence ring / score** shows `coh%`; the readout shows the current pacer BPM.
+
+### 12.5 Parameters that shape Mode A
+`cohSquashK` (overall difficulty — primary knob) · Difficulty `gamma*` (the coherence→depth curve) ·
+`quintetMin/Max/Default` (rate clamp + start) · `pacerAvgN` (target smoothness) · `pacerSlewQuintet`
+(glide rate) · `pacerJumpThresholdBPM` / `pacerJumpSustainBreaths` (snap behavior) · lens style
+(breathingGuide / coherenceLens / breatheStrobe).
+
+### 12.6 Failure modes & tuning
+- **Pace feels jittery / chases you** → raise `pacerAvgN` or `pacerJumpThresholdBPM`.
+- **Pace takes forever to catch up** → lower `pacerJumpSustainBreaths` or raise `pacerSlewQuintet`.
+- **Score never moves / always pegged** → that's `cohSquashK` (raise = harder) + the Difficulty gamma.
+- **No pace at all** → the read-back found nothing in 0.04–0.15 Hz (too few beats, or breathing outside
+  the band); the pace holds its last value / `quintetDefault`.
+
+Mode A works with any validated beat source (Polar H10 *or* the earclip) and does **not** use the
+accelerometer (that's Mode B only).
 
 ---
 
 ## 13. Mode B — Resonance (search + verify + maintain)
 
-`resonanceController.ts`. An automated **Lehrer/Vaschillo resonance-frequency** search. Resonance
-frequency — the breathing rate that maximizes HRV amplitude via the baroreflex (~4.5–6.5 br/min) —
-varies per person. Mode B's **objective is per-breath amplitude**, not the 64-s spectrum: the
-`FastAmplitudeTracker` returns the mean peak-to-trough RR over the last `ampWindowBreaths` breaths,
-which responds *within a breath* (the spectral power stays contaminated by the old rate for ~64 s
-after a rate step, so it can't drive a hill-climb).
+> **In one line.** Mode B runs the **Lehrer/Vaschillo resonance-frequency assessment** automatically:
+> it paces you across a range of breathing rates, measures where your HRV amplitude peaks, *verifies*
+> with an independent accelerometer channel that you actually breathed at each rate, locks your
+> resonance frequency (RF), and then tracks it. Requires a Polar H10 (validated beats **and** its ACC).
+> Implemented in `resonanceController.ts` (+ `fastAmplitude.ts`, `respirationFromAcc.ts`).
 
-**Dwell + verification.** Each candidate rate is held for `dwellBreaths` (default 6); the first
-`(1 − dwellEstimateFraction)` is discarded as settling (so the pacer slew doesn't pollute the estimate).
-A dwell counts only if it was artifact-clean AND a **majority** of its estimate-window breaths were
-**positively verified** against the accelerometer:
+### 13.1 The science — resonance frequency & the baroreflex
+The cardiovascular system has a resonance. The **baroreflex** (the blood-pressure feedback loop) has a
+delay of ~5 s, so oscillating it at ~0.1 Hz (~6 br/min) produces the largest swing in heart rate —
+maximal respiratory sinus arrhythmia (RSA). The exact peak — your **resonance frequency** — is
+individual, typically 0.075–0.12 Hz (~4.5–7 br/min), set largely by body size / blood volume.
+Breathing at *your* RF maximizes HRV amplitude and trains baroreflex gain; this is the mechanism behind
+HRV biofeedback (Lehrer & Vaschillo). Clinically, RF is found by pacing a person through candidate
+rates and watching which maximizes HRV. **Mode B automates exactly that** — plus an objective
+verification step a clinician would do by watching the person breathe.
+
+### 13.2 Why a dedicated objective (fast amplitude)
+The §8 coherence score uses a 64-s window, so after a rate change it stays contaminated by the *old*
+rate for up to a minute — useless for a hill-climb that moves every few breaths. Mode B therefore uses
+a faster objective: `FastAmplitudeTracker.amplitude()` returns the **mean per-breath peak-to-trough RR**
+over the last `ampWindowBreaths` (2.5) breaths. It chunks recent beats into per-breath windows
+(`breathS = 60 / commandedBPM`) and averages each chunk's `(max − min)` RR. This responds *within a
+breath* of a rate change, so the search can move quickly. It is the **only** objective the hill-climb
+consumes.
+
+### 13.3 The dwell — settle, estimate, accept
+Mode B holds each candidate rate for a **dwell** of `dwellBreaths` (6 breaths), split into:
+- **Settle** — the first `ceil(dwellBreaths · (1 − dwellEstimateFraction))` breaths (≈ 2–3) are
+  discarded while the pacer slews to the new rate and your breathing catches up.
+- **Estimate** — the remaining ~60% is where amplitude is collected and verification is scored.
+
+A dwell is **accepted** only if *all* of: it was artifact-clean (no beats gated mid-dwell), it produced
+amplitude samples, **and** a **majority** of its estimate-window breaths verified (§13.4). Otherwise it
+is discarded, re-dwelled at the same rate, and `unverifiedDwells` increments.
+
+### 13.4 Independent verification & the Mayer-wave defense
+This is what makes an *automated* search trustworthy. Per estimate-window breath:
 
 ```
 verified(breath) = measuredBPM ≠ null
-                 ∧ respConfidence ≥ respConfidenceMin
-                 ∧ |measuredBPM − pacedBPM| ≤ respVerifyToleranceBPM
+                 ∧ respConfidence ≥ respConfidenceMin            (the ACC breathing peak is clear)
+                 ∧ |measuredBPM − pacedBPM| ≤ respVerifyToleranceBPM   (you breathed at the paced rate)
 ```
 
-This independent ACC check defends against the **Mayer wave** — a ~0.1 Hz baroreflex oscillation that
-can masquerade as breathing in the RSA peak but is absent from real chest motion. Persistently
-unverified dwells raise a "hold still" hint and, after `maxUnverifiedDwells`, abort the search.
+`measuredBPM` / `respConfidence` come from the **accelerometer** respiration channel — *independent of
+the heart*. Why does independence matter? Because the HRV/RSA peak alone can lie: the **Mayer wave** is
+a ~0.1 Hz oscillation of blood pressure (and therefore heart rate) driven by the baroreflex
+*regardless of breathing*. Off-resonance, the RSA peak can sit at the Mayer frequency (~6/min) even
+though you're actually breathing at, say, 7/min — so an HRV-only search would happily "confirm"
+resonance at the wrong rate. The chest accelerometer measures *real breathing motion*, so requiring
+`|measured − paced| ≤ tolerance` proves you truly breathed where you were paced. If the ACC can't
+confirm (you're moving, slouching, or the peak is low-confidence), the dwell doesn't count.
 
-**Search state machine** (`commandedBPM` is handed to the pacer to slew toward):
+Persistent failure ⇒ a **"hold still / follow the cue"** hint, and after `maxUnverifiedDwells` (12)
+consecutive unverifiable dwells the search **aborts** (`searchAborted`) and holds a steady pace rather
+than chase un-trustable data.
 
-```
-probe0     → record baseline amplitude at the start rate
-findDir    → probe one step (probeStepInitBPM) down; compare → pick the uphill direction
-bracketOut → step in the uphill direction until amplitude drops → 3-point bracket
-refine     → golden-section narrowing inside the bracket; when it can't tighten on the
-             0.2-BPM grid, lock the parabolic vertex (sub-grid resonance frequency)
-```
+### 13.5 The search state machine
+A state machine whose `commandedBPM` is handed to the pacer to slew toward each dwell. States
+(`SearchPhase`), with the plain-language `SearchProgress.phase` the UI shows in *italics*:
 
-Hysteresis (`epsilonPctOfA` = max(5% of A, 1 SD)) keeps noise from flipping the bracket. A best-so-far
-dwell sitting at a search-band edge with a lower interior neighbor locks at the boundary
-(`boundaryLimited`).
+1. **`probe0`** *(baseline)* — dwell at the start rate (your warm-start RF, else 6 BPM); record its
+   amplitude as the baseline.
+2. **`findDir`** *(baseline)* — probe one `probeStepInitBPM` (0.4 BPM) step **down**; compare its
+   amplitude to baseline to decide which direction is **uphill** (toward higher HRV amplitude).
+3. **`bracketOut`** *(climbing)* — step in the uphill direction, `probeStepInitBPM` at a time, shifting
+   the window while amplitude keeps rising, until it **drops** — yielding a 3-point bracket
+   `[low, peak, high]` straddling the maximum. (If it climbs into a search-band edge first, it locks
+   there — see §13.6.)
+4. **`refine`** *(refining)* — **golden-section** narrowing inside the bracket: probe the larger
+   sub-interval, keep the higher-amplitude side, repeat. When the bracket can no longer tighten on the
+   0.2-BPM grid (`probeStepFloorBPM`), fit a **parabola** through the three points and **lock its
+   vertex** → a sub-grid resonance frequency.
 
-**Maintain** (after lock): an extremum-seeking dither (`ditherAmpBPM` over `ditherPeriodS`) demodulated
-against a high-passed amplitude (`escMeanAlpha`, so uniform fatigue isn't read as a gradient) nudges
-the lock to follow slow drift (`escGainBPM`, capped `escMaxStepBPM`). A fast-vs-slow amplitude EWMA
-(`decayFastAlpha`/`decaySlowAlpha`) detects sudden loss: if the fast EWMA falls `reprobeDecayPct` below
-the slow one for `reprobeSustainS` (capped to one re-probe per `reprobeCapS`), it restarts a short
-search around the lock. The converged resonance frequency is persisted per user (localStorage) for a
-warm start, re-confirmed within `confirmProbeBPM` next session.
+Hysteresis keeps noise from flipping decisions: a rate only counts as "better" if its amplitude beats
+the incumbent by `ε = max(epsilonPctOfA · A, 1 SD of the dwell's amplitudes)`.
+
+### 13.6 Boundary lock & parabolic vertex
+- **Boundary lock** — if the best-so-far dwell sits at a search-band edge (`searchLoBPM` /
+  `searchHiBPM`) and an interior sample is lower, the true peak is at/beyond the clamp; it locks at the
+  edge and flags **`boundaryLimited`** (surfaced in the UI, so you know the band — not your physiology —
+  set the answer; widen the band and retry).
+- **Parabolic vertex** — at the finest bracket the lock is the vertex of the parabola through the three
+  `(rate, amplitude)` points, not the best grid point, giving sub-0.2-BPM precision on the RF.
+
+### 13.7 Maintain — drift tracking & sudden-loss re-probe
+Once `state = maintaining`, the lock is **not** frozen — resonance drifts with posture/fatigue. Two
+mechanisms keep it:
+- **Extremum-seeking** — a sub-perceptual dither (`ditherAmpBPM` = 0.1 BPM over `ditherPeriodS` = 180 s)
+  is added to the pace; the amplitude response is demodulated against the dither to estimate the local
+  gradient and nudge the lock uphill (`escGainBPM`, capped per cycle at `escMaxStepBPM`). The objective
+  is **high-passed** first (`escMeanAlpha`), so a *uniform* amplitude fade (fatigue) cancels and is not
+  mistaken for a gradient.
+- **Sudden-loss re-probe** — a fast vs slow amplitude EWMA (`decayFastAlpha` / `decaySlowAlpha`).
+  Gradual fatigue moves both together; a *sudden* drop (you shifted, the strap moved, you stopped
+  following) drops the fast EWMA first. If `fast < slow · (1 − reprobeDecayPct)` sustained for
+  `reprobeSustainS` (and at most once per `reprobeCapS`), it restarts a short bracket search around the
+  lock to re-acquire.
+
+### 13.8 Warm start & abort
+- **Warm start** — the converged RF is persisted per user (localStorage). Next session Mode B starts the
+  pacer *at* that RF and runs a short re-confirm within `±confirmProbeBPM` instead of a cold hunt.
+- **Abort** — `maxUnverifiedDwells` consecutive unverifiable dwells ⇒ `searchAborted`; it stops hunting
+  and holds a steady comfortable pace. Sit still and re-enter Mode B to retry.
+
+### 13.9 What you see (UI states)
+- **Searching** — e.g. *"Pacing you at 6.0 br/min to read your baseline (breath 4 of 6)"*, then
+  *climbing* / *refining*, with the best rate found so far and the count of rates tested.
+- **Hold-still hint** — *"Hold still and follow the cue — the H10 couldn't confirm your breathing on the
+  last N attempts at this rate, so they're re-measured"* (driven by `unverifiedDwells`).
+- **Maintaining** — shows your **locked resonance frequency**; flags `boundaryLimited` if it locked at a
+  band edge, or `searchAborted` if it gave up.
+- The breathing cue + chime pace you through every dwell; the **Breathing-wave (H10 accelerometer)
+  chart** shows the independent respiration the verifier is reading.
+
+### 13.10 A worked timeline
+Seated, still, H10 connected, no saved RF:
+1. **probe0** — paced 6.0 for 6 breaths (~60 s); baseline amplitude recorded once verified.
+2. **findDir** — paced 5.6; amplitude higher ⇒ uphill is *downward* in rate.
+3. **bracketOut** — 5.2, 4.8 … amplitude rises then falls at 4.4 ⇒ bracket ≈ `[4.4, 4.8, 5.2]`.
+4. **refine** — golden-section probes inside; tightens to the 0.2-BPM floor.
+5. **lock** — parabola vertex ≈ **4.9 BPM** → `maintaining`; RF persisted.
+6. **maintain** — dithers ±0.1 around 4.9, tracks drift; re-probes only if amplitude suddenly collapses.
+
+If at any dwell the ACC says you breathed at a different rate than paced, that dwell is re-measured;
+too many in a row and it aborts with the hold-still hint.
+
+### 13.11 Parameters & tuning
+- **`searchLoBPM` / `searchHiBPM`** — the searched range (4.0–7.5). If `boundaryLimited`, widen it.
+- **`dwellBreaths` / `dwellEstimateFraction`** — reliability vs search speed.
+- **`probeStepInitBPM` / `probeStepFloorBPM`** — coarse step / final resolution.
+- **`respVerifyToleranceBPM`** — how strictly "you breathed where I paced" is enforced (raise toward 1.0
+  if good dwells keep getting rejected).
+- **`respConfidenceMin`, `respMinHz`** — the ACC verifier's strictness / sway rejection (§ ACC
+  respiration) — the usual levers when Mode B "can't confirm".
+- **`maxUnverifiedDwells`** — patience before aborting.
+- Maintenance: `ditherAmpBPM/PeriodS`, `escGainBPM/MaxStepBPM/MeanAlpha`, `decayFastAlpha/decaySlowAlpha`,
+  `reprobeDecayPct/SustainS/CapS`.
 
 Mode B requires a Polar H10 (validated beats **and** the accelerometer channel).
 
