@@ -1,5 +1,6 @@
 import { StreamBuffer } from './streamBuffer';
 import type { MetricsResult } from '../workers/metricsWorker';
+import type { ModeBState } from '../engine/resonanceController';
 
 export interface MetricsSnapshot {
   meanHr: number;
@@ -22,6 +23,13 @@ export interface MetricsSnapshot {
   firmwareCoherence: number | null;
   /** Firmware-mirror LF resonance peak frequency in Hz. */
   firmwareRespFreq_hz: number | null;
+  /** ACC-respiration + Mode B verification state — sourced from the main-thread coherenceEngine
+   * (NOT the metrics worker) and merged in metricsRunner.onMessage. null/0 when the engine isn't
+   * running or isn't in Mode B. Recorded so a "can't find baseline" session is analyzable offline. */
+  accMeasuredBpm: number | null;
+  accRespConfidence: number;
+  modeBVerifiedRatio: number | null;
+  modeBState: ModeBState | null;
 }
 
 /** A single 0xF2 packet as emitted by the glasses' coherence_task — the
@@ -75,5 +83,11 @@ export function snapshotFromResult(r: MetricsResult): MetricsSnapshot {
     beatCount: r.beatCount,
     firmwareCoherence: r.firmwareCoherence,
     firmwareRespFreq_hz: r.firmwareRespFreq_hz,
+    // Worker has no engine access — these are neutral here and overwritten on the main thread in
+    // metricsRunner.onMessage (and stay neutral for offline metric recompute, which has no engine).
+    accMeasuredBpm: null,
+    accRespConfidence: 0,
+    modeBVerifiedRatio: null,
+    modeBState: null,
   };
 }

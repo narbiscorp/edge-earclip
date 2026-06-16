@@ -187,6 +187,7 @@ export default function CoherenceEnginePanel() {
 
 function EngineReadout() {
   const status = useDashboardStore((s) => s.engineStatus);
+  const respConfidenceMin = useDashboardStore((s) => s.coherenceTunables.respConfidenceMin);
   if (!status || !status.running) {
     return (
       <div className="text-[10px] text-slate-500">Engine idle — waiting for a beat source.</div>
@@ -202,6 +203,25 @@ function EngineReadout() {
         <span>beats <span className="text-slate-100">{status.beats}</span></span>
         <span>duty <span className="text-slate-100">{status.duty}</span></span>
       </div>
+      {status.mode === 'modeB' && status.modeBState === 'searching' ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-slate-400">
+          <span title="Breathing rate measured from the H10 accelerometer — the independent channel Mode B verifies each dwell against">
+            ACC <span className="text-slate-100">{status.accMeasuredBpm != null ? status.accMeasuredBpm.toFixed(1) : '—'}</span> br/min
+          </span>
+          <span title="Spectral confidence of the ACC breathing peak; must clear the min-confidence knob to count as verified">
+            conf{' '}
+            <span className={status.accRespConfidence >= respConfidenceMin ? 'text-emerald-400' : 'text-amber-400'}>
+              {status.accRespConfidence.toFixed(2)}
+            </span>
+            <span className="text-slate-600">/{respConfidenceMin.toFixed(2)}</span>
+          </span>
+          {status.modeBVerifiedRatio != null ? (
+            <span title="Fraction of this dwell's scored breaths whose ACC rate matched the paced rate">
+              verified <span className="text-slate-100">{Math.round(status.modeBVerifiedRatio * 100)}%</span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {status.mode === 'modeB' && status.modeBState ? (
         <div
           className={

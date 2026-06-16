@@ -7,7 +7,7 @@ const DEFAULT_META: RecordingMeta = {
   name: '',
   subjectId: '',
   notes: '',
-  streams: { raw: true, beats: true, sqi: true, filtered: true, polar: true, metrics: true },
+  streams: { raw: true, beats: true, sqi: true, filtered: true, polar: true, acc: true, metrics: true },
 };
 
 export default function RecordingControls() {
@@ -108,7 +108,7 @@ function PreRecordingModal({ onCancel, onStart }: PreRecordingProps) {
           </label>
           <div className="text-xs text-slate-400 mt-1">Streams</div>
           <div className="grid grid-cols-2 gap-1 text-xs">
-            {(['raw', 'beats', 'sqi', 'filtered', 'polar', 'metrics'] as const).map((k) => (
+            {(['raw', 'beats', 'sqi', 'filtered', 'polar', 'acc', 'metrics'] as const).map((k) => (
               <label key={k} className="flex items-center gap-1.5">
                 <input
                   type="checkbox"

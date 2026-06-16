@@ -153,7 +153,7 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   epsilonPctOfA: 0.05,
   searchLoBPM: 4.0,
   searchHiBPM: 7.5,
-  respVerifyToleranceBPM: 0.5,
+  respVerifyToleranceBPM: 0.8, // ≈1.1 periodogram bins; 0.5 was sub-resolution (45 s window ⇒ ~0.73 br/min/bin, ~1.3 br/min Rayleigh), rejecting real cue-imperfect breathing
   confirmProbeBPM: 0.5,
   maxUnverifiedDwells: 12,
   // Mode B maintenance

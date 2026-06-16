@@ -173,7 +173,7 @@ describe('ResonanceController — Mode B', () => {
       const b = ctrl.commandedBPM;
       ctrl.onBreathCycle({
         cycleAmplitude: 50,
-        measuredBPM: b + 1.0, // measured rate always off by 1 BPM (> tolerance)
+        measuredBPM: b + 1.5, // measured rate always off by 1.5 BPM (> the 0.8 tolerance)
         respConfidence: 1,
         pacedBPM: b,
         dwellArtifactClean: true,
@@ -181,7 +181,30 @@ describe('ResonanceController — Mode B', () => {
       });
     }
     expect(ctrl.searchAborted).toBe(true);
+    expect(ctrl.searchAbortReason).toBe('unverified'); // measured-but-disagreed, not unmeasured
     expect(ctrl.unverifiedDwells).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.maxUnverifiedDwells);
+  });
+
+  it('does NOT penalize dwells while the ACC respiration is unavailable, then aborts as "unmeasured"', () => {
+    // measuredBPM null every breath = the H10 ACC stream never came online (or dropped). This must
+    // NOT be charged to the "you breathed at the wrong rate" budget — it gets its own reason.
+    const ctrl = new ResonanceController(DEFAULT_TUNABLES);
+    let nowS = 0;
+    for (let i = 0; i < 200 && !ctrl.searchAborted; i++) {
+      nowS += 10;
+      ctrl.onBreathCycle({
+        cycleAmplitude: 50,
+        measuredBPM: null,
+        respConfidence: 0,
+        pacedBPM: ctrl.commandedBPM,
+        dwellArtifactClean: true,
+        nowS,
+      });
+    }
+    expect(ctrl.searchAborted).toBe(true);
+    expect(ctrl.searchAbortReason).toBe('unmeasured');
+    expect(ctrl.unverifiedDwells).toBe(0); // never charged to the verification-failure budget
+    expect(ctrl.unmeasuredDwells).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.maxUnverifiedDwells);
   });
 });
 

@@ -3,6 +3,7 @@ import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { useDashboardStore } from './store';
 import { extractIbiWindow, extractH10IbiWindow, type IbiWindow } from '../metrics/windowing';
 import { metricsBuffers, snapshotFromResult, type MetricsSnapshot } from './metricsBuffer';
+import { coherenceEngine } from '../engine/coherenceEngine';
 
 const COMPUTE_INTERVAL_MS = 1000;
 // The firmware coherence pipeline uses a 64-second window; widen the
@@ -114,6 +115,16 @@ class MetricsRunner extends EventTarget {
     const result = ev.data;
     if (!result || result.type !== 'result') return;
     const snapshot = snapshotFromResult(result);
+    // Merge the main-thread Coherence Engine's ACC-respiration + Mode B verification state (the
+    // worker can't see the engine). This populates both the live buffer and the recorder's
+    // metricsUpdated event, so a "can't find baseline" session is analyzable after the fact.
+    if (coherenceEngine.running) {
+      const st = coherenceEngine.getStatus();
+      snapshot.accMeasuredBpm = st.accMeasuredBpm;
+      snapshot.accRespConfidence = st.accRespConfidence;
+      snapshot.modeBVerifiedRatio = st.modeBVerifiedRatio;
+      snapshot.modeBState = st.modeBState;
+    }
     const timestamp = Date.now();
     metricsBuffers.live.push(timestamp, snapshot);
     this.dispatchEvent(

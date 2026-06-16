@@ -20,6 +20,7 @@ export interface RecordingMeta {
     sqi: boolean;
     filtered: boolean;
     polar: boolean;
+    acc: boolean; // H10 accelerometer (Mode B respiration channel) — only present alongside polar
     metrics: boolean;
   };
 }
@@ -95,6 +96,15 @@ export interface MetricsRecord {
   sqi_avg: number | null;
 }
 
+/** One PMD accelerometer notification from the H10 (raw device counts). `timestamp` is the NEWEST
+ * sample's wall-clock ms (PolarAccEvent.lastSampleMs); per-sample times walk back by 1000/sampleRateHz.
+ * Self-describing, so it round-trips on replay with no clock regeneration. */
+export interface AccPacketRecord {
+  timestamp: number;
+  sampleRateHz: number;
+  samples: Array<{ x: number; y: number; z: number }>;
+}
+
 export interface FilteredRecord {
   timestamp: number;
   sample: DiagnosticSample;
@@ -111,6 +121,7 @@ export interface RecordingChunk {
   battery?: BatteryRecord[];
   filtered?: FilteredRecord[];
   polarBeats?: PolarBeatRecordTimed[];
+  accPackets?: AccPacketRecord[];
   metrics?: MetricsRecord[];
   annotations?: Annotation[];
   configEvents?: ConfigChangeEntry[];
@@ -178,6 +189,7 @@ export type ReplayEventKind =
   | 'battery'
   | 'filtered'
   | 'polarBeat'
+  | 'acc'
   | 'metric'
   | 'annotation'
   | 'config';
@@ -197,6 +209,7 @@ export interface LoadedSession {
   battery: BatteryRecord[];
   filtered: FilteredRecord[];
   polarBeats: PolarBeatRecordTimed[];
+  accPackets: AccPacketRecord[];
   metrics: MetricsRecord[];
   annotations: Annotation[];
   configEvents: ConfigChangeEntry[];

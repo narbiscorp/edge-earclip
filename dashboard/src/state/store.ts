@@ -18,6 +18,7 @@ import {
   type PolarDisconnectedDetail,
   type PolarErrorDetail,
 } from '../ble/polarH10';
+import { stampAccPacket } from './accClock';
 import {
   edgeDevice,
   type EdgeStatus,
@@ -314,11 +315,12 @@ const replayBuffers = makeBuffers();
 export const accMagBuffer = new StreamBuffer<number>(3600); // ~72 s at 50 Hz
 export const ACC_STREAM_HZ = 50;
 
-/* ACC start is deferred/debounced (the H10 link is fragile right after connect), and samples are
- * stamped on a global monotonic clock (the H10 batches ~5 s/notification — see the accReceived
- * handler). Module-level so they persist across notifications and reconnects. */
+/* ACC start is deferred/debounced (the H10 link is fragile right after connect). `accLastTs` is the
+ * last emitted ACC sample timestamp — the monotonic seam guard for stampAccPacket() (the H10 batches
+ * ~5 s/notification — see the accReceived handler). Module-level so they persist across notifications
+ * and reconnects; reset to 0 on a real disconnect so the next stream re-anchors freely. */
 let accStartTimer: ReturnType<typeof setTimeout> | null = null;
-let accSampleClockMs = 0;
+let accLastTs = 0;
 
 // Session accumulator — module-level mutable arrays avoid GC pressure from
 // spread-cloning on every beat. Consumers call the getters; the modal reads
@@ -922,21 +924,18 @@ polarH10.addEventListener('accReceived', (e) => {
   const n = acc.samples.length;
   if (n === 0) return;
   const stepMs = 1000 / (acc.sampleRateHz || ACC_STREAM_HZ);
-  // The H10 batches ~5 s of ACC per notification. Stamp samples on a GLOBAL monotonic, evenly
-  // spaced clock instead of per-frame device/arrival times — otherwise consecutive frames overlap
-  // in time and the line chart draws backwards (the sawtooth). Re-anchor if it drifts > 2 s.
-  const now = Date.now();
-  if (accSampleClockMs === 0 || Math.abs(accSampleClockMs + (n - 1) * stepMs - now) > 2000) {
-    accSampleClockMs = now - (n - 1) * stepMs;
-  }
-  const lastMs = accSampleClockMs + (n - 1) * stepMs;
+  // Stamp on the H10's device-clock-derived lastSampleMs (jitter-free, wall-anchored, monotonic
+  // across frames), walking back stepMs/sample, with a strict monotonic seam guard. The old
+  // synthetic free-running clock re-anchored with a hard ±jump on >2 s drift and could step
+  // BACKWARD on bursty BLE delivery — that was the breathing-wave "doubling-back" time skew.
+  const { firstMs, lastMs } = stampAccPacket(accLastTs, acc.lastSampleMs, n, stepMs);
   if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, lastMs / 1000);
   for (let i = 0; i < n; i++) {
     const s = acc.samples[i];
     const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
-    accMagBuffer.push(accSampleClockMs + i * stepMs, mag);
+    accMagBuffer.push(firstMs + i * stepMs, mag);
   }
-  accSampleClockMs += n * stepMs;
+  accLastTs = lastMs;
 });
 
 // Surface ACC stream diagnostics (service found, device accept/reject, first frame) to the
@@ -1333,7 +1332,7 @@ polarH10.addEventListener('disconnected', (e) => {
    * so a brief drop doesn't churn the glasses' central. */
   if (polarH10.status === 'disconnected') {
     h10DisplayGate.reset(); // don't carry the dRR history across a strap swap
-    accSampleClockMs = 0; // re-anchor the ACC clock on the next stream
+    accLastTs = 0; // re-anchor the ACC clock on the next stream
     if (accStartTimer) {
       clearTimeout(accStartTimer);
       accStartTimer = null;

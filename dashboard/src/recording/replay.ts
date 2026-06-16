@@ -8,6 +8,7 @@ import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import { snapshotFromResult } from '../state/metricsBuffer';
 import { walkPolarBeatClock } from '../ble/polarH10';
 import type {
+  AccPacketRecord,
   Annotation,
   BatteryRecord,
   BeatRecord,
@@ -70,6 +71,7 @@ function loadedFromEvents(
   const battery: BatteryRecord[] = [];
   const filtered: FilteredRecord[] = [];
   const polarBeats: PolarBeatRecordTimed[] = [];
+  const accPackets: AccPacketRecord[] = [];
   const metrics: MetricsRecord[] = [];
   const annotations: Annotation[] = [];
   const configEvents: ConfigChangeEntry[] = [];
@@ -97,6 +99,9 @@ function loadedFromEvents(
         break;
       /* beatTimestamps regeneration for old bundles happens in a second
        * pass below, after all polarBeats are gathered and time-sorted. */
+      case 'acc':
+        accPackets.push(e.payload as AccPacketRecord);
+        break;
       case 'metric':
         metrics.push(e.payload as MetricsRecord);
         break;
@@ -133,6 +138,7 @@ function loadedFromEvents(
     battery,
     filtered,
     polarBeats,
+    accPackets,
     metrics,
     annotations,
     configEvents,

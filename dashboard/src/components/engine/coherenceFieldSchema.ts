@@ -189,7 +189,7 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   epsilonPctOfA: 'Hysteresis: how much higher one rate amplitude must be (as a fraction of A) to count as better, so noise does not flip the bracket. 5%.',
   searchLoBPM: 'Low end of the breathing-rate range Mode B searches (4.0 br/min). Narrow the range if you know roughly where your resonance is.',
   searchHiBPM: 'High end of the search range (7.5 br/min). Most adults resonate around 5.5-6 br/min.',
-  respVerifyToleranceBPM: 'How close the accelerometer breathing rate must be to the paced rate for a dwell to count as followed (+/-0.5 BPM). RAISE toward 1.0 if good dwells keep being rejected; lower for stricter verification.',
+  respVerifyToleranceBPM: 'How close the accelerometer breathing rate must be to the paced rate for a dwell to count as followed (+/-0.8 BPM). The 45 s respiration window can only resolve rate to ~0.7-1.3 br/min, so values much below 0.8 reject real breathing. RAISE toward 1.0 if good dwells keep being rejected; lower only if sway is being accepted.',
   confirmProbeBPM: 'On a warm start from a saved resonance frequency, the half-range re-checked around it before re-locking.',
   maxUnverifiedDwells: 'Mode B aborts the search after this many dwells in a row it cannot verify against the accelerometer (you are moving or not following). RAISE if it gives up too readily; the hold-still hint appears as this climbs.',
   ditherAmpBPM: 'While holding lock, the pace is nudged by this much (sub-perceptual, 0.1 BPM) to keep tracking a drifting resonance.',
