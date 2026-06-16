@@ -519,6 +519,12 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
     onLens: (state) => {
       if (edgeDevice.isConnected) void edgeDevice.driveLens(state);
     },
+    // Phase-lock the firmware breathe to our breath clock — fired at start, each cycle boundary,
+    // and on resync(). New glasses firmware (>= 4.15.5) acts on it; older firmware ignores the
+    // unknown opcode, so the driveLens path above still drives those glasses (no regression).
+    onSync: (cycleMs, inhalePct) => {
+      if (edgeDevice.isConnected) void edgeDevice.syncBreath(cycleMs, inhalePct);
+    },
   });
   if (mode === 'modeB') scheduleAccStart('Mode B active');
 }
@@ -1507,6 +1513,16 @@ edgeDevice.addEventListener('connected', (e) => {
    * trigger we'd run from the polar 'connected' listener — covers the
    * connect-order H10-first-then-glasses. */
   autoSelectHrSourceIfApplicable('edge connected with h10 ready');
+  /* If the app-side engine is already running (it started before the glasses
+   * connected, or this is a reconnect), re-establish the lens: clear the
+   * coalesced driveLens state so the full breathe program re-sends, then push
+   * an immediate breath sync so the firmware phase-locks to our clock without
+   * waiting for the next cycle boundary. The auto-start below skips while the
+   * engine owns the lens, so these don't fight. */
+  if (coherenceEngine.running) {
+    edgeDevice.resetLensState();
+    coherenceEngine.resync();
+  }
   /* Schedule the default-program auto-start. Fires after a short delay
    * so the user has time to pick something else, and so the post-connect
    * burst of GATT writes (coh params, raw relay, hr source) doesn't

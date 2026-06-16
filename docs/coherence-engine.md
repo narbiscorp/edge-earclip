@@ -171,7 +171,7 @@ commands — writing an opcode only when its value changed:
 
 | Lens style | Firmware command | Depth source |
 |---|---|---|
-| **breathingGuide** | `0xB0` BREATHE + `0xB1` rate + `0xA2` brightness | engine coherence → `depthPct` |
+| **breathingGuide** | `0xB0` BREATHE + `0xB1` rate + `0xA2` brightness + `0xBA` phase sync | engine coherence → `depthPct` |
 | **coherenceLens** | `0xA5` static-duty setpoint (slow, ~1 Hz) | engine coherence |
 | **breatheStrobe** | breathe + `0xAB`/`0xAC` strobe *(strobe overlay pending a firmware opcode)* |
 
@@ -181,9 +181,14 @@ occasional parameter writes — **never per-tick PWM** (which is choppy over BLE
 difficulty curve), so the glasses never compute coherence in Mode A/B.
 
 **Cue sync.** The on-screen breathing orb + audio chime read the engine's breath-cycle position
-directly (single clock authority), so the screen rate matches the lens. Exact *absolute* phase-lock
-to the physical lens needs the firmware to emit its breath phase (a planned firmware addition); today
-the cue is rate-synced and internally consistent.
+directly (single clock authority), so the screen rate matches the lens. The glasses are phase-locked
+to that same clock: at each cycle boundary — and on Mode A/B start / glasses-connect — the engine
+sends the firmware a **`0xBA` BREATHE_SYNC** (`[cycle_ms u16 LE][inhale_pct u8]`), which restarts the
+firmware's breathe cosine at the on-screen inhale boundary and renders at the *exact* cycle length, so
+orb, chime, and lens share one clock. Re-anchoring only at the boundary (where the waveform is ~0)
+plus a firmware lens slew-rate limiter (~250 ms fade) means resyncs never snap, even as the pacer
+drifts. Glasses on firmware **< 4.15.5** ignore `0xBA` and stay rate-synced only (the prior behavior —
+no regression).
 
 See [`bluetooth-protocol.md` §4.7](./bluetooth-protocol.md) for the opcode-level detail.
 

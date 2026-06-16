@@ -83,6 +83,10 @@ export interface StartOptions {
    * firmware's breathe/strobe/static commands — the firmware renders the smooth cycle, so we
    * never stream per-tick PWM. */
   onLens: (state: LensState) => void;
+  /** Sink for breath-cycle phase sync. Fired at start, at each cycle boundary (= inhale start),
+   * and on resync(), with the exact cycle length (ms) + inhale %. The host (edgeDevice.syncBreath)
+   * forwards it as the firmware BREATHE_SYNC opcode so the glasses lens phase-locks to this clock. */
+  onSync?: (cycleMs: number, inhalePct: number) => void;
 }
 
 const LENS_TICK_MS = 83; // ~12 Hz lens-duty stream (smooth breathing, BLE-friendly)
@@ -97,6 +101,7 @@ export class CoherenceEngine extends EventTarget {
   private strobeHz = 10;
   private strobeDutyPct = 50;
   private onLens: ((state: LensState) => void) | null = null;
+  private onSync: ((cycleMs: number, inhalePct: number) => void) | null = null;
 
   private ingest = new IBIIngest(this.t);
   private ls = new LombScargleCore(this.t);
@@ -146,6 +151,7 @@ export class CoherenceEngine extends EventTarget {
     this.strobeHz = opts.strobeHz ?? 10;
     this.strobeDutyPct = opts.strobeDutyPct ?? 50;
     this.onLens = opts.onLens;
+    this.onSync = opts.onSync ?? null;
     this.rebuild();
 
     if (this.mode === 'modeB' && allowsModeB(this.source)) {
@@ -167,6 +173,7 @@ export class CoherenceEngine extends EventTarget {
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
     this.emitLens(); // push the initial lens state (firmware renders the cycle from here on)
+    this.emitSync(); // anchor the glasses breathe phase to this cycle's start
     this.emitStatus();
   }
 
@@ -181,6 +188,7 @@ export class CoherenceEngine extends EventTarget {
     }
     this.modeB = null;
     this.onLens = null;
+    this.onSync = null;
     this.ingest.reset();
     this.resp.reset();
     this.emitStatus();
@@ -317,6 +325,7 @@ export class CoherenceEngine extends EventTarget {
       this.onBreathBoundary(now / 1000.0);
       this.cycleStartMs = now;
       this.emitLens(); // the latched rate may have changed at the boundary
+      this.emitSync(); // re-anchor the glasses to this cycle (exact length may have changed)
     }
   }
 
@@ -343,6 +352,22 @@ export class CoherenceEngine extends EventTarget {
       strobeHz: this.strobeHz,
       strobeDutyPct: this.strobeDutyPct,
     });
+  }
+
+  /** Push the current breath cycle (exact length ms + inhale %) to the host so it can phase-lock
+   * the glasses lens to this clock. Fired at start and at each cycle boundary (= inhale start), so
+   * a re-anchor always lands where the waveform value is ~0 (smooth). */
+  private emitSync(): void {
+    this.onSync?.(Math.round(this.cycleMs), Math.round(this.t.breatheInhalePct));
+  }
+
+  /** Re-push lens state + breath sync immediately — e.g. when the glasses (re)connect while the
+   * engine is already running, so they don't wait up to a full cycle to catch up. The next cycle
+   * boundary then re-anchors precisely. No-op when not running. */
+  resync(): void {
+    if (!this.running) return;
+    this.emitLens();
+    this.emitSync();
   }
 
   /** Current breath-cycle position 0..1, for the on-screen cue + chime to lock to the engine
