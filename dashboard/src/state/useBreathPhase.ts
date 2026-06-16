@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from './store';
+import { coherenceEngine } from '../engine/coherenceEngine';
 
 /** Returns the current paced-breath phase for the Live header cue, the breathing-cue graph,
  * and the inhale/exhale chime. The 40/60 inhale:exhale split mirrors the firmware's breathing
@@ -43,6 +44,16 @@ export function useBreathPhase(): BreathState {
      * staying cheap. Advance by ACTUAL elapsed time so there's no drift. */
     const id = window.setInterval(() => {
       const now = Date.now();
+      // When the engine is running it is the single breath-clock authority (it also commands the
+      // firmware rate), so lock the cue + chime to its cycle position. Otherwise self-animate from
+      // the firmware/standalone pacer rate.
+      const enginePos = coherenceEngine.breathCyclePos();
+      if (enginePos != null) {
+        phaseRef.current = enginePos;
+        lastTsRef.current = now;
+        setState(phaseToState(enginePos, coherenceEngine.breathBpm));
+        return;
+      }
       const cycleMs = (60 / bpmRef.current) * 1000;
       const dt = now - lastTsRef.current;
       lastTsRef.current = now;

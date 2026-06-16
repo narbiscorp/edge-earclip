@@ -13,20 +13,31 @@
  *   • per breathing-cycle boundary → onBreathBoundary()   (pacer.latch and/or Mode B controller)
  *   • ~lens rate (default ~12 Hz)  → emit 0–100 duty via onDuty
  */
-import { type CoherenceTunables, DEFAULT_TUNABLES } from './tunables';
+import { type CoherenceTunables, DEFAULT_TUNABLES, gammaTable } from './tunables';
 import { IBIIngest } from './ibiIngest';
 import { LombScargleCore } from './lombScargleCore';
 import { FollowPacer } from './followPacer';
 import { FastAmplitudeTracker } from './fastAmplitude';
 import { RespirationFromACC } from './respirationFromAcc';
 import { ResonanceController, type ModeBState, type SearchProgress } from './resonanceController';
-import { Program2Lens, breatheFraction, breatheDuty } from './lensPrograms';
 
 export type { EngineMode } from './tunables';
 
 export type HRVSource = 'polarH10' | 'edgeRelay' | 'appleWatch';
 export type ActiveEngineMode = 'modeA' | 'modeB';
-export type LensStyle = 'breathe' | 'program2';
+export type LensStyle = 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
+
+/** Desired lens state the engine emits each update. The host (edgeDevice.driveLens) coalesces it
+ * into the firmware's breathe/strobe/static commands so the firmware renders the smooth cycle and
+ * we never stream per-tick PWM. */
+export interface LensState {
+  style: LensStyle;
+  bpm: number; // integer breaths/min (firmware 0xB1 is integer)
+  depthPct: number; // 0..100 peak lens darkness (firmware brightness 0xA2 / static 0xA5)
+  inhalePct: number;
+  strobeHz: number;
+  strobeDutyPct: number;
+}
 
 /** Mode B needs validated RR + an independent respiration channel (H10 ACC). */
 function allowsModeB(source: HRVSource): boolean {
@@ -61,13 +72,17 @@ export interface StartOptions {
   tunables: CoherenceTunables;
   /** 0..100 lens brightness ceiling. */
   brightness?: number;
-  /** 0..3 difficulty (Program-2 lens only). */
+  /** 0..3 difficulty (gamma curve on coherence → lens depth). */
   difficulty?: number;
   lensStyle?: LensStyle;
+  strobeHz?: number;
+  strobeDutyPct?: number;
   /** Persisted per-user resonance frequency for a warm Mode B start. */
   priorRF?: number | null;
-  /** Sink for the 0–100 lens duty stream (host wires this to edgeDevice 0xA5). */
-  onDuty: (duty: number) => void;
+  /** Sink for the desired lens state. The host (edgeDevice.driveLens) coalesces it into the
+   * firmware's breathe/strobe/static commands — the firmware renders the smooth cycle, so we
+   * never stream per-tick PWM. */
+  onLens: (state: LensState) => void;
 }
 
 const LENS_TICK_MS = 83; // ~12 Hz lens-duty stream (smooth breathing, BLE-friendly)
@@ -78,13 +93,14 @@ export class CoherenceEngine extends EventTarget {
   private mode: ActiveEngineMode = 'modeA';
   private brightness = 100;
   private difficulty = 1;
-  private lensStyle: LensStyle = 'breathe';
-  private onDuty: ((duty: number) => void) | null = null;
+  private lensStyle: LensStyle = 'breathingGuide';
+  private strobeHz = 10;
+  private strobeDutyPct = 50;
+  private onLens: ((state: LensState) => void) | null = null;
 
   private ingest = new IBIIngest(this.t);
   private ls = new LombScargleCore(this.t);
   private pacer = new FollowPacer(this.t);
-  private program2 = new Program2Lens(this.t);
   private amplitude = new FastAmplitudeTracker(this.t);
   private resp = new RespirationFromACC(this.t);
   private modeB: ResonanceController | null = null;
@@ -114,7 +130,6 @@ export class CoherenceEngine extends EventTarget {
     this.ingest = new IBIIngest(this.t);
     this.ls = new LombScargleCore(this.t);
     this.pacer = new FollowPacer(this.t);
-    this.program2 = new Program2Lens(this.t);
     this.amplitude = new FastAmplitudeTracker(this.t);
     this.resp = new RespirationFromACC(this.t);
   }
@@ -127,8 +142,10 @@ export class CoherenceEngine extends EventTarget {
     this.mode = opts.mode;
     this.brightness = opts.brightness ?? 100;
     this.difficulty = opts.difficulty ?? 1;
-    this.lensStyle = opts.lensStyle ?? 'breathe';
-    this.onDuty = opts.onDuty;
+    this.lensStyle = opts.lensStyle ?? 'breathingGuide';
+    this.strobeHz = opts.strobeHz ?? 10;
+    this.strobeDutyPct = opts.strobeDutyPct ?? 50;
+    this.onLens = opts.onLens;
     this.rebuild();
 
     if (this.mode === 'modeB' && allowsModeB(this.source)) {
@@ -149,6 +166,7 @@ export class CoherenceEngine extends EventTarget {
 
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
+    this.emitLens(); // push the initial lens state (firmware renders the cycle from here on)
     this.emitStatus();
   }
 
@@ -162,7 +180,7 @@ export class CoherenceEngine extends EventTarget {
       this.lensTimer = null;
     }
     this.modeB = null;
-    this.onDuty = null;
+    this.onLens = null;
     this.ingest.reset();
     this.resp.reset();
     this.emitStatus();
@@ -260,6 +278,7 @@ export class CoherenceEngine extends EventTarget {
       this._cr = r.cr;
       this._respHz = r.respPeakHz;
     }
+    this.emitLens();
     this.emitStatus();
   }
 
@@ -289,23 +308,55 @@ export class CoherenceEngine extends EventTarget {
     this.emitStatus();
   }
 
-  /** ~12 Hz lens-duty stream + breath-boundary detection. */
+  /** Breath-clock tick: detect cycle boundaries (pacer latch / Mode B controller). The lens
+   * waveform is rendered by the firmware now — we only push high-level params (emitLens), so
+   * there is no per-tick PWM stream. */
   private lensTick(): void {
     const now = nowMs();
-    let elapsed = now - this.cycleStartMs;
-    if (elapsed >= this.cycleMs) {
+    if (now - this.cycleStartMs >= this.cycleMs) {
       this.onBreathBoundary(now / 1000.0);
       this.cycleStartMs = now;
-      elapsed = 0;
+      this.emitLens(); // the latched rate may have changed at the boundary
     }
-    const frac = breatheFraction(Math.floor(elapsed), Math.floor(this.cycleMs), this.t);
-    const duty =
-      this.lensStyle === 'program2'
-        ? this.program2.duty(this._coherence, this.brightness, this.difficulty)
-        : breatheDuty(frac, this._coherence, this.brightness, this.t);
-    const out = Math.round(Math.max(0, Math.min(100, duty)));
-    this._lastDuty = out;
-    this.onDuty?.(out);
+  }
+
+  /** Peak lens darkness from the engine's (app-side) coherence + difficulty gamma. At difficulty
+   * 0 (easy) this is linear: depth = brightness·(100−coh)/100 → 0%→full dark, 50%→half, 100%→clear. */
+  private depthFromCoherence(): number {
+    const s = Math.max(0, Math.min(100, this._coherence));
+    const table = gammaTable(this.t);
+    const g = table[Math.max(0, Math.min(table.length - 1, this.difficulty))];
+    const clearPct = Math.pow(s / 100, g) * 100;
+    return Math.max(0, Math.min(100, (this.brightness * (100 - clearPct)) / 100));
+  }
+
+  /** Push the desired lens state to the host (coalesced into firmware commands downstream).
+   * Called on start, ~1 Hz, and at each breath boundary — NOT per render tick. */
+  private emitLens(): void {
+    const depthPct = Math.round(this.depthFromCoherence());
+    this._lastDuty = depthPct;
+    this.onLens?.({
+      style: this.lensStyle,
+      bpm: Math.round(this.pacer.currentQuintet / 5.0),
+      depthPct,
+      inhalePct: Math.round(this.t.breatheInhalePct),
+      strobeHz: this.strobeHz,
+      strobeDutyPct: this.strobeDutyPct,
+    });
+  }
+
+  /** Current breath-cycle position 0..1, for the on-screen cue + chime to lock to the engine
+   * clock (the same clock that commands the firmware rate). null when not running. */
+  breathCyclePos(): number | null {
+    if (!this.running || this.cycleMs <= 0) return null;
+    let p = (nowMs() - this.cycleStartMs) / this.cycleMs;
+    p -= Math.floor(p);
+    return p;
+  }
+
+  /** Engine pacer rate (BPM) for the on-screen cue. */
+  get breathBpm(): number {
+    return this.pacer.currentQuintet / 5.0;
   }
 
   private emitStatus(): void {

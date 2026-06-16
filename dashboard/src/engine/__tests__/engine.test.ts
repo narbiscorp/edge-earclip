@@ -10,6 +10,7 @@ import { AdaptiveDRRGate } from '../adaptiveDrrGate';
 import { LombScargleCore } from '../lombScargleCore';
 import { RespirationFromACC } from '../respirationFromAcc';
 import { ResonanceController } from '../resonanceController';
+import { FollowPacer } from '../followPacer';
 
 /** Beats whose RR is sinusoidally modulated at `freqHz` (a clean RSA tone). */
 function modulatedBeats(meanRrMs: number, ampMs: number, freqHz: number, durationS: number): IBIEntry[] {
@@ -119,6 +120,26 @@ describe('RespirationFromACC — independent respiration channel', () => {
     expect(est!.bpm).toBeLessThan(6.5);
     expect(est!.confidence).toBeGreaterThan(0.3);
   });
+
+  it('locks onto the breathing peak, not low-frequency body sway (Mode B baseline fix)', () => {
+    const resp = new RespirationFromACC(DEFAULT_TUNABLES);
+    const fs = DEFAULT_TUNABLES.accSampleHz;
+    // Broadband postural sway below the breathing rate (many small low-freq components, like real
+    // drift) under a clean 6 br/min (0.1 Hz) tone. Total sway energy exceeds the breathing tone but
+    // is spread thin — the old max-power picker latched onto it (~3.9 br/min); prominence returns ~6.
+    const swayFreqs = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.075];
+    for (let i = 0; i < fs * 45; i++) {
+      const tS = i / fs;
+      let sway = 0;
+      for (const sf of swayFreqs) sway += 22 * Math.sin(2 * Math.PI * sf * tS);
+      resp.push(1000 + sway + 34 * Math.sin(2 * Math.PI * 0.1 * tS), 0, 0, tS);
+    }
+    const est = resp.estimate();
+    expect(est).not.toBeNull();
+    expect(est!.bpm).toBeGreaterThan(5.0);
+    expect(est!.bpm).toBeLessThan(7.0);
+    expect(est!.confidence).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.respConfidenceMin);
+  });
 });
 
 describe('ResonanceController — Mode B', () => {
@@ -160,5 +181,26 @@ describe('ResonanceController — Mode B', () => {
     }
     expect(ctrl.searchAborted).toBe(true);
     expect(ctrl.unverifiedDwells).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.maxUnverifiedDwells);
+  });
+});
+
+describe('FollowPacer — two-speed slew', () => {
+  it('snaps to the target after a sustained large error instead of crawling', () => {
+    const pacer = new FollowPacer(DEFAULT_TUNABLES);
+    pacer.snapToBPM(6); // current = 6 BPM (quintet 30)
+    pacer.setTargetBPM(9); // 3 BPM away — ≥ jump threshold
+    pacer.latch(); // breath 1 — still gliding (sustain not yet met)
+    expect(pacer.currentQuintet).toBeLessThan(45);
+    pacer.setTargetBPM(9);
+    pacer.latch(); // breath 2 — sustain met → snap straight to 9 BPM
+    expect(pacer.currentQuintet).toBe(45);
+  });
+
+  it('does NOT snap on a single-breath spike (glides by the slew limit only)', () => {
+    const pacer = new FollowPacer(DEFAULT_TUNABLES);
+    pacer.snapToBPM(6); // quintet 30
+    pacer.setTargetBPM(9); // a one-breath jump-sized error
+    pacer.latch();
+    expect(pacer.currentQuintet).toBe(30 + DEFAULT_TUNABLES.pacerSlewQuintet);
   });
 });

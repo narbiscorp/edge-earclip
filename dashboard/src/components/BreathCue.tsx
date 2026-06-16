@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDashboardStore } from '../state/store';
+import { coherenceEngine } from '../engine/coherenceEngine';
 
 /*
  * BreathCue — an animated inhale/exhale pacing cue (replaces the lens-tint bar).
@@ -49,11 +50,20 @@ export default function BreathCue({ hint }: { hint?: string }) {
     let lastTs = Date.now();
     const tick = () => {
       const now = Date.now();
-      const cycleMs = (60 / bpmRef.current) * 1000;
-      phase += (now - lastTs) / cycleMs;
-      phase -= Math.floor(phase);
-      lastTs = now;
-      const p = phase;
+      // Lock to the engine's breath clock when it's running (single authority); else self-animate.
+      const enginePos = coherenceEngine.breathCyclePos();
+      let p: number;
+      if (enginePos != null) {
+        p = enginePos;
+        phase = enginePos;
+        lastTs = now;
+      } else {
+        const cycleMs = (60 / bpmRef.current) * 1000;
+        phase += (now - lastTs) / cycleMs;
+        phase -= Math.floor(phase);
+        lastTs = now;
+        p = phase;
+      }
       const x = PAD + p * (W - 2 * PAD);
       const y = H - PAD - breathFrac(p) * (H - 2 * PAD);
       orbRef.current?.setAttribute('cx', x.toFixed(1));

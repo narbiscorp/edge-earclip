@@ -248,6 +248,11 @@ export class EdgeDevice extends EventTarget {
    * progress" otherwise). Reset on disconnect so the next session re-sends. */
   private lastDutySent = -1;
   private dutyWriteInFlight = false;
+  /* Coalesced lens state for driveLens — only write a firmware opcode when its value actually
+   * changed (the engine pushes its full desired state ~1 Hz). lensDriveInFlight drops an overlapping
+   * push (the next one catches up). Both reset on disconnect / engine restart. */
+  private lastLens: { style?: string; bpm?: number; depthPct?: number; inhalePct?: number } = {};
+  private lensDriveInFlight = false;
   /* Serializes ALL writes to the CTRL characteristic. Web Bluetooth rejects a
    * second GATT write while one is in flight ("operation already in progress");
    * the H10→glasses injectIbi path fires several writes per notification, which
@@ -529,6 +534,52 @@ export class EdgeDevice extends EventTarget {
     }
   }
 
+  /** Drive the lens by COMMANDING the firmware's own breathe / static program — the firmware
+   * renders the smooth 100 Hz cosine locally, so we never stream per-tick PWM. The engine pushes
+   * its full desired state ~1 Hz + at each breath boundary; we coalesce, writing an opcode only
+   * when its value changed. Depth comes from the engine's app-side coherence via 0xA2 (breathe
+   * amplitude) / 0xA5 (static tint). Silently no-ops if not connected or a push is still in flight. */
+  async driveLens(s: {
+    style: 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
+    bpm: number;
+    depthPct: number;
+    inhalePct: number;
+  }): Promise<void> {
+    if (!this.chCtrl || this.lensDriveInFlight) return;
+    this.lensDriveInFlight = true;
+    try {
+      if (s.style !== this.lastLens.style) {
+        // Entering a new style → set the firmware mode once, then force a full param re-send.
+        if (s.style !== 'coherenceLens') {
+          await this.setStandaloneBreathe(); // 0xB0 plain BREATHE; firmware renders the cosine fade
+        }
+        this.lastLens = { style: s.style };
+      }
+      if (s.style === 'coherenceLens') {
+        // Steady tint — a slow 0xA5 setpoint (refreshed ~1 Hz as coherence drifts), NOT a stream.
+        if (s.depthPct !== this.lastLens.depthPct) await this.setStandaloneStatic(s.depthPct);
+      } else {
+        // breathingGuide / breatheStrobe → plain BREATHE. (breatheStrobe's strobe overlay needs a
+        // firmware standalone breathe+strobe (LED_MODE 3) opcode the dashboard doesn't expose yet —
+        // follow-up; for now it renders as a plain breathe cue.)
+        if (s.bpm !== this.lastLens.bpm) await this.setBreathRateBpm(s.bpm); // 0xB1 rate
+        if (s.inhalePct !== this.lastLens.inhalePct) await this.setBreathInhalePct(s.inhalePct); // 0xB2
+        if (s.depthPct !== this.lastLens.depthPct) await this.setLensLimitPct(s.depthPct); // 0xA2 amplitude
+      }
+      this.lastLens = { style: s.style, bpm: s.bpm, depthPct: s.depthPct, inhalePct: s.inhalePct };
+    } catch (err) {
+      this.emitError(err, 'driveLens');
+    } finally {
+      this.lensDriveInFlight = false;
+    }
+  }
+
+  /** Forget the coalesced lens state so the next driveLens re-sends everything (call when the
+   * engine starts/stops, since the firmware program gets changed out from under us). */
+  resetLensState(): void {
+    this.lastLens = {};
+  }
+
   private async openSession(): Promise<void> {
     if (!this.device?.gatt) throw new Error('no GATT server');
     this.server = await this.device.gatt.connect();
@@ -723,6 +774,8 @@ export class EdgeDevice extends EventTarget {
     this.lastF9IbiTs = 0;
     this.lastDutySent = -1;
     this.dutyWriteInFlight = false;
+    this.lastLens = {};
+    this.lensDriveInFlight = false;
     for (const h of this.listeners) {
       h.target.removeEventListener(h.type, h.listener);
     }

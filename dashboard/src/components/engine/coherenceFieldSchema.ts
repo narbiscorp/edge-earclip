@@ -90,7 +90,9 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'quintetMax', section: 'pacer', modes: ['modeA'], label: 'Pacer ceiling', min: 40, max: 70, step: 1, help: 'Quintet; 60 = 12.0 BPM.' }),
   f({ key: 'quintetDefault', section: 'pacer', modes: ['modeA'], label: 'Pacer start', min: 15, max: 60, step: 1, help: 'Quintet; 30 = 6.0 BPM.' }),
   f({ key: 'pacerAvgN', section: 'pacer', modes: ['modeA'], label: 'Readback averaging', min: 8, max: 30, step: 1, unit: 'samples' }),
-  f({ key: 'pacerSlewQuintet', section: 'pacer', modes: ['modeA'], label: 'Slew limit', min: 1, max: 3, step: 1, help: 'Quintet/cycle; 1 = ±0.2 BPM per breath.' }),
+  f({ key: 'pacerSlewQuintet', section: 'pacer', modes: ['modeA'], label: 'Slew limit', min: 1, max: 3, step: 1, help: 'Quintet/cycle; 1 = ±0.2 BPM per breath (the gentle glide).' }),
+  f({ key: 'pacerJumpThresholdBPM', section: 'pacer', modes: ['modeA'], label: 'Jump threshold', min: 0.4, max: 3, step: 0.1, unit: 'BPM', help: 'Snap (not glide) toward the detected rate when it is at least this far from the current pace.' }),
+  f({ key: 'pacerJumpSustainBreaths', section: 'pacer', modes: ['modeA'], label: 'Jump sustain', min: 1, max: 6, step: 1, unit: 'breaths', help: 'Require the gap to persist this many breaths before snapping — guards against a transient false reading.' }),
 
   // --- Mode B fast amplitude ---
   f({ key: 'ampWindowBreaths', section: 'fastAmp', modes: ['modeB'], label: 'Amplitude window', min: 2.0, max: 3.0, step: 0.1, unit: 'breaths' }),
@@ -123,6 +125,9 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'respBandHi', section: 'acc', modes: ['modeB'], label: 'Resp band high', min: 0.3, max: 0.6, step: 0.05, unit: 'Hz' }),
   f({ key: 'respWindowS', section: 'acc', modes: ['modeB'], label: 'Resp window', min: 30, max: 60, step: 5, unit: 's' }),
   f({ key: 'respConfidenceMin', section: 'acc', modes: ['modeB'], label: 'Min confidence', min: 0.3, max: 0.6, step: 0.05 }),
+  f({ key: 'respMinHz', section: 'acc', modes: ['modeB'], label: 'Sway floor', min: 0.05, max: 0.12, step: 0.005, unit: 'Hz', help: 'ACC peaks below this are de-weighted as postural sway. Raise if a low-freq wobble reads as breathing; lower for very slow breathers.' }),
+  f({ key: 'respNearPeakHz', section: 'acc', modes: ['modeB'], label: 'Peak window', min: 0.02, max: 0.08, step: 0.005, unit: 'Hz', help: '± band treated as the breathing peak (confidence numerator).' }),
+  f({ key: 'respHarmonicExcludeMult', section: 'acc', modes: ['modeB'], label: 'Harmonic cutoff', min: 1.3, max: 2.5, step: 0.1, unit: '×', help: 'Confidence ignores power above this × the peak, so breathing harmonics do not deflate it.' }),
 ];
 
 const FIELDS_BY_KEY: Record<string, CohNumericField> = (() => {

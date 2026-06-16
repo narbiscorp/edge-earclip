@@ -51,7 +51,9 @@ export interface CoherenceTunables {
   quintetMax: number; // 60 = 12.0 BPM
   quintetDefault: number; // 30 = 6.0 BPM
   pacerAvgN: number; // resonance-freq averaging window
-  pacerSlewQuintet: number; // slew limit: ±0.2 BPM per cycle boundary
+  pacerSlewQuintet: number; // gentle glide limit: ±0.2 BPM per cycle boundary
+  pacerJumpThresholdBPM: number; // two-speed: snap (not glide) when the target is ≥ this far away…
+  pacerJumpSustainBreaths: number; // …and has stayed that far for this many breaths (false-jump wall)
 
   // --- Fast amplitude tracker (Mode B objective) ---
   ampWindowBreaths: number; // peak-to-trough RR over last N breaths
@@ -97,6 +99,9 @@ export interface CoherenceTunables {
   respBandHi: number; // 0.50 Hz = 30 BPM
   respWindowS: number; // trailing window for the respiration estimate
   respConfidenceMin: number; // min spectral concentration to trust the estimate
+  respMinHz: number; // ACC peaks below this are de-weighted (rejects sub-breathing postural sway)
+  respNearPeakHz: number; // ± window treated as the breathing peak (confidence numerator + selection)
+  respHarmonicExcludeMult: number; // confidence denominator excludes power ≥ this × peak (drops harmonics)
 }
 
 export const DEFAULT_TUNABLES: CoherenceTunables = {
@@ -128,6 +133,8 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   quintetDefault: 30,
   pacerAvgN: 15,
   pacerSlewQuintet: 1,
+  pacerJumpThresholdBPM: 1.0,
+  pacerJumpSustainBreaths: 2,
   // Fast amplitude
   ampWindowBreaths: 2.5,
   // Mode B resonance controller
@@ -168,6 +175,9 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   respBandHi: 0.4, // 0.4 Hz = 24 br/min — excludes high-freq motion so the breathing peak is cleaner
   respWindowS: 45.0,
   respConfidenceMin: 0.3, // chest ACC breathing is subtle; 0.4 was too strict on real H10 data
+  respMinHz: 0.08, // 4.8 br/min — below this is usually postural sway; breathing is de-weighted gently, not cut
+  respNearPeakHz: 0.04, // ±0.04 Hz treated as "the peak"
+  respHarmonicExcludeMult: 1.6, // confidence denominator excludes ≥1.6× the peak (drops 2×/3× harmonics)
 };
 
 /** Recombine the four flattened gamma scalars into the difficulty table the lens uses. */

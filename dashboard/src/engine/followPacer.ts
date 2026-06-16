@@ -10,6 +10,7 @@ export class FollowPacer {
   private readonly t: CoherenceTunables;
   private ring: number[] = []; // mHz
   private _currentQuintet: number;
+  private bigErrBreaths = 0; // consecutive breaths the target has been a "jump" away (two-speed slew)
 
   constructor(t: CoherenceTunables) {
     this.t = t;
@@ -36,15 +37,29 @@ export class FollowPacer {
     return Math.min(this.t.quintetMax, Math.max(this.t.quintetMin, q));
   }
 
-  /** Call at each breathing-cycle boundary. Slew-limited ±0.2 BPM. Returns cycle ms. */
+  /** Call at each breathing-cycle boundary. Two-speed: SNAP to the target when it has been a
+   * jump away for several consecutive breaths (fast acquisition), otherwise GLIDE ±pacerSlewQuintet
+   * (gentle tracking). The sustain count is the wall against a transient false reading triggering a
+   * jump (on top of the pacerAvgN smoothing on the target). Returns cycle ms. */
   latch(): number {
     const target = this.targetQuintet();
     if (target > 0) {
       let prev = this._currentQuintet;
       if (prev === 0) prev = target;
-      const delta = Math.max(-this.t.pacerSlewQuintet, Math.min(this.t.pacerSlewQuintet, target - prev));
-      const nq = Math.min(this.t.quintetMax, Math.max(this.t.quintetMin, prev + delta));
-      this._currentQuintet = nq;
+      const errQuintet = target - prev;
+      const jumpQuintet = this.t.pacerJumpThresholdBPM * 5; // BPM → quintet
+      if (Math.abs(errQuintet) >= jumpQuintet) this.bigErrBreaths += 1;
+      else this.bigErrBreaths = 0;
+
+      let nq: number;
+      if (this.bigErrBreaths >= this.t.pacerJumpSustainBreaths) {
+        nq = target; // sustained large error → snap straight to it
+        this.bigErrBreaths = 0;
+      } else {
+        const delta = Math.max(-this.t.pacerSlewQuintet, Math.min(this.t.pacerSlewQuintet, errQuintet));
+        nq = prev + delta;
+      }
+      this._currentQuintet = Math.min(this.t.quintetMax, Math.max(this.t.quintetMin, nq));
     }
     return Math.floor(300_000 / this._currentQuintet); // 60000 / (quintet/5)
   }
@@ -61,5 +76,6 @@ export class FollowPacer {
     const q = Math.floor((mhz * 3 + 5) / 10);
     this._currentQuintet = Math.min(this.t.quintetMax, Math.max(this.t.quintetMin, q));
     this.ring = [mhz];
+    this.bigErrBreaths = 0;
   }
 }

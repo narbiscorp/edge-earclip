@@ -41,20 +41,51 @@ export class RespirationFromACC {
     const pg = periodogram(rs.v, this.t.accSampleHz);
     if (!pg) return null;
 
-    let peakIdx = -1;
-    let peakVal = -1.0;
+    // In-band power stats. band-mean is the prominence reference; firstBand/lastBand bound
+    // the in-band loops below.
     let bandSum = 0.0;
+    let bandCount = 0;
+    let firstBand = -1;
+    let lastBand = -1;
     for (let i = 0; i < pg.freqs.length; i++) {
       const f = pg.freqs[i];
       if (f >= this.t.respBandLo && f <= this.t.respBandHi) {
         bandSum += pg.psd[i];
-        if (pg.psd[i] > peakVal) {
-          peakVal = pg.psd[i];
-          peakIdx = i;
-        }
+        bandCount += 1;
+        if (firstBand < 0) firstBand = i;
+        lastBand = i;
       }
     }
-    if (peakIdx < 0 || bandSum <= 1e-12) return null;
+    if (firstBand < 0 || bandSum <= 1e-12) return null;
+    const bandMean = bandSum / bandCount;
+
+    // Pick the breathing peak by PROMINENCE, not raw power: score = (bin height / band mean)
+    // × a low-frequency weight. A broad postural-sway hump (height ≈ band mean) and peaks
+    // below respMinHz lose to a sharp breathing peak even when the sway carries more total
+    // power — the bug that made the verifier latch onto ~0.065 Hz body sway (≈3.9 br/min).
+    const lowW = (f: number): number =>
+      f >= this.t.respMinHz
+        ? 1.0
+        : Math.max(0, (f - this.t.respBandLo) / Math.max(1e-9, this.t.respMinHz - this.t.respBandLo));
+    let peakIdx = -1;
+    let bestScore = -1.0;
+    for (let i = firstBand; i <= lastBand; i++) {
+      if (i > firstBand && pg.psd[i] < pg.psd[i - 1]) continue; // local maxima only
+      if (i < lastBand && pg.psd[i] < pg.psd[i + 1]) continue;
+      const score = (pg.psd[i] / bandMean) * lowW(pg.freqs[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        peakIdx = i;
+      }
+    }
+    if (peakIdx < 0) {
+      // Monotonic band (no interior local max) → fall back to the strongest in-band bin.
+      let mx = -1.0;
+      for (let i = firstBand; i <= lastBand; i++) {
+        if (pg.psd[i] > mx) { mx = pg.psd[i]; peakIdx = i; }
+      }
+    }
+    if (peakIdx < 0) return null;
 
     // Sub-bin parabolic interpolation (N7): a 3-point quadratic fit on log-magnitude
     // recovers the true peak to ~0.01 BPM on a steady tone (raw bin is ~0.73 BPM coarse).
@@ -77,11 +108,18 @@ export class RespirationFromACC {
       }
     }
 
-    // confidence = power concentrated near the peak (±0.03 Hz) / total in-band power
+    // Confidence = power within ±respNearPeakHz of the peak / power in the FUNDAMENTAL band
+    // only (exclude ≥ respHarmonicExcludeMult × peak so a non-sinusoidal breath's 2×/3×
+    // harmonics don't deflate the score). Sub-peak sway still counts — it's real contamination.
+    const harmonicCut = this.t.respHarmonicExcludeMult * peakHz;
     let nearPeak = 0.0;
-    for (let i = 0; i < pg.freqs.length; i++) {
-      if (Math.abs(pg.freqs[i] - peakHz) <= 0.03) nearPeak += pg.psd[i];
+    let fundSum = 0.0;
+    for (let i = firstBand; i <= lastBand; i++) {
+      const f = pg.freqs[i];
+      if (f < harmonicCut) fundSum += pg.psd[i];
+      if (Math.abs(f - peakHz) <= this.t.respNearPeakHz) nearPeak += pg.psd[i];
     }
-    return { bpm: peakHz * 60.0, confidence: Math.min(1.0, nearPeak / bandSum) };
+    const confidence = fundSum > 1e-12 ? Math.min(1.0, nearPeak / fundSum) : 0.0;
+    return { bpm: peakHz * 60.0, confidence };
   }
 }

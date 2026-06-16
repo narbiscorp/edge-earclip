@@ -507,14 +507,17 @@ const _chimeInit = loadChime();
 function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
   const s = useDashboardStore.getState();
   const source = s.hrSourceForGlasses === 'h10' ? 'polarH10' : 'edgeRelay';
+  edgeDevice.resetLensState(); // fresh full re-send of the lens params on (re)start
   coherenceEngine.start({
     mode,
     source,
     tunables: s.coherenceTunables,
     brightness: 100,
     priorRF: mode === 'modeB' ? loadModeBRF() : null,
-    onDuty: (d) => {
-      if (edgeDevice.isConnected) void edgeDevice.streamLensDuty(d);
+    // Engine commands the firmware's breathe/static program (it renders the smooth cycle); we no
+    // longer stream per-tick PWM. driveLens coalesces, depth comes from the engine's coherence.
+    onLens: (state) => {
+      if (edgeDevice.isConnected) void edgeDevice.driveLens(state);
     },
   });
   if (mode === 'modeB') scheduleAccStart('Mode B active');
@@ -525,6 +528,7 @@ function stopCoherenceEngine(): void {
   const rf = coherenceEngine.storedRF();
   if (rf != null) saveModeBRF(rf);
   coherenceEngine.stop();
+  edgeDevice.resetLensState(); // firmware program is restored next; don't carry stale lens state
   void polarH10.stopAccStream().catch(() => { /* not streaming — ignore */ });
 }
 
