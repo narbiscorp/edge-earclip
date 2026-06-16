@@ -130,6 +130,81 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'respHarmonicExcludeMult', section: 'acc', modes: ['modeB'], label: 'Harmonic cutoff', min: 1.3, max: 2.5, step: 0.1, unit: '×', help: 'Confidence ignores power above this × the peak, so breathing harmonics do not deflate it.' }),
 ];
 
+/** Click-to-expand detail for each knob (the ⓘ button on the field). Says what the parameter
+ * does, its effect, and the recommended tuning direction where one exists. Apostrophe-free to keep
+ * the single-quoted strings simple. */
+export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
+  // Ingest & artifact gate
+  confThreshold: 'Beats whose quality score is below this are dropped before analysis. The Polar H10 reports 100, so this mainly gates noisier sources. Higher = stricter. Leave at 50 for H10.',
+  ringSize: 'How many recent beats are held in memory. Must cover the coherence window plus the Mode B dwell history (~600 is roughly 8-10 min at rest). Rarely needs changing.',
+  dRRFloorMs: 'Floor on the adaptive artifact gate: a beat is rejected when its interval jumps more than max(5.2 x recent variability, this floor) from the previous one. The floor stops the gate over-rejecting when breathing is very regular. Raise toward 250 if real beats are dropped; lower toward 120 to catch subtler ectopics.',
+  // Lomb-Scargle & coherence
+  coherenceWindowS: 'Trailing window the Lomb-Scargle spectrum runs over. Fixed at 64 s, which sets the ~0.0156 Hz resolution the whole engine assumes. Changing it shifts every band - leave it unless you know why.',
+  lsFreqLo: 'Low edge of the full analysis band (also the CR total-power band). Default 0.0033 Hz. Widen only to chase unusual signals.',
+  lsFreqHi: 'High edge of the analysis band. Default 0.4 Hz spans up through the HF range.',
+  lsDf: 'Frequency-grid spacing for the spectrum. Denser (smaller) sharpens peak localization at some CPU cost. 0.002 Hz is a good balance.',
+  peakSearchLo: 'Low edge of the band the coherence peak is searched in (the published resonance range starts at 0.04 Hz = 2.4 br/min).',
+  peakSearchHi: 'High edge of the coherence peak search (0.26 Hz = 15.6 br/min). CR = peak power divided by the rest of the band.',
+  resonanceHz: 'Half-width of the integration window around the coherence peak (default +/-0.015 Hz). Wider captures a broader resonance hump and raises the score; narrower is stricter.',
+  lfReadbackLo: 'Low edge of the LF-only band the Follow pacer reads your resonance rate back from (0.04 Hz). Kept separate from the CR search band so the pacer tracks breathing.',
+  lfReadbackHi: 'High edge of the pacer readback band (0.15 Hz = 9 br/min).',
+  cohSquashK: 'THE primary feel knob. Maps the raw coherence ratio to the 0-100 score: coh% = 100 x CR / (CR + k). LOWER k (toward 1) is easier - the score climbs fast and saturates. HIGHER k (toward 8) is harder - you must hold strong coherence for a high score. Tune this first.',
+  lfBandLo: 'Low edge of the LF band for the LF and LF/HF readouts (display only - does not drive the lens). Standard 0.04 Hz.',
+  lfBandHi: 'High edge of the LF band (0.15 Hz).',
+  hfBandLo: 'Low edge of the HF band for the HF readout (0.15 Hz).',
+  hfBandHi: 'High edge of the HF band (0.4 Hz).',
+  // Lens program
+  ewmaAlpha: 'Legacy smoothing for the old app-rendered lens. The firmware now renders the cycle and depth tracks live coherence, so this has little effect. Leave at default.',
+  gammaEasy: 'Difficulty curve for Easy: lens depth = brightness x (1 - (coh/100)^gamma). Gamma 1.0 is linear (50% coherence = 50% clear).',
+  gammaMedium: 'Difficulty curve for Medium (~1.5): the lens demands somewhat higher coherence before clearing than Easy.',
+  gammaHard: 'Difficulty curve for Hard (~2.0): clears noticeably slower - you hold higher coherence to open the lens.',
+  gammaExpert: 'Difficulty curve for Expert (~3.0): the lens only clears near peak coherence. Pick the level in the main controls; these set what each level means.',
+  dutyFloorPct: 'Minimum lens darkness at peak coherence for the legacy app-rendered breathe cue, so it never fully vanishes. With the firmware rendering the cycle now this has limited effect; 0 lets the lens clear fully at perfect coherence.',
+  heartbeatPulseMs: 'Width of the per-beat flash in the Heartbeat program. ~150 ms reads as a gentle pulse.',
+  heartbeatPeakDuty: 'Peak darkness of the Heartbeat flash (0-100%). 80% is a soft pulse.',
+  breatheInhalePct: 'Inhale fraction of each breath cycle. 40 = inhale 40% / exhale 60%; the longer exhale is the standard resonance-breathing shape. Sent to the glasses as the breathe inhale ratio.',
+  // Mode A follow pacer
+  quintetMin: 'Lowest pace the engine will set, in quintets (BPM x 5): 15 = 3.0 BPM. The pace is clamped to this floor.',
+  quintetMax: 'Highest pace, in quintets: 60 = 12.0 BPM. The pace is clamped to this ceiling.',
+  quintetDefault: 'Starting pace before the engine has tracked your rate, in quintets: 30 = 6.0 BPM.',
+  pacerAvgN: 'How many 1 Hz resonance readings are averaged to set the pacer target. More (toward 30) is smoother but laggier; fewer (toward 8) is snappier but jumpier. Keep it fairly smooth - the two-speed jump handles fast catch-up.',
+  pacerSlewQuintet: 'The gentle glide rate when the pace is near target: 1 = +/-0.2 BPM per breath. Intentionally slow so the cue does not lurch. Big gaps are handled by the jump below, not by raising this.',
+  pacerJumpThresholdBPM: 'Two-speed pacer: when your detected breathing rate is at least this far from the current pace AND stays that far for the Jump sustain breaths, the pace SNAPS straight to it instead of crawling. Lower jumps more eagerly; raise toward 2 if it over-reacts.',
+  pacerJumpSustainBreaths: 'How many breaths in a row the gap must persist before the pace snaps - the wall against a transient bad reading causing a jump. 1 snaps almost immediately; 2-3 is safer. If catch-up feels too slow, lower this.',
+  // Mode B fast amplitude
+  ampWindowBreaths: 'Mode B averages HRV amplitude over this many recent breaths per dwell. ~2.5 balances responsiveness against noise.',
+  // Mode B resonance search
+  dwellBreaths: 'How many breaths Mode B holds each candidate rate before scoring it. Longer is more reliable but slows the search. 6 is a good balance.',
+  dwellEstimateFraction: 'Fraction at the END of each dwell used for the amplitude estimate; the start is discarded as settling while the pace slews. 0.6 = last 60%.',
+  probeStepInitBPM: 'Initial step size as Mode B brackets the resonance peak (0.4 BPM). Bigger is faster but coarser.',
+  probeStepFloorBPM: 'Finest step the search resolves on the grid (0.2 BPM). The peak is then refined by a parabolic fit below this.',
+  epsilonPctOfA: 'Hysteresis: how much higher one rate amplitude must be (as a fraction of A) to count as better, so noise does not flip the bracket. 5%.',
+  searchLoBPM: 'Low end of the breathing-rate range Mode B searches (4.0 br/min). Narrow the range if you know roughly where your resonance is.',
+  searchHiBPM: 'High end of the search range (7.5 br/min). Most adults resonate around 5.5-6 br/min.',
+  respVerifyToleranceBPM: 'How close the accelerometer breathing rate must be to the paced rate for a dwell to count as followed (+/-0.5 BPM). RAISE toward 1.0 if good dwells keep being rejected; lower for stricter verification.',
+  confirmProbeBPM: 'On a warm start from a saved resonance frequency, the half-range re-checked around it before re-locking.',
+  maxUnverifiedDwells: 'Mode B aborts the search after this many dwells in a row it cannot verify against the accelerometer (you are moving or not following). RAISE if it gives up too readily; the hold-still hint appears as this climbs.',
+  ditherAmpBPM: 'While holding lock, the pace is nudged by this much (sub-perceptual, 0.1 BPM) to keep tracking a drifting resonance.',
+  ditherPeriodS: 'Period of the maintenance dither (180 s).',
+  escGainBPM: 'How aggressively the held lock follows a drifting resonance. Higher tracks faster but can wander.',
+  escMaxStepBPM: 'Per-cycle cap on how far the lock can move (0.05 BPM), so a noisy reading cannot yank it.',
+  escMeanAlpha: 'High-pass on the amplitude objective so a uniform fade (fatigue) is not mistaken for a gradient. Lower = longer memory.',
+  decayFastAlpha: 'Fast amplitude average for the sudden-loss detector. A sudden drop of the fast average below the slow one triggers a re-probe.',
+  decaySlowAlpha: 'Slow amplitude average (the reference) for the sudden-loss detector.',
+  reprobeDecayPct: 'If HRV amplitude falls at least this fraction below its slow average and stays there, Mode B re-probes around the lock. 0.15 = 15%.',
+  reprobeSustainS: 'How long the amplitude drop must persist before a re-probe (120 s).',
+  reprobeCapS: 'Minimum time between re-probes (180 s), so it cannot thrash.',
+  // Mode B ACC respiration
+  accSampleHz: 'Polar accelerometer sample rate. MUST match the rate the PMD stream is started at (50 Hz) - changing only this desyncs the timing.',
+  respBandLo: 'Low edge of the band the breathing peak is searched for in the accelerometer (0.05 Hz = 3 br/min). The Sway floor further de-weights the very low end.',
+  respBandHi: 'High edge of the accelerometer breathing band (0.4 Hz = 24 br/min). Excludes higher-frequency motion.',
+  respWindowS: 'Trailing window the accelerometer respiration estimate runs over. 45 s gives a clean peak but lags rate changes slightly.',
+  respConfidenceMin: 'Minimum spectral peakiness for the accelerometer breathing estimate to be trusted for verification. If Mode B keeps saying it cannot confirm your breathing even when you hold still, LOWER toward 0.3; raise if sway is being accepted.',
+  respMinHz: 'Accelerometer peaks below this (~4.8 br/min) are treated as body sway and de-weighted, so the verifier locks onto real breathing (~6) instead of postural drift (~3.9). RAISE if a slow wobble still reads as breathing; LOWER for genuinely slow (under 5 br/min) breathers.',
+  respNearPeakHz: 'The +/- window around the detected peak counted as the breath when scoring confidence. Wider tolerates a slightly spread peak (higher confidence); narrower is stricter.',
+  respHarmonicExcludeMult: 'Confidence ignores spectral power above this multiple of the breathing rate, so the 2nd and 3rd harmonics of a non-sinusoidal breath do not drag the score down. 1.6 cuts just below the 2x harmonic.',
+};
+
 const FIELDS_BY_KEY: Record<string, CohNumericField> = (() => {
   const m: Record<string, CohNumericField> = {};
   for (const fld of COH_FIELDS) m[fld.key] = fld;

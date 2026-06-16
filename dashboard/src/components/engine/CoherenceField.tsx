@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import FieldShell from '../config/fields/FieldShell';
-import type { CohNumericField } from './coherenceFieldSchema';
+import { type CohNumericField, COH_FIELD_INFO } from './coherenceFieldSchema';
 
 interface Props {
   spec: CohNumericField;
@@ -27,6 +27,8 @@ function format(value: number, step: number): string {
 
 export default function CoherenceField({ spec, value, error, disabled, onChange }: Props) {
   const [text, setText] = useState(() => format(value, spec.step));
+  const [showInfo, setShowInfo] = useState(false);
+  const info = COH_FIELD_INFO[spec.key];
 
   useEffect(() => {
     setText(format(value, spec.step));
@@ -45,40 +47,61 @@ export default function CoherenceField({ spec, value, error, disabled, onChange 
   };
 
   return (
-    <FieldShell label={spec.label} help={spec.help} error={error}>
-      <div className="flex items-center gap-2">
-        <input
-          type="range"
-          min={spec.min}
-          max={spec.max}
-          step={spec.step}
-          value={value}
-          disabled={disabled}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            if (Number.isFinite(v)) onChange(v);
-          }}
-          className="flex-1 accent-emerald-500 disabled:opacity-50"
-          aria-label={spec.label}
-        />
-        <input
-          type="text"
-          inputMode="decimal"
-          value={text}
-          disabled={disabled}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-          }}
-          className={`w-16 rounded border ${inputBorder} bg-slate-900 px-1.5 py-0.5 text-right text-[11px] text-slate-100 disabled:opacity-50`}
-        />
-        {spec.unit ? (
-          <span className="w-10 text-[10px] text-slate-500">{spec.unit}</span>
-        ) : (
-          <span className="w-10" />
-        )}
-      </div>
-    </FieldShell>
+    <>
+      <FieldShell label={spec.label} help={spec.help} error={error}>
+        <div className="flex items-center gap-2">
+          <input
+            type="range"
+            min={spec.min}
+            max={spec.max}
+            step={spec.step}
+            value={value}
+            disabled={disabled}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v)) onChange(v);
+            }}
+            className="flex-1 accent-emerald-500 disabled:opacity-50"
+            aria-label={spec.label}
+          />
+          <input
+            type="text"
+            inputMode="decimal"
+            value={text}
+            disabled={disabled}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+            className={`w-16 rounded border ${inputBorder} bg-slate-900 px-1.5 py-0.5 text-right text-[11px] text-slate-100 disabled:opacity-50`}
+          />
+          {spec.unit ? (
+            <span className="w-10 text-[10px] text-slate-500">{spec.unit}</span>
+          ) : (
+            <span className="w-10" />
+          )}
+          {info ? (
+            <button
+              type="button"
+              onClick={() => setShowInfo((v) => !v)}
+              aria-label={`About ${spec.label}`}
+              aria-expanded={showInfo}
+              title={`About ${spec.label}`}
+              className="shrink-0 h-4 w-4 rounded-full border border-slate-500/70 text-slate-400 text-[10px] font-serif italic leading-none flex items-center justify-center hover:bg-slate-700 hover:text-slate-100"
+            >
+              i
+            </button>
+          ) : (
+            <span className="w-4" />
+          )}
+        </div>
+      </FieldShell>
+      {showInfo && info ? (
+        <div className="mt-1 mb-2 rounded-md border border-slate-700/70 bg-slate-900/60 px-2.5 py-2 text-[11px] leading-relaxed text-slate-300">
+          {info}
+        </div>
+      ) : null}
+    </>
   );
 }
