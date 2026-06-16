@@ -6,9 +6,11 @@
 >
 > **Out of scope.** HRV math (compute on the client), pairing/bonding (neither device requires encryption today; that's a v2 item).
 >
-> **Related.** [`docs/protocol.md`](./protocol.md) is historical background; [`docs/path-b-implementation-brief.md`](./path-b-implementation-brief.md) and [`docs/path-b-relay-handoff.md`](./path-b-relay-handoff.md) document the current relay architecture in detail.
+> **Related.** [`docs/coherence-engine.md`](./coherence-engine.md) documents the app-side Coherence Engine (the three modes, the HRV math, and the lens-drive path); [`docs/coherence-algorithm-reference.md`](./coherence-algorithm-reference.md) is the verbatim firmware coherence pipeline. [`docs/protocol.md`](./protocol.md) is historical background; [`docs/path-b-implementation-brief.md`](./path-b-implementation-brief.md) and [`docs/path-b-relay-handoff.md`](./path-b-relay-handoff.md) document the current relay architecture in detail.
 
 > ### 📝 Changelog
+>
+> **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (Follow / Resonance / Standard); [§4.7](#47-driving-the-edge-from-an-external-hr-source-polar-h10--apple-watch--app-side-detector) now lists all three integration patterns.
 >
 > **2026-06-09 — audit + sync to current firmware.** Notable changes since the previous version of this doc:
 >
@@ -1219,7 +1221,7 @@ func forwardBeatToEdge(rrMs: UInt16, confidence: UInt8 = 100, isArtifact: Bool =
 - **Pulse-on-beat program (`0xB7 0`)** works with `0xCA` beats — the lens pulses each time your `0xCA` write lands. No earclip required.
 - **Coherence updates** arrive on `0xFF03` as `0xF2` frames once per second (see [§4.4.3](#443-coherence-packet-0xf2--18-b)). Byte 17 carries the current adaptive-pacer BPM if `0xB9` is enabled — useful for an in-app overlay.
 - **For tuning sliders / sensitivity presets**, see [§4.3.1 Edge-side algorithm tuning](#431-edge-side-algorithm-tuning). The `0xB8` difficulty preset (Easy/Medium/Hard/Expert) is the cheapest UX hook.
-- **If you want the algorithm app-side instead** (e.g. so you can run it on H10 R-R intervals without any glasses round-trip, and just push the computed lens duty via `0xA5`), the full pipeline — outlier gate, IBI ring, resample, FFT, band integration, peak detection, EWMA smoothing, adaptive pacer, and the four PPG-program lens mappings — is extracted verbatim with field-by-field descriptions in [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md). That doc is the complete reference for porting the glasses-side algorithm to Swift.
+- **If you want the algorithm app-side instead** — compute coherence + pacing on the client (e.g. directly off H10 R-R intervals) and use the glasses purely as a display — the **recommended drive is to command the firmware's own program** so the glasses still render the smooth waveform locally: select **plain breathe** (`0xB0`) + set the **rate** (`0xB1`) + set the **depth/amplitude** from your computed coherence via **brightness** (`0xA2`); or send a slow **static-duty setpoint** (`0xA5`) for a steady coherence tint; add **strobe** (`0xAB`/`0xAC`) for breathe+strobe. Push these only when a value changes (~1 Hz) — **not** per frame; streaming raw duty every tick is choppy over BLE. The Narbis dashboard's app-side engine, its three modes, and this exact drive path are documented in [`coherence-engine.md`](./coherence-engine.md). The verbatim firmware pipeline you would be reproducing (outlier gate, IBI ring, resample, FFT, band integration, peak detection, EWMA smoothing, adaptive pacer, and the four PPG-program lens mappings) is in [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md).
 
 ---
 
