@@ -51,6 +51,19 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
       'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
     ],
   },
+  {
+    id: 'modeC',
+    title: 'Mode C',
+    sub: 'Settle & Find',
+    desc: 'Settle into a steady rhythm, then it finds your resonance.',
+    details:
+      'A gentle on-ramp to resonance training. First it follows you: settle into a comfortable, steady breathing rhythm for a couple of minutes. Once your breathing is steady AND clearly visible on the Polar H10’s accelerometer, it gently guides you up and down to find and hold your personal resonance frequency — the slow rate where heart and breath line up — verified against your actual breathing from the H10, so it cannot be fooled by the ~0.1 Hz Mayer wave. From that point the device leads and you follow the cue. If your breathing can’t be confirmed, it simply keeps following you and waits — it never starts the search on a signal it can’t verify. Needs a Polar H10; sit still during the search. The rate it finds is your resonance estimate, not a clinically validated value.',
+    references: [
+      'Lehrer PM, Vaschillo E, Vaschillo B. Resonant frequency biofeedback training to increase cardiac variability. Appl Psychophysiol Biofeedback. 2000;25(3):177–191.',
+      'Vaschillo EG, Vaschillo B, Lehrer PM. Characteristics of resonance in HRV stimulated by biofeedback. Appl Psychophysiol Biofeedback. 2006;31(2):129–142.',
+      'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
+    ],
+  },
 ];
 
 /* Plain-language, real-time description of what the Mode B controller is doing right now —
@@ -89,4 +102,25 @@ export function modeBStatusText(status: EngineStatus): string {
       lead = `Pacing you at ${rate} br/min and measuring your heart-rate swings${breath}.`;
   }
   return lead + tested + hold;
+}
+
+/* Plain-language, real-time description for Mode C (Settle & Find). Covers the Follow warm-up and
+ * the handoff; reuses modeBStatusText verbatim once the seeded search is running. */
+export function modeCStatusText(status: EngineStatus): string {
+  if (status.modeCPhase === 'searching' || status.modeCPhase === 'maintaining') {
+    const base = modeBStatusText(status);
+    const p = status.modeBProgress;
+    // First baseline dwell right after the gate fired → announce the handoff explicitly.
+    const justHandedOff =
+      status.modeCPhase === 'searching' && p != null && p.testedCount === 0 && p.phase === 'baseline';
+    return justHandedOff ? `Now following the cue — the device leads from here. ${base}` : base;
+  }
+  // Warm-up. ACC confidence is mandatory before any search, so be honest about which we're waiting on.
+  if (!status.modeCAccConfident) {
+    return 'Settling in — keep the H10 strap snug and breathe normally. It needs to see your breath clearly on the accelerometer before it can guide you.';
+  }
+  if (!status.modeCStable) {
+    return 'Got your breath — now ease into one comfortable, steady rhythm and let it level off.';
+  }
+  return 'Steady and clear — it will start guiding you up and down to find your resonance shortly. Follow the cue from here.';
 }
