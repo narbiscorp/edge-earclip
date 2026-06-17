@@ -31,6 +31,13 @@ export class RespirationFromACC {
     this.buf = [];
   }
 
+  /** Snapshot of the buffered ACC vector-magnitude window as parallel arrays (absolute seconds /
+   * magnitude), for the cross-spectral breath–heart coherence (Mode A γ²). Same epoch as the H10
+   * beat times, so the two can be aligned on absolute time. Empty arrays when nothing is buffered. */
+  magnitudeWindow(): { s: number[]; mag: number[] } {
+    return { s: this.buf.map((e) => e.s), mag: this.buf.map((e) => e.mag) };
+  }
+
   estimate(): RespEstimate | null {
     const snap = this.buf;
     if (snap.length < 16) return null;

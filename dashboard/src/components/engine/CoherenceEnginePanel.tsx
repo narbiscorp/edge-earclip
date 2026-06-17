@@ -18,6 +18,7 @@ import {
 import { validateCoherenceTunables } from './validateCoherenceTunables';
 import CoherenceField from './CoherenceField';
 import { ENGINE_MODE_INFO, modeBStatusText, modeCStatusText } from './modeInfo';
+import { useLastMetrics } from '../../state/useLastMetrics';
 
 export default function CoherenceEnginePanel() {
   const engineMode = useDashboardStore((s) => s.engineMode);
@@ -187,22 +188,51 @@ export default function CoherenceEnginePanel() {
 
 function EngineReadout() {
   const status = useDashboardStore((s) => s.engineStatus);
+  const metrics = useLastMetrics();
   const respConfidenceMin = useDashboardStore((s) => s.coherenceTunables.respConfidenceMin);
   if (!status || !status.running) {
     return (
       <div className="text-[10px] text-slate-500">Engine idle — waiting for a beat source.</div>
     );
   }
+  // The REAL coherence: cross-spectral γ² between H10-ACC respiration and heart rate (null when no
+  // ACC / poor signal). The single-signal CR is shown honestly as "rhythm steadiness" — it measures
+  // spectral concentration, not breath–heart coupling — and still drives the lens (unchanged).
+  const bh = status.breathHeartCoherence;
   return (
     <div className="rounded border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[10px] text-slate-300 flex flex-col gap-1">
+      {bh != null ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+          <span>
+            breath–heart coherence <span className="text-emerald-400 font-medium">γ² {bh.toFixed(2)}</span>{' '}
+            <span className="text-slate-500">measured</span>
+          </span>
+          {status.breathHeartPhaseDeg != null ? (
+            <span>phase <span className="text-slate-100">{status.breathHeartPhaseDeg.toFixed(0)}°</span></span>
+          ) : null}
+          {status.coherenceConfounded ? (
+            <span className="text-amber-400" title="The followed rhythm is not being driven by your breathing.">
+              ⚠ confounded
+            </span>
+          ) : null}
+        </div>
+      ) : (
+        <div className="text-[10px] text-slate-500">breath–heart coherence — needs a Polar H10 (accelerometer)</div>
+      )}
       <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-        <span>coh <span className="text-emerald-400 font-medium">{status.coherence.toFixed(0)}/100</span></span>
-        <span>CR <span className="text-slate-100">{status.cr.toFixed(2)}</span></span>
+        <span>rhythm steadiness <span className="text-cyan-300 font-medium">{status.coherence.toFixed(0)}/100</span> <span className="text-slate-500">CR {status.cr.toFixed(2)}</span></span>
         <span>resp <span className="text-slate-100">{(status.respHz * 60).toFixed(1)}</span> br/min</span>
         <span>pacer <span className="text-cyan-400 font-medium">{status.pacerBpm.toFixed(1)}</span> br/min</span>
         <span>beats <span className="text-slate-100">{status.beats}</span></span>
         <span>duty <span className="text-slate-100">{status.duty}</span></span>
       </div>
+      {metrics ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-slate-400">
+          <span>RMSSD <span className="text-slate-100">{metrics.rmssd.toFixed(0)}</span> ms</span>
+          <span>SDNN <span className="text-slate-100">{metrics.sdnn.toFixed(0)}</span> ms</span>
+          <span>LF/HF <span className="text-slate-100">{metrics.lfHfRatio.toFixed(2)}</span></span>
+        </div>
+      ) : null}
       {status.mode === 'modeB' && status.modeBState === 'searching' ? (
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-slate-400">
           <span title="Breathing rate measured from the H10 accelerometer — the independent channel Mode B verifies each dwell against">
