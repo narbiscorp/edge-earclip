@@ -105,6 +105,14 @@ export interface CoherenceTunables {
   respNearPeakHz: number; // ± window treated as the breathing peak (confidence numerator + selection)
   respHarmonicExcludeMult: number; // confidence denominator excludes power ≥ this × peak (drops harmonics)
 
+  // --- Detrend & spectral averaging (Mode A LS upgrade) ---
+  // Encoded as numeric 0/1 (not boolean) to honor the schema's scalar-only invariant
+  // (validateCoherenceTunables + CoherenceField are numeric-only). Engine reads it as truthy.
+  detrendEnabled: number; // 0/1 — 1 = smoothness-priors (Tarvainen/Kubios) detrend before the LS
+  detrendLambda: number; // Tarvainen λ; sets the trend cutoff (≈0.035 Hz on the RR series at 500)
+  spectralSegments: number; // Welch-averaged LS sub-windows (variance↓~1/S, resolution↓~S); 1 = single
+  spectralOverlapPct: number; // sub-window overlap %
+
   // --- Mode C "Settle & Find" warm-up gate ---
   modeCWarmupS: number; // min Follow warm-up before the gate can pass
   modeCWarmupMaxS: number; // cap: relaxes ONLY the stability requirement — the ACC gate is NEVER relaxed
@@ -186,6 +194,11 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   respMinHz: 0.08, // 4.8 br/min — below this is usually postural sway; breathing is de-weighted gently, not cut
   respNearPeakHz: 0.04, // ±0.04 Hz treated as "the peak"
   respHarmonicExcludeMult: 1.6, // confidence denominator excludes ≥1.6× the peak (drops 2×/3× harmonics)
+  // Detrend & spectral averaging (Mode A LS upgrade)
+  detrendEnabled: 1,
+  detrendLambda: 500,
+  spectralSegments: 3,
+  spectralOverlapPct: 50,
   // Mode C "Settle & Find" warm-up gate. NOTE: these stability defaults are TIGHT — 0.4 BPM SD
   // over 30 s is ~6–8 breaths and tighter than most genuinely steady breathers hold, so many
   // sessions will transition on the cap rather than the real gate. Left as specified; revisit

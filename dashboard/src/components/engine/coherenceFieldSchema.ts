@@ -15,6 +15,7 @@ import type { CoherenceTunableKey, CoherenceTunables } from '../../engine/tunabl
 export type CohSectionId =
   | 'ingest'
   | 'lombscargle'
+  | 'spectral'
   | 'lens'
   | 'modeC'
   | 'pacer'
@@ -32,6 +33,7 @@ export interface CohSectionDef {
 export const COH_SECTIONS: CohSectionDef[] = [
   { id: 'ingest', label: 'Ingest & artifact gate', modes: ['modeA', 'modeB'], defaultExpanded: false },
   { id: 'lombscargle', label: 'Lomb–Scargle & coherence', modes: ['modeA', 'modeB'], defaultExpanded: true },
+  { id: 'spectral', label: 'Detrend & spectral averaging', modes: ['modeA', 'modeB'], defaultExpanded: false },
   { id: 'lens', label: 'Lens program', modes: ['modeA', 'modeB'], defaultExpanded: false },
   { id: 'modeC', label: 'Mode C — settle & find', modes: ['modeC'], defaultExpanded: true },
   { id: 'pacer', label: 'Mode A — follow pacer', modes: ['modeA'], defaultExpanded: true },
@@ -75,6 +77,12 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'lfBandHi', section: 'lombscargle', modes: ['modeA', 'modeB'], label: 'LF band high', min: 0.1, max: 0.2, step: 0.005, unit: 'Hz' }),
   f({ key: 'hfBandLo', section: 'lombscargle', modes: ['modeA', 'modeB'], label: 'HF band low', min: 0.1, max: 0.2, step: 0.005, unit: 'Hz' }),
   f({ key: 'hfBandHi', section: 'lombscargle', modes: ['modeA', 'modeB'], label: 'HF band high', min: 0.3, max: 0.5, step: 0.01, unit: 'Hz' }),
+
+  // --- Detrend & spectral averaging (shared; Mode A LS upgrade) ---
+  f({ key: 'detrendEnabled', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Detrend on/off', min: 0, max: 1, step: 1, help: '1 = smoothness-priors detrend before the LS; 0 = legacy mean-only.' }),
+  f({ key: 'detrendLambda', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Detrend λ', min: 100, max: 1000, step: 50, help: 'Tarvainen smoothness-priors λ. Higher removes only slower drift.' }),
+  f({ key: 'spectralSegments', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Welch segments', min: 1, max: 5, step: 1, help: '1 = single periodogram; ≥2 averages overlapping sub-windows to cut variance.' }),
+  f({ key: 'spectralOverlapPct', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Welch overlap', min: 0, max: 75, step: 5, unit: '%', help: 'Overlap between the averaged sub-windows.' }),
 
   // --- Lens program (shared) ---
   f({ key: 'ewmaAlpha', section: 'lens', modes: ['modeA', 'modeB'], label: 'Program-2 EWMA α', min: 0.002, max: 0.02, step: 0.001 }),
@@ -161,6 +169,11 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   lfBandHi: 'High edge of the LF band (0.15 Hz).',
   hfBandLo: 'Low edge of the HF band for the HF readout (0.15 Hz).',
   hfBandHi: 'High edge of the HF band (0.4 Hz).',
+  // Detrend & spectral averaging
+  detrendEnabled: 'Turns on smoothness-priors detrending (the Kubios method) before the coherence spectrum. 1 = on (removes slow drift and very-low-frequency trend so it cannot inflate the total-power term and depress the score), 0 = the legacy mean-only removal. Leave on.',
+  detrendLambda: 'Stiffness of the detrend trend line (Tarvainen lambda). HIGHER (toward 1000) removes only the slowest drift and keeps more low-frequency content; LOWER (toward 100) removes faster wander too. 500 puts the cutoff near 0.035 Hz, below the LF band, so it cleans drift without touching the breathing peak.',
+  spectralSegments: 'How many overlapping sub-windows the spectrum is averaged over (Welch averaging). 1 is a single periodogram (sharpest resolution, noisiest score). 3 averages three sub-windows, which steadies the live score at the cost of coarser resolution within each. 2-3 is a good balance; above 4 the LF band under-resolves.',
+  spectralOverlapPct: 'How much the averaged sub-windows overlap. More overlap forms more sub-windows from the same data (steadier) at the cost of correlated segments. 50 percent is standard.',
   // Lens program
   ewmaAlpha: 'Legacy smoothing for the old app-rendered lens. The firmware now renders the cycle and depth tracks live coherence, so this has little effect. Leave at default.',
   gammaEasy: 'Difficulty curve for Easy: lens depth = brightness x (1 - (coh/100)^gamma). Gamma 1.0 is linear (50% coherence = 50% clear).',

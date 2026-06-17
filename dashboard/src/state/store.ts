@@ -530,8 +530,11 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
       if (edgeDevice.isConnected) void edgeDevice.syncBreath(cycleMs, inhalePct);
     },
   });
-  // Mode B AND Mode C verify breathing against the H10 accelerometer — start the ACC stream.
-  if (mode === 'modeB' || mode === 'modeC') scheduleAccStart(`${mode} active`);
+  // The H10 accelerometer feeds Mode B/C breath verification AND Mode A's cross-spectral breath–heart
+  // coherence (γ²), so stream it for ANY app-side mode when the source is the H10. Small added
+  // BLE/power cost in Mode A (the PMD stream, which Mode A previously ran without) — worth it for the
+  // honest, measured coherence.
+  if (source === 'polarH10') scheduleAccStart(`${mode} active`);
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
@@ -545,16 +548,15 @@ function stopCoherenceEngine(): void {
 
 /** Defer + debounce the ACC stream start. Firing the PMD setup (service discovery + control
  * writes) immediately on connect — especially on every transient reconnect — correlated with the
- * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in
- * Mode B, the engine's running, and not already streaming. */
+ * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in an
+ * app-side mode (A, B, or C), the engine's running, and not already streaming. */
 function scheduleAccStart(reason: string): void {
   if (accStartTimer) clearTimeout(accStartTimer);
   accStartTimer = setTimeout(() => {
     accStartTimer = null;
     if (polarH10.status !== 'connected') return;
     if (!coherenceEngine.running) return;
-    const em = useDashboardStore.getState().engineMode;
-    if (em !== 'modeB' && em !== 'modeC') return;
+    if (useDashboardStore.getState().engineMode === 'firmware') return; // modeA + modeB + modeC all use ACC
     if (polarH10.isAccStreaming) return;
     appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
     void polarH10.startAccStream().catch((err) => {
@@ -1303,10 +1305,9 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
-  // If we're already in Mode B/Mode C (H10 reconnected mid-session), (re)start the ACC stream —
-  // deferred so a reconnect storm doesn't hammer the fragile post-connect link with PMD setup.
-  const em = useDashboardStore.getState().engineMode;
-  if (coherenceEngine.running && (em === 'modeB' || em === 'modeC')) {
+  // If an app-side engine (Mode A, B, or C) is already running (H10 reconnected mid-session), (re)start
+  // the ACC stream — deferred so a reconnect storm doesn't hammer the fragile post-connect link.
+  if (coherenceEngine.running && useDashboardStore.getState().engineMode !== 'firmware') {
     scheduleAccStart('h10 connected');
   }
 });
