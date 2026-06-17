@@ -19,6 +19,7 @@ import ChimeControls from './ChimeControls';
 import BreathCue from './BreathCue';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
+import { coherenceEngine } from '../engine/coherenceEngine';
 import type { EngineMode, EngineStatus } from '../engine/coherenceEngine';
 import { ENGINE_MODE_INFO, modeBStatusText, modeCStatusText } from './engine/modeInfo';
 
@@ -91,6 +92,9 @@ const STROBE_PRESETS: Array<{ label: string; band: string; hz: number }> = [
   { label: 'Gamma',           band: 'Gamma',      hz: 30.0 },
   { label: 'Gamma+',          band: 'high-Gamma', hz: 40.0 },
 ];
+
+/** UI difficulty → engine gamma index (0=easy … 3=expert); mirrors edgeDevice DIFFICULTY_VALUE. */
+const DIFFICULTY_NUM: Record<CoherenceDifficulty, number> = { easy: 0, medium: 1, hard: 2, expert: 3 };
 
 interface BasicModeProps {
   /** Forces a phone-shaped single-column layout with bigger touch targets,
@@ -175,6 +179,13 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
     void edgeDevice.setDifficulty(difficulty).catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edgeConnected]);
+
+  /* When the app-side engine is driving (Mode A/B/C), mirror the difficulty (gamma curve on
+   * coherence → lens depth) into the engine — the edgeDevice.setDifficulty calls only affect
+   * Standard (firmware) mode. Runs on engine start and whenever the difficulty changes. */
+  useEffect(() => {
+    if (engineActive) coherenceEngine.setDifficulty(DIFFICULTY_NUM[difficulty]);
+  }, [engineActive, difficulty]);
 
   const commitStrobeHz = (hz: number): void => {
     setStrobeHz(hz);
@@ -324,7 +335,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         <ProgramStrip
           program={program}
           onPick={(p) => void setActiveProgram(p)}
-          disabled={!edgeConnected || engineActive}
+          disabled={!edgeConnected}
           engineActive={engineActive}
         />
 
@@ -825,7 +836,7 @@ function ProgramStrip({
       </div>
       {engineActive ? (
         <div className="text-[11px] text-slate-500 mb-2">
-          The Coherence Engine is driving the lens. Set <span className="text-slate-300">Engine → Standard</span> to use these.
+          The Coherence Engine renders these app-side from your live coherence.
         </div>
       ) : null}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

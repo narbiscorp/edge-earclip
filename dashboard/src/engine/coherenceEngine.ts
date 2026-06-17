@@ -26,7 +26,17 @@ export type { EngineMode } from './tunables';
 
 export type HRVSource = 'polarH10' | 'edgeRelay' | 'appleWatch';
 export type ActiveEngineMode = 'modeA' | 'modeB' | 'modeC';
-export type LensStyle = 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
+export type LensStyle = 'heartbeat' | 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
+
+/** UI Standard-program numbers (1-4). Matches the firmware 0xB7 ordering
+ * (1=Heartbeat, 2=Breathing Guide, 3=Coherence Lens, 4=Breath+Strobe). */
+export type LensProgram = 1 | 2 | 3 | 4;
+const PROGRAM_TO_STYLE: Record<LensProgram, LensStyle> = {
+  1: 'heartbeat',
+  2: 'breathingGuide',
+  3: 'coherenceLens',
+  4: 'breatheStrobe',
+};
 
 /** Desired lens state the engine emits each update. The host (edgeDevice.driveLens) coalesces it
  * into the firmware's breathe/strobe/static commands so the firmware renders the smooth cycle and
@@ -96,6 +106,8 @@ export interface StartOptions {
   brightness?: number;
   /** 0..3 difficulty (gamma curve on coherence → lens depth). */
   difficulty?: number;
+  /** Standard program (1-4) to render. Takes precedence over `lensStyle`. */
+  program?: LensProgram;
   lensStyle?: LensStyle;
   strobeHz?: number;
   strobeDutyPct?: number;
@@ -195,7 +207,8 @@ export class CoherenceEngine extends EventTarget {
     this.mode = opts.mode;
     this.brightness = opts.brightness ?? 100;
     this.difficulty = opts.difficulty ?? 1;
-    this.lensStyle = opts.lensStyle ?? 'breathingGuide';
+    this.lensStyle =
+      opts.program != null ? PROGRAM_TO_STYLE[opts.program] : (opts.lensStyle ?? 'breathingGuide');
     this.strobeHz = opts.strobeHz ?? 10;
     this.strobeDutyPct = opts.strobeDutyPct ?? 50;
     this.onLens = opts.onLens;
@@ -277,6 +290,14 @@ export class CoherenceEngine extends EventTarget {
   }
   setDifficulty(d: number): void {
     this.difficulty = Math.max(0, Math.min(3, Math.round(d)));
+  }
+
+  /** Switch the rendered Standard program live (no engine restart). `p` is the UI's 1-4 number;
+   * it maps to the lens style emitted to the host, which `edgeDevice.driveLens` renders
+   * firmware-side. Re-emits immediately so the lens changes without waiting for the next tick. */
+  setProgram(p: LensProgram): void {
+    this.lensStyle = PROGRAM_TO_STYLE[p] ?? this.lensStyle;
+    if (this.running) this.emitLens();
   }
 
   /** Converged Mode B RF (only when maintaining), for the host to persist. */

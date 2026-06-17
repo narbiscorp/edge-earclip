@@ -515,6 +515,9 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
     source,
     tunables: s.coherenceTunables,
     brightness: 100,
+    // Render the currently-selected Standard program app-side (default Breathing Guide). driveLens
+    // maps the lens style to the firmware lens mode; Programs 1 & 4 also get beats injected (below).
+    program: (s.activeProgram ?? 2) as 1 | 2 | 3 | 4,
     // Mode B warm-starts from the stored RF. Mode C seeds from the warm-up settled rate instead,
     // so it gets no priorRF (its controller isn't created until the gate fires).
     priorRF: mode === 'modeB' ? loadModeBRF() : null,
@@ -715,7 +718,15 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     } else {
       set({ activeProgram: null });
     }
-    if (p !== null && edgeDevice.isConnected) {
+    if (p === null) return;
+    // App-side engine modes (A/B/C) render the program themselves — switch it live on the engine
+    // and do NOT send the firmware 0xB7 program-select (that's the firmware-coherence path).
+    if (useDashboardStore.getState().engineMode !== 'firmware') {
+      coherenceEngine.setProgram(p);
+      return;
+    }
+    // Standard (firmware) mode: select the on-glasses PPG program.
+    if (edgeDevice.isConnected) {
       try {
         await edgeDevice.setProgram(p);
       } catch (err) {
@@ -767,12 +778,23 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       stopCoherenceEngine();
       set({ engineStatus: null });
       appendBleLog('system', 'info', 'coherence engine OFF — firmware drives the lens');
-      // Hand the lens back to firmware: re-run the default-program auto-start.
-      scheduleAutoStartProgram('coherence engine off');
+      // Hand the lens back to firmware: re-send the currently-selected Standard program via 0xB7 so
+      // the glasses run it on-device (we now keep activeProgram across the engine, so the auto-start
+      // would otherwise skip it). Fall back to the default-program auto-start when none is selected.
+      const cur = useDashboardStore.getState().activeProgram;
+      if (cur != null && edgeDevice.isConnected) {
+        void edgeDevice.setProgram(cur).catch((err) =>
+          appendBleLog('edge', 'error', `setProgram(${cur}) failed: ${(err as Error).message}`),
+        );
+      } else {
+        scheduleAutoStartProgram('coherence engine off');
+      }
       return;
     }
-    // Entering Mode A / Mode B / Mode C — the engine owns the lens; clear any firmware program.
-    set({ activeProgram: null, standaloneMode: null });
+    // Entering Mode A / Mode B / Mode C — the engine owns the lens and renders the selected Standard
+    // program app-side. Keep the active program across the switch (default to Breathing Guide if none
+    // was picked) so the strip stays meaningful and the engine has a program to render.
+    set({ activeProgram: useDashboardStore.getState().activeProgram ?? 2, standaloneMode: null });
     if ((mode === 'modeB' || mode === 'modeC') && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
       // Mode B and Mode C need validated H10 RR + the independent ACC respiration channel.
       useDashboardStore.getState().setHrSourceForGlasses('h10');
@@ -1433,9 +1455,14 @@ polarH10.addEventListener('beatReceived', (e) => {
   setState({ lastPolarBeat: record, lastBeatAt: beat.timestamp });
   if (useDashboardStore.getState().hrSourceForGlasses === 'h10') {
     if (coherenceEngine.running) {
-      // Engine owns the lens (streams 0xA5 duty); feed it the RAW H10 beats — its own
-      // artifact gate de-spikes, and Mode B needs the gated-beat tally.
+      // Engine owns the lens; feed it the RAW H10 beats — its own artifact gate de-spikes, and
+      // Mode B needs the gated-beat tally.
       coherenceEngine.onH10RR(beat.rrIntervals_ms, 100, beat.timestamp / 1000);
+      // Programs 1 (Heartbeat) & 4 (Breath+Strobe) are rendered firmware-side and still need beats on
+      // the glasses: Heartbeat flashes on each injected beat, Program 4 computes coherence on-glasses
+      // for the strobe. Programs 2/3 are driven straight from the engine's coherence — no inject.
+      const prog = useDashboardStore.getState().activeProgram;
+      if (prog === 1 || prog === 4) forwardH10BeatsToGlasses(cleanRr);
     } else {
       // Firmware coherence path — forward the de-spiked intervals so a missed-beat double
       // doesn't wreck the on-glasses spectrum.
