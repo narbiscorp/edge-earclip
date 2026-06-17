@@ -190,6 +190,7 @@ function EngineReadout() {
   const status = useDashboardStore((s) => s.engineStatus);
   const metrics = useLastMetrics();
   const respConfidenceMin = useDashboardStore((s) => s.coherenceTunables.respConfidenceMin);
+  const [showInfo, setShowInfo] = useState(false);
   if (!status || !status.running) {
     return (
       <div className="text-[10px] text-slate-500">Engine idle — waiting for a beat source.</div>
@@ -201,24 +202,72 @@ function EngineReadout() {
   const bh = status.breathHeartCoherence;
   return (
     <div className="rounded border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[10px] text-slate-300 flex flex-col gap-1">
-      {bh != null ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-          <span>
-            breath–heart coherence <span className="text-emerald-400 font-medium">γ² {bh.toFixed(2)}</span>{' '}
-            <span className="text-slate-500">measured</span>
-          </span>
-          {status.breathHeartPhaseDeg != null ? (
-            <span>phase <span className="text-slate-100">{status.breathHeartPhaseDeg.toFixed(0)}°</span></span>
-          ) : null}
-          {status.coherenceConfounded ? (
-            <span className="text-amber-400" title="The followed rhythm is not being driven by your breathing.">
-              ⚠ confounded
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+        {bh != null ? (
+          <>
+            <span>
+              breath–heart coherence <span className="text-emerald-400 font-medium">γ² {bh.toFixed(2)}</span>{' '}
+              <span className="text-slate-500">measured</span>
             </span>
-          ) : null}
+            {status.breathHeartPhaseDeg != null ? (
+              <span>phase <span className="text-slate-100">{status.breathHeartPhaseDeg.toFixed(0)}°</span></span>
+            ) : null}
+            {status.coherenceConfounded ? (
+              <span className="text-amber-400" title="The followed rhythm is not being driven by your breathing.">
+                ⚠ confounded
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <span className="text-slate-500">breath–heart coherence — needs a Polar H10 (accelerometer)</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowInfo((v) => !v)}
+          aria-label="What do these readouts mean?"
+          aria-expanded={showInfo}
+          title="What do these readouts mean?"
+          className="shrink-0 h-4 w-4 rounded-full border border-slate-500/70 text-slate-400 text-[10px] font-serif italic leading-none flex items-center justify-center hover:bg-slate-700 hover:text-slate-100"
+        >
+          i
+        </button>
+      </div>
+      {showInfo ? (
+        <div className="rounded-md border border-slate-700/70 bg-slate-900/60 px-2.5 py-2 text-[11px] leading-relaxed text-slate-300 flex flex-col gap-1.5">
+          <div>
+            <span className="text-emerald-400 font-medium">Breath–heart coherence (γ²)</span> — magnitude-squared
+            coherence between your breathing (sensed from the Polar H10 accelerometer) and your heart rate, 0–1,
+            at your breathing frequency. Near 1 means breath and heart rate genuinely move together (resonance).
+            This is the real coherence the literature means, time-averaged so it stays steady.
+          </div>
+          <div>
+            <span className="text-slate-100 font-medium">phase</span> — the timing offset between the breathing and
+            heart-rate rhythms at that frequency; near 0° at resonance. Shown only when γ² is high enough to be
+            meaningful (hidden at low coherence, where phase is just noise).
+          </div>
+          <div>
+            <span className="text-amber-400 font-medium">⚠ confounded</span> — the rhythm the pacer is following is
+            not being driven by your breathing: either the followed rate differs from your measured breathing rate,
+            or the coherence is low. Often the ~0.1 Hz Mayer (blood-pressure) wave. When lit, do not trust a high
+            rhythm-steadiness as real coherence.
+          </div>
+          <div>
+            <span className="text-cyan-300 font-medium">rhythm steadiness</span> (CR) — how concentrated your
+            heart-rate variability is at a single frequency (the field-standard coherence ratio, 0–100). It drives
+            the lens, but on its own it cannot tell whether that rhythm is actually your breathing — that is what
+            γ² and the confound flag add.
+          </div>
+          <div>
+            <span className="text-slate-100 font-medium">resp / pacer</span> — your detected breathing rate vs the
+            rate the lens is pacing you toward, in breaths per minute.
+          </div>
+          <div>
+            <span className="text-slate-100 font-medium">RMSSD / SDNN / LF/HF</span> — standard, independent HRV
+            indices (RMSSD and SDNN in milliseconds; LF/HF is the low- to high-frequency power ratio), shown so the
+            proprietary score is never the only number.
+          </div>
         </div>
-      ) : (
-        <div className="text-[10px] text-slate-500">breath–heart coherence — needs a Polar H10 (accelerometer)</div>
-      )}
+      ) : null}
       <div className="flex flex-wrap gap-x-4 gap-y-0.5">
         <span>rhythm steadiness <span className="text-cyan-300 font-medium">{status.coherence.toFixed(0)}/100</span> <span className="text-slate-500">CR {status.cr.toFixed(2)}</span></span>
         <span>resp <span className="text-slate-100">{(status.respHz * 60).toFixed(1)}</span> br/min</span>

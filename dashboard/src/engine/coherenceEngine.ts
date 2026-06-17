@@ -20,7 +20,7 @@ import { FollowPacer } from './followPacer';
 import { FastAmplitudeTracker } from './fastAmplitude';
 import { RespirationFromACC } from './respirationFromAcc';
 import { ResonanceController, type ModeBState, type SearchProgress } from './resonanceController';
-import { computeBreathHeartCoherence } from './breathHeartCoherence';
+import { computeBreathHeartCoherence, GAMMA2_CONFOUND_FLOOR } from './breathHeartCoherence';
 
 export type { EngineMode } from './tunables';
 
@@ -112,6 +112,7 @@ export interface StartOptions {
 }
 
 const LENS_TICK_MS = 83; // ~12 Hz lens-duty stream (smooth breathing, BLE-friendly)
+const BH_NULL_RESET_TICKS = 8; // ~8 s with no cross-spectral estimate ⇒ clear the smoothed breath–heart readout
 
 export class CoherenceEngine extends EventTarget {
   private t: CoherenceTunables = { ...DEFAULT_TUNABLES };
@@ -155,9 +156,11 @@ export class CoherenceEngine extends EventTarget {
   private _coherence = 0;
   private _cr = 0;
   private _respHz = 0;
-  private _breathHeartCoh: number | null = null;
-  private _breathHeartPhase: number | null = null;
+  private _breathHeartCoh: number | null = null; // EWMA-smoothed γ² (null until first estimate / after a sustained ACC gap)
+  private _bhPhaseRe = 0; // γ²-weighted EWMA of cos(phase) — circular-mean accumulator (avoids ±180° wrap)
+  private _bhPhaseIm = 0; // γ²-weighted EWMA of sin(phase)
   private _confounded = false;
+  private _bhNullTicks = 0; // consecutive ticks with no cross-spectral estimate (decay-to-null guard)
   private _lastDuty = 0;
   // ACC respiration estimate cached at each breath boundary (Mode B verification input), for status.
   private _accMeasuredBpm: number | null = null;
@@ -216,8 +219,10 @@ export class CoherenceEngine extends EventTarget {
     this._cr = 0;
     this._respHz = 0;
     this._breathHeartCoh = null;
-    this._breathHeartPhase = null;
+    this._bhPhaseRe = 0;
+    this._bhPhaseIm = 0;
     this._confounded = false;
+    this._bhNullTicks = 0;
     this._lastDuty = 0;
     this._accMeasuredBpm = null;
     this._accRespConfidence = 0;
@@ -328,7 +333,12 @@ export class CoherenceEngine extends EventTarget {
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       breathHeartCoherence: this._breathHeartCoh,
-      breathHeartPhaseDeg: this._breathHeartPhase,
+      // Phase is only meaningful when coherence is significant — hide it below the floor so a flailing
+      // angle never shows. The value is the γ²-weighted circular mean of the per-tick phases.
+      breathHeartPhaseDeg:
+        this._breathHeartCoh != null && this._breathHeartCoh >= GAMMA2_CONFOUND_FLOOR
+          ? (Math.atan2(this._bhPhaseIm, this._bhPhaseRe) * 180) / Math.PI
+          : null,
       coherenceConfounded: this._confounded,
       modeBState: this.modeB?.state ?? null,
       modeBCommandedBpm: this.modeB ? this.modeB.commandedBPM : null,
@@ -382,9 +392,26 @@ export class CoherenceEngine extends EventTarget {
       r && est
         ? computeBreathHeartCoherence(win, this.resp.magnitudeWindow(), r.respPeakHz, est.bpm / 60, this.t)
         : null;
-    this._breathHeartCoh = bh ? bh.gammaSq : null;
-    this._breathHeartPhase = bh ? bh.phaseDeg : null;
-    this._confounded = bh ? bh.confounded : false;
+    // Temporal averaging makes the readout meaningful: a 1 Hz cross-spectrum from ~3 Welch segments is
+    // high-variance, so EWMA the γ² and take a coherence-WEIGHTED circular mean of the phase (low-γ²
+    // ticks barely move the angle). Brief gaps (bh == null) HOLD the last smoothed value; a SUSTAINED
+    // gap (ACC truly gone) decays it to null so the UI falls back to "needs a Polar H10".
+    if (bh) {
+      const a = Math.max(0, Math.min(1, this.t.bhSmoothAlpha));
+      this._breathHeartCoh =
+        this._breathHeartCoh == null ? bh.gammaSq : a * bh.gammaSq + (1 - a) * this._breathHeartCoh;
+      const th = (bh.phaseDeg * Math.PI) / 180;
+      const w = bh.gammaSq; // weight the phase phasor by instantaneous coherence
+      this._bhPhaseRe = a * (w * Math.cos(th)) + (1 - a) * this._bhPhaseRe;
+      this._bhPhaseIm = a * (w * Math.sin(th)) + (1 - a) * this._bhPhaseIm;
+      this._confounded = bh.rateMismatch || this._breathHeartCoh < GAMMA2_CONFOUND_FLOOR;
+      this._bhNullTicks = 0;
+    } else if (++this._bhNullTicks > BH_NULL_RESET_TICKS) {
+      this._breathHeartCoh = null;
+      this._bhPhaseRe = 0;
+      this._bhPhaseIm = 0;
+      this._confounded = false;
+    }
     // Mode C warm-up: sample the UNSMOOTHED detected rate + the independent ACC respiration
     // confidence at 1 Hz for the transition gate (deliberately NOT the slew-limited pacer output,
     // which reads "stable" by construction even for an erratic breather).

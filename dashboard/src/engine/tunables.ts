@@ -112,6 +112,7 @@ export interface CoherenceTunables {
   detrendLambda: number; // Tarvainen λ; sets the trend cutoff (≈0.035 Hz on the RR series at 500)
   spectralSegments: number; // Welch-averaged LS sub-windows (variance↓~1/S, resolution↓~S); 1 = single
   spectralOverlapPct: number; // sub-window overlap %
+  bhSmoothAlpha: number; // EWMA α for the breath–heart γ²/phase readout (1 Hz ticks); lower = steadier
 
   // --- Mode C "Settle & Find" warm-up gate ---
   modeCWarmupS: number; // min Follow warm-up before the gate can pass
@@ -199,6 +200,7 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   detrendLambda: 500,
   spectralSegments: 3,
   spectralOverlapPct: 50,
+  bhSmoothAlpha: 0.08, // ≈12 s averaging at 1 Hz — steadies the high-variance cross-spectral readout
   // Mode C "Settle & Find" warm-up gate. NOTE: these stability defaults are TIGHT — 0.4 BPM SD
   // over 30 s is ~6–8 breaths and tighter than most genuinely steady breathers hold, so many
   // sessions will transition on the cap rather than the real gate. Left as specified; revisit

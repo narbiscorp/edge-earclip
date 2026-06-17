@@ -21,7 +21,10 @@ const CROSS_FS = 4;
 export interface BreathHeartCoherence {
   gammaSq: number; // magnitude-squared coherence at the respiration peak ∈ [0,1]
   phaseDeg: number; // HR–respiration phase at that peak (≈0° at resonance)
-  confounded: boolean; // the followed rhythm is not driven by the measured breathing
+  /** The followed LF rate differs from the ACC-measured breathing rate by > tolerance. The engine
+   * combines this with the time-SMOOTHED γ² (vs GAMMA2_CONFOUND_FLOOR) for the displayed confound, so
+   * a single high-variance γ² tick can't flip the flag. */
+  rateMismatch: boolean;
 }
 
 /**
@@ -92,7 +95,8 @@ export function computeBreathHeartCoherence(
   const gammaSq = co.gammaSq[bi];
   const phaseDeg = co.phaseDeg[bi];
 
+  // Weak-coupling (γ² < floor) is applied by the engine against the SMOOTHED γ²; here we only report
+  // the resolution-independent rate mismatch (the primary Mayer defense).
   const rateMismatch = Math.abs(lsLfPeakHz * 60 - accRespHz * 60) > t.respVerifyToleranceBPM;
-  const weakCoupling = gammaSq < GAMMA2_CONFOUND_FLOOR;
-  return { gammaSq, phaseDeg, confounded: rateMismatch || weakCoupling };
+  return { gammaSq, phaseDeg, rateMismatch };
 }

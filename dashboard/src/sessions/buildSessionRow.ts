@@ -61,14 +61,16 @@ export interface BuildSessionRowInput {
   sessionId: string;
   startTs: number;
   beats: NarbisBeatEvent[];
-  coherence: Array<{ ts: number; coh: number }>;
+  coherence: Array<{ ts: number; coh: number; pacerBpm: number }>;
   notes: string;
   savedVia: 'auto' | 'manual';
   deviceInfo?: DeviceInfo | null;
+  /** App-engine mode this session ran — gates the paced-rate log (kept for Mode B/C only). */
+  engineMode?: DeviceInfo['engine_mode'];
 }
 
 export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
-  const { sessionId, startTs, beats, coherence, notes, savedVia, deviceInfo } = input;
+  const { sessionId, startTs, beats, coherence, notes, savedVia, deviceInfo, engineMode } = input;
 
   // Validity gate matches the live modal — guards against spurious IBIs.
   const validBeats = beats.filter((b) => b.ibi_ms >= 200 && b.ibi_ms <= 2500);
@@ -99,6 +101,21 @@ export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
     : startTs;
   const durationMs = Math.max(0, lastBeatTs - startTs);
 
+  // Paced breathing rate per coherence sample (aligned 1:1 with coherence_log_t_ms below), stashed in
+  // device_info (jsonb — no DB migration) so the report can overlay the swept rates on the IBI/coherence
+  // charts. Kept only for the resonance modes that actually sweep rates (Mode B/C).
+  const isResonance = engineMode === 'modeB' || engineMode === 'modeC';
+  const pacerLog =
+    isResonance && coherence.length > 0 ? coherence.map((c) => Math.round(c.pacerBpm * 10) / 10) : null;
+  const deviceInfoOut: DeviceInfo | null =
+    deviceInfo || engineMode != null || pacerLog
+      ? {
+          ...(deviceInfo ?? {}),
+          engine_mode: engineMode ?? null,
+          ...(pacerLog ? { pacer_bpm_log: pacerLog } : {}),
+        }
+      : null;
+
   return {
     id: sessionId,
     schema_version: SESSION_SCHEMA_VERSION,
@@ -125,7 +142,7 @@ export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
     coh_change_pct: pctChange(cohVals),
 
     notes: notes.trim() ? notes.trim() : null,
-    device_info: deviceInfo ?? null,
+    device_info: deviceInfoOut,
 
     ibi_log: ibis.map((v) => Math.round(v)),
     coherence_log_t_ms: cohVals.length > 0
