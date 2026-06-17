@@ -13,6 +13,13 @@ export interface RespEstimate {
   confidence: number;
 }
 
+/** Octave guard: when the prominence picker lands on a harmonic, step down to a peak near peakHz/k
+ * only if that lower peak carries at least this fraction of the picked peak's power. Conservative —
+ * genuine higher-rate breathing has no real sub-harmonic peak, so it is never pulled down. */
+const OCTAVE_SUBHARMONIC_MIN_FRAC = 0.5;
+/** Step down at most this many octaves (catches a 2× or 4× harmonic). */
+const OCTAVE_MAX_STEPS = 2;
+
 export class RespirationFromACC {
   private readonly t: CoherenceTunables;
   private buf: Array<{ s: number; mag: number }> = [];
@@ -94,9 +101,33 @@ export class RespirationFromACC {
     }
     if (peakIdx < 0) return null;
 
+    const df = pg.freqs.length > 1 ? pg.freqs[1] - pg.freqs[0] : 0;
+
+    // Octave guard (sub-harmonic preference). A non-sinusoidal breath has strong 2×/3× harmonics,
+    // and the prominence picker can latch onto one — e.g. read 10.4 br/min when the breath is really
+    // 5.2. That is the exact failure that makes Mode B/C reject on-rate breathing as "couldn't
+    // confirm" (the measured rate lands ~2× the paced rate, far outside respVerifyToleranceBPM). If a
+    // clear local-max peak sits near peakHz/2 — still inside the breathing band, above the postural-
+    // sway floor (respMinHz), and at least OCTAVE_SUBHARMONIC_MIN_FRAC of the picked peak's power —
+    // that lower peak is the true fundamental, so step down to it (repeat to catch a 4× harmonic).
+    const subTol = Math.max(df, this.t.respNearPeakHz);
+    for (let step = 0; step < OCTAVE_MAX_STEPS; step++) {
+      const subF = pg.freqs[peakIdx] / 2;
+      if (subF < this.t.respMinHz) break; // a half-rate fundamental would fall into the sway floor
+      let subIdx = -1;
+      let subPsd = -1;
+      for (let i = firstBand; i <= lastBand; i++) {
+        if (Math.abs(pg.freqs[i] - subF) > subTol) continue;
+        if (i > firstBand && pg.psd[i] < pg.psd[i - 1]) continue; // local maxima only
+        if (i < lastBand && pg.psd[i] < pg.psd[i + 1]) continue;
+        if (pg.psd[i] > subPsd) { subPsd = pg.psd[i]; subIdx = i; }
+      }
+      if (subIdx < 0 || subPsd < OCTAVE_SUBHARMONIC_MIN_FRAC * pg.psd[peakIdx]) break;
+      peakIdx = subIdx; // octave error — the harmonic's fundamental is real; use it
+    }
+
     // Sub-bin parabolic interpolation (N7): a 3-point quadratic fit on log-magnitude
     // recovers the true peak to ~0.01 BPM on a steady tone (raw bin is ~0.73 BPM coarse).
-    const df = pg.freqs.length > 1 ? pg.freqs[1] - pg.freqs[0] : 0;
     let peakHz = pg.freqs[peakIdx];
     if (peakIdx >= 1 && peakIdx + 1 < pg.psd.length && df > 0) {
       const p0 = pg.psd[peakIdx - 1];

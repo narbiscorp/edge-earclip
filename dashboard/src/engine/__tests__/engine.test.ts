@@ -213,6 +213,25 @@ describe('RespirationFromACC — independent respiration channel', () => {
     expect(est!.bpm).toBeLessThan(7.0);
     expect(est!.confidence).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.respConfidenceMin);
   });
+
+  it('returns the fundamental, not the 2nd harmonic, for a non-sinusoidal breath (octave guard)', () => {
+    const resp = new RespirationFromACC(DEFAULT_TUNABLES);
+    const fs = DEFAULT_TUNABLES.accSampleHz;
+    const f = 0.087; // ~5.2 br/min fundamental
+    // 2nd harmonic LOUDER than the fundamental → the naive prominence picker latches onto ~10.4
+    // br/min. Without the octave guard the Mode B/C verifier rejects on-rate breathing ("couldn't
+    // confirm") because the measured rate lands at ~2× the paced rate.
+    for (let i = 0; i < fs * 45; i++) {
+      const tS = i / fs;
+      const x =
+        1000 + 40 * Math.sin(2 * Math.PI * f * tS) + 50 * Math.sin(2 * Math.PI * 2 * f * tS);
+      resp.push(x, 0, 0, tS);
+    }
+    const est = resp.estimate();
+    expect(est).not.toBeNull();
+    expect(est!.bpm).toBeGreaterThan(4.6);
+    expect(est!.bpm).toBeLessThan(5.8);
+  });
 });
 
 describe('ResonanceController — Mode B', () => {
@@ -298,6 +317,16 @@ describe('FollowPacer — two-speed slew', () => {
     pacer.setTargetBPM(9); // a one-breath jump-sized error
     pacer.latch();
     expect(pacer.currentQuintet).toBe(30 + DEFAULT_TUNABLES.pacerSlewQuintet);
+  });
+
+  it('jumps for a MODERATE sustained offset, not only large ones (lowered jump threshold)', () => {
+    const pacer = new FollowPacer(DEFAULT_TUNABLES);
+    pacer.snapToBPM(6); // quintet 30
+    pacer.setTargetBPM(6.8); // 0.8 BPM away — below the OLD 1.0-BPM threshold, so it used to crawl
+    pacer.latch(); // breath 1 — glide
+    pacer.setTargetBPM(6.8);
+    pacer.latch(); // breath 2 — sustained ≥ threshold → snap straight to 6.8 BPM (quintet 34)
+    expect(pacer.currentQuintet).toBe(34);
   });
 });
 
