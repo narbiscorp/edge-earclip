@@ -11,6 +11,8 @@ import { LombScargleCore } from '../lombScargleCore';
 import { RespirationFromACC } from '../respirationFromAcc';
 import { ResonanceController } from '../resonanceController';
 import { FollowPacer } from '../followPacer';
+import { smoothnessPriorsDetrend, welchCoherence } from '../dsp';
+import { computeBreathHeartCoherence } from '../breathHeartCoherence';
 
 /** Beats whose RR is sinusoidally modulated at `freqHz` (a clean RSA tone). */
 function modulatedBeats(meanRrMs: number, ampMs: number, freqHz: number, durationS: number): IBIEntry[] {
@@ -22,6 +24,76 @@ function modulatedBeats(meanRrMs: number, ampMs: number, freqHz: number, duratio
     beats.push({ beatTimeS: t, rrMs: rr });
   }
   return beats;
+}
+
+const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length;
+const variance = (a: number[]): number => {
+  const m = mean(a);
+  return a.reduce((s, v) => s + (v - m) * (v - m), 0) / a.length;
+};
+const std = (a: number[]): number => Math.sqrt(variance(a));
+
+/** Deterministic LCG so the "noisy" series is identical every run (no Math.random flakiness). */
+function lcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (1664525 * s + 1013904223) >>> 0;
+    return s / 0x100000000; // [0,1)
+  };
+}
+
+/** modulatedBeats with a small white jitter (±noiseMs) added to each RR, seeded for determinism. */
+function modulatedBeatsNoisy(
+  meanRrMs: number,
+  ampMs: number,
+  freqHz: number,
+  durationS: number,
+  noiseMs: number,
+  seed: number,
+): IBIEntry[] {
+  const rnd = lcg(seed);
+  const beats: IBIEntry[] = [];
+  let t = 0;
+  while (t < durationS) {
+    const rr = meanRrMs + ampMs * Math.sin(2 * Math.PI * freqHz * t) + (rnd() - 0.5) * 2 * noiseMs;
+    t += rr / 1000;
+    beats.push({ beatTimeS: t, rrMs: rr });
+  }
+  return beats;
+}
+
+/** RR whose VALUE at each beat time is exactly in phase with sin(2π f t) — so the cross-phase vs an
+ * ACC window built on the same clock is ~0. (modulatedBeats evaluates the sine at the PRE-step time,
+ * which adds a ~1-beat lag that would bias the cross-spectrum phase readout.) Uniform spacing is fine
+ * here: the cross-spectrum resamples to a uniform grid regardless. */
+function inPhaseBeats(meanRrMs: number, ampMs: number, freqHz: number, durationS: number): IBIEntry[] {
+  const beats: IBIEntry[] = [];
+  let t = 0;
+  while (t < durationS) {
+    t += meanRrMs / 1000;
+    if (t >= durationS) break;
+    beats.push({ beatTimeS: t, rrMs: meanRrMs + ampMs * Math.sin(2 * Math.PI * freqHz * t) });
+  }
+  return beats;
+}
+
+/** Absolute-time ACC vector-magnitude window oscillating at `freqHz` (mag stays positive). Same
+ * shape RespirationFromACC.magnitudeWindow() returns. */
+function accWindow(
+  freqHz: number,
+  durationS: number,
+  fs: number,
+  t0: number,
+): { s: number[]; mag: number[] } {
+  const s: number[] = [];
+  const mag: number[] = [];
+  const N = Math.floor(durationS * fs);
+  for (let i = 0; i < N; i++) {
+    const tS = t0 + i / fs;
+    s.push(tS);
+    mag.push(1000 + 50 * Math.sin(2 * Math.PI * freqHz * tS));
+  }
+  return { s, mag };
 }
 
 describe('LombScargleCore — coherence ratio', () => {
@@ -202,5 +274,123 @@ describe('FollowPacer — two-speed slew', () => {
     pacer.setTargetBPM(9); // a one-breath jump-sized error
     pacer.latch();
     expect(pacer.currentQuintet).toBe(30 + DEFAULT_TUNABLES.pacerSlewQuintet);
+  });
+});
+
+describe('smoothnessPriorsDetrend (#1) — trend removal + LS detrend path', () => {
+  it('removes a slow linear+DC trend while preserving a 0.1 Hz tone', () => {
+    const N = 100;
+    const z: number[] = [];
+    for (let i = 0; i < N; i++) z.push(800 + 1.5 * i + 40 * Math.sin(2 * Math.PI * 0.1 * i));
+    const d = smoothnessPriorsDetrend(z, 500);
+    expect(d.length).toBe(N);
+    expect(Math.abs(mean(d))).toBeLessThan(1); // ramp + DC removed (a line is in D2's null space)
+    expect(std(d)).toBeGreaterThan(0.85 * (40 / Math.SQRT2)); // 0.1 Hz tone preserved (RMS ≈ amp/√2)
+    expect(Number.isFinite(d[0]) && Number.isFinite(d[N - 1])).toBe(true); // boundary rows stable
+  });
+
+  it('raises the coherence ratio vs the mean-only path when the RR has slow wander', () => {
+    // RSA tone + a slow linear ramp on RR (drift). Detrending removes the ramp's VLF leakage that
+    // would otherwise inflate the CR `total` term and depress CR. Single-segment isolates #1 from #2.
+    const trended = modulatedBeats(1000, 60, 0.1, 80).map((b, i) => ({
+      beatTimeS: b.beatTimeS,
+      rrMs: b.rrMs + 0.9 * i,
+    }));
+    const on = new LombScargleCore({ ...DEFAULT_TUNABLES, detrendEnabled: 1, spectralSegments: 1 }).compute(trended);
+    const off = new LombScargleCore({ ...DEFAULT_TUNABLES, detrendEnabled: 0, spectralSegments: 1 }).compute(trended);
+    expect(on).not.toBeNull();
+    expect(off).not.toBeNull();
+    expect(on!.respPeakHz).toBeGreaterThan(0.08);
+    expect(on!.respPeakHz).toBeLessThan(0.12);
+    expect(on!.cr).toBeGreaterThan(off!.cr);
+  });
+});
+
+describe('Welch-averaged LS (#2) — variance reduction', () => {
+  it('averaged (segments=3) CR is steadier across overlapping windows than single (segments=1)', () => {
+    // A noisy 0.1 Hz tone (seeded). Averaging overlapping sub-windows should reduce the run-to-run CR
+    // variance vs a single periodogram. Both detrend (default) — only #2 differs.
+    const all = modulatedBeatsNoisy(1000, 50, 0.1, 240, 12, 0xc0ffee);
+    const lsAvg = new LombScargleCore({ ...DEFAULT_TUNABLES, spectralSegments: 3, spectralOverlapPct: 50 });
+    const lsOne = new LombScargleCore({ ...DEFAULT_TUNABLES, spectralSegments: 1 });
+    const W = DEFAULT_TUNABLES.coherenceWindowS;
+    const crAvg: number[] = [];
+    const crOne: number[] = [];
+    for (let start = 0; start + W <= 220; start += 8) {
+      const win = all.filter((b) => b.beatTimeS >= start && b.beatTimeS < start + W);
+      const a = lsAvg.compute(win);
+      const o = lsOne.compute(win);
+      if (a) crAvg.push(a.cr);
+      if (o) crOne.push(o.cr);
+    }
+    expect(crAvg.length).toBeGreaterThan(5);
+    expect(crOne.length).toBeGreaterThan(5);
+    expect(variance(crAvg)).toBeLessThan(variance(crOne));
+    // sanity: the peak is still recovered on a representative window
+    const repr = lsAvg.compute(all.filter((b) => b.beatTimeS >= 0 && b.beatTimeS < W))!;
+    expect(repr.respPeakHz).toBeGreaterThan(0.08);
+    expect(repr.respPeakHz).toBeLessThan(0.12);
+  });
+});
+
+describe('computeBreathHeartCoherence (#3) — the Mayer-wave defense', () => {
+  const fs = DEFAULT_TUNABLES.accSampleHz;
+
+  it('in-phase RR & ACC at 0.1 Hz → γ²≈1, phase≈0, not confounded', () => {
+    const rr = inPhaseBeats(1000, 60, 0.1, 90);
+    const acc = accWindow(0.1, 90, fs, 0);
+    const bh = computeBreathHeartCoherence(rr, acc, 0.1, 0.1, DEFAULT_TUNABLES);
+    expect(bh).not.toBeNull();
+    expect(bh!.gammaSq).toBeGreaterThan(0.8);
+    expect(Math.abs(bh!.phaseDeg)).toBeLessThan(30);
+    expect(bh!.confounded).toBe(false);
+  });
+
+  it('breathing ≠ HR rhythm (RR 0.1 Hz, ACC 0.15 Hz) → γ² drops vs the coupled case + confounded', () => {
+    // Hold a noisy RR Mayer wave at 0.10 Hz; compare an ACC that MATCHES it (0.10) against one that
+    // does NOT (0.15), with independent noise in each channel. The cross-spectral coherence at the
+    // breathing frequency must drop sharply when the rhythms differ, and the confound flag must fire
+    // on the rate mismatch (the primary Mayer defense). We assert a RELATIVE drop rather than an
+    // absolute floor: with only 3 Welch segments the γ² estimator is intentionally higher-variance
+    // (3 segments buys the finer resolution the rate comparison needs to tell 0.10 from 0.15 Hz).
+    const run = (accHz: number) => {
+      const rrNoise = lcg(101);
+      const rr = inPhaseBeats(1000, 60, 0.1, 90).map((b) => ({
+        beatTimeS: b.beatTimeS,
+        rrMs: b.rrMs + (rrNoise() - 0.5) * 2 * 50,
+      }));
+      const accNoise = lcg(202);
+      const a = accWindow(accHz, 90, fs, 0);
+      return computeBreathHeartCoherence(
+        rr,
+        { s: a.s, mag: a.mag.map((m) => m + (accNoise() - 0.5) * 2 * 25) },
+        0.1,
+        accHz,
+        DEFAULT_TUNABLES,
+      )!;
+    };
+    const coupled = run(0.1); // ACC breathing matches the RR rhythm
+    const mismatch = run(0.15); // ACC breathing differs from the RR rhythm
+    expect(coupled.gammaSq).toBeGreaterThan(0.8);
+    expect(mismatch.gammaSq).toBeLessThan(coupled.gammaSq - 0.2); // coherence clearly collapses
+    expect(coupled.confounded).toBe(false); // same rate, strong coupling
+    expect(mismatch.confounded).toBe(true); // |6 − 9| br/min > respVerifyToleranceBPM
+  });
+
+  it('returns null when no ACC window is available (host falls back to the single-signal CR)', () => {
+    const rr = inPhaseBeats(1000, 60, 0.1, 90);
+    expect(computeBreathHeartCoherence(rr, { s: [], mag: [] }, 0.1, 0.1, DEFAULT_TUNABLES)).toBeNull();
+  });
+});
+
+describe('welchCoherence — single-segment guard', () => {
+  it('returns null for a single segment (never a degenerate γ²=1)', () => {
+    const n = 64;
+    const x: number[] = [];
+    for (let i = 0; i < n; i++) x.push(Math.sin(2 * Math.PI * 0.1 * (i / 4)));
+    expect(welchCoherence(x, x.slice(), 4, n, 0)).toBeNull(); // one segment → refuse
+    const multi = welchCoherence(x, x.slice(), 4, Math.floor(n / 2), 0.5); // 3 segments
+    expect(multi).not.toBeNull();
+    for (const g of multi!.gammaSq) expect(g).toBeLessThanOrEqual(1 + 1e-9);
   });
 });

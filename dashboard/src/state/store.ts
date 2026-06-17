@@ -520,7 +520,11 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
       if (edgeDevice.isConnected) void edgeDevice.driveLens(state);
     },
   });
-  if (mode === 'modeB') scheduleAccStart('Mode B active');
+  // The H10 accelerometer feeds Mode B's breath verification AND Mode A's cross-spectral breath–heart
+  // coherence (γ²), so stream it for either app-side mode when the source is the H10. This adds a small
+  // BLE/power cost in Mode A (the PMD stream, which Mode A previously ran without) — worth it for the
+  // honest, measured coherence.
+  if (source === 'polarH10') scheduleAccStart('engine active');
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
@@ -534,15 +538,15 @@ function stopCoherenceEngine(): void {
 
 /** Defer + debounce the ACC stream start. Firing the PMD setup (service discovery + control
  * writes) immediately on connect — especially on every transient reconnect — correlated with the
- * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in
- * Mode B, the engine's running, and not already streaming. */
+ * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in an
+ * app-side mode (A or B), the engine's running, and not already streaming. */
 function scheduleAccStart(reason: string): void {
   if (accStartTimer) clearTimeout(accStartTimer);
   accStartTimer = setTimeout(() => {
     accStartTimer = null;
     if (polarH10.status !== 'connected') return;
     if (!coherenceEngine.running) return;
-    if (useDashboardStore.getState().engineMode !== 'modeB') return;
+    if (useDashboardStore.getState().engineMode === 'firmware') return; // modeA + modeB both use ACC now
     if (polarH10.isAccStreaming) return;
     appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
     void polarH10.startAccStream().catch((err) => {
@@ -1292,9 +1296,9 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
-  // If we're already in Mode B (H10 reconnected mid-session), (re)start the ACC stream — deferred
-  // so a reconnect storm doesn't hammer the fragile post-connect link with PMD setup.
-  if (coherenceEngine.running && useDashboardStore.getState().engineMode === 'modeB') {
+  // If an app-side engine (Mode A or B) is already running (H10 reconnected mid-session), (re)start
+  // the ACC stream — deferred so a reconnect storm doesn't hammer the fragile post-connect link.
+  if (coherenceEngine.running && useDashboardStore.getState().engineMode !== 'firmware') {
     scheduleAccStart('h10 connected');
   }
 });

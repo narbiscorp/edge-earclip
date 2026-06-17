@@ -102,6 +102,14 @@ export interface CoherenceTunables {
   respMinHz: number; // ACC peaks below this are de-weighted (rejects sub-breathing postural sway)
   respNearPeakHz: number; // ± window treated as the breathing peak (confidence numerator + selection)
   respHarmonicExcludeMult: number; // confidence denominator excludes power ≥ this × peak (drops harmonics)
+
+  // --- Detrend & spectral averaging (Mode A LS upgrade) ---
+  // Encoded as numeric 0/1 (not boolean) to honor the schema's scalar-only invariant
+  // (validateCoherenceTunables + CoherenceField are numeric-only). Engine reads it as truthy.
+  detrendEnabled: number; // 0/1 — 1 = smoothness-priors (Tarvainen/Kubios) detrend before the LS
+  detrendLambda: number; // Tarvainen λ; sets the trend cutoff (≈0.035 Hz on the RR series at 500)
+  spectralSegments: number; // Welch-averaged LS sub-windows (variance↓~1/S, resolution↓~S); 1 = single
+  spectralOverlapPct: number; // sub-window overlap %
 }
 
 export const DEFAULT_TUNABLES: CoherenceTunables = {
@@ -178,6 +186,11 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   respMinHz: 0.08, // 4.8 br/min — below this is usually postural sway; breathing is de-weighted gently, not cut
   respNearPeakHz: 0.04, // ±0.04 Hz treated as "the peak"
   respHarmonicExcludeMult: 1.6, // confidence denominator excludes ≥1.6× the peak (drops 2×/3× harmonics)
+  // Detrend & spectral averaging (Mode A LS upgrade)
+  detrendEnabled: 1,
+  detrendLambda: 500,
+  spectralSegments: 3,
+  spectralOverlapPct: 50,
 };
 
 /** Recombine the four flattened gamma scalars into the difficulty table the lens uses. */

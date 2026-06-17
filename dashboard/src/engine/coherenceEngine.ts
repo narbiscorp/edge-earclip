@@ -20,6 +20,7 @@ import { FollowPacer } from './followPacer';
 import { FastAmplitudeTracker } from './fastAmplitude';
 import { RespirationFromACC } from './respirationFromAcc';
 import { ResonanceController, type ModeBState, type SearchProgress } from './resonanceController';
+import { computeBreathHeartCoherence } from './breathHeartCoherence';
 
 export type { EngineMode } from './tunables';
 
@@ -54,6 +55,10 @@ export interface EngineStatus {
   pacerBpm: number; // current pacer rate
   duty: number; // last lens duty sent 0..100
   beats: number; // beats currently in the analysis window
+  // Mode A — real (cross-spectral) breath–heart coherence (null when no/short H10 ACC)
+  breathHeartCoherence: number | null; // γ² (0..1) at the respiration peak — the literature's coherence
+  breathHeartPhaseDeg: number | null; // HR–respiration phase there (degrees; ≈0 at resonance)
+  coherenceConfounded: boolean; // the followed rhythm is NOT driven by the measured breathing
   // Mode B
   modeBState: ModeBState | null;
   /** The breathing rate (BPM) the controller is currently pacing/testing. */
@@ -119,6 +124,9 @@ export class CoherenceEngine extends EventTarget {
   private _coherence = 0;
   private _cr = 0;
   private _respHz = 0;
+  private _breathHeartCoh: number | null = null;
+  private _breathHeartPhase: number | null = null;
+  private _confounded = false;
   private _lastDuty = 0;
 
   get running(): boolean {
@@ -161,6 +169,9 @@ export class CoherenceEngine extends EventTarget {
     this._coherence = 0;
     this._cr = 0;
     this._respHz = 0;
+    this._breathHeartCoh = null;
+    this._breathHeartPhase = null;
+    this._confounded = false;
     this._lastDuty = 0;
     this.gatedBeatsThisCycle = 0;
 
@@ -257,6 +268,9 @@ export class CoherenceEngine extends EventTarget {
       pacerBpm: this.pacer.currentQuintet / 5.0,
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
+      breathHeartCoherence: this._breathHeartCoh,
+      breathHeartPhaseDeg: this._breathHeartPhase,
+      coherenceConfounded: this._confounded,
       modeBState: this.modeB?.state ?? null,
       modeBCommandedBpm: this.modeB ? this.modeB.commandedBPM : null,
       modeBProgress: this.modeB && this.modeB.state === 'searching' ? this.modeB.searchProgress() : null,
@@ -271,13 +285,25 @@ export class CoherenceEngine extends EventTarget {
 
   /** 1 Hz tick — Mode A coherence + resonance readback. */
   private tick1Hz(): void {
-    const r = this.ls.compute(this.ingest.window(this.t.coherenceWindowS));
+    const win = this.ingest.window(this.t.coherenceWindowS);
+    const r = this.ls.compute(win);
     if (r) {
       this.pacer.push(r.respPeakMhz); // feeds the follow pacer
-      this._coherence = r.cohPercent;
+      this._coherence = r.cohPercent; // single-signal CR squash — drives the lens (UNCHANGED)
       this._cr = r.cr;
       this._respHz = r.respPeakHz;
     }
+    // Mode A's REAL coherence: cross-spectral γ² between the H10-ACC respiration and heart rate. Needs
+    // an ACC stream (resp.estimate() non-null); null when absent/too short. Does NOT drive the lens —
+    // it is surfaced honestly alongside the CR. The pacer/lens stay on the CR path above.
+    const est = this.resp.estimate();
+    const bh =
+      r && est
+        ? computeBreathHeartCoherence(win, this.resp.magnitudeWindow(), r.respPeakHz, est.bpm / 60, this.t)
+        : null;
+    this._breathHeartCoh = bh ? bh.gammaSq : null;
+    this._breathHeartPhase = bh ? bh.phaseDeg : null;
+    this._confounded = bh ? bh.confounded : false;
     this.emitLens();
     this.emitStatus();
   }

@@ -9,6 +9,7 @@
  */
 import type { CoherenceTunables } from './tunables';
 import type { IBIEntry } from './ibiIngest';
+import { smoothnessPriorsDetrend } from './dsp';
 
 export interface CoherenceRatio {
   cr: number;
@@ -88,38 +89,29 @@ export class LombScargleCore {
     const rr = beats.map((b) => b.rrMs);
     const n = rr.length;
     const mean = rr.reduce((s, v) => s + v, 0) / n;
-    const y = rr.map((v) => v - mean);
+    // #1 Smoothness-priors (Tarvainen/Kubios) detrend of the RR series, treated as evenly spaced by
+    // beat index, removing slow drift/VLF that would otherwise inflate the CR `total` term and depress
+    // CR. Applied ONCE to the full window (then segmented for #2). The detrended values are fed at
+    // their ORIGINAL irregular beat times — the single-signal path is never resampled (that is why
+    // Mode A uses Lomb–Scargle). Falls back to mean removal when disabled.
+    const y = this.t.detrendEnabled
+      ? smoothnessPriorsDetrend(rr, this.t.detrendLambda)
+      : rr.map((v) => v - mean);
     const variance = y.reduce((s, v) => s + v * v, 0) / (n - 1);
     if (variance <= 1e-9) return null;
 
     const freqs = this.freqs;
-    const psd = new Array<number>(freqs.length).fill(0);
-    for (let k = 0; k < freqs.length; k++) {
-      const w = 2.0 * Math.PI * freqs[k];
-      let s2 = 0.0;
-      let c2 = 0.0;
-      for (let i = 0; i < n; i++) {
-        s2 += Math.sin(2 * w * tt[i]);
-        c2 += Math.cos(2 * w * tt[i]);
-      }
-      const tau = Math.atan2(s2, c2) / (2 * w);
-      let yc = 0.0;
-      let ys = 0.0;
-      let cc = 0.0;
-      let ss = 0.0;
-      for (let i = 0; i < n; i++) {
-        const a = w * (tt[i] - tau);
-        const c = Math.cos(a);
-        const sn = Math.sin(a);
-        yc += y[i] * c;
-        ys += y[i] * sn;
-        cc += c * c;
-        ss += sn * sn;
-      }
-      const pc = cc > 1e-12 ? (yc * yc) / cc : 0;
-      const ps = ss > 1e-12 ? (ys * ys) / ss : 0;
-      psd[k] = (0.5 * (pc + ps)) / variance; // variance-normalized (cancels in CR)
+    // #2 Variance-reduced spectrum: average the LS periodogram over `spectralSegments` overlapping
+    // TIME sub-windows (Welch). Averaging cuts run-to-run variance ~1/S, but each sub-window spans
+    // ~1/S the duration → coarser intrinsic resolution; we keep the SAME oversampled `freqs` grid so
+    // peak localization is unchanged and only CR stability improves. S<2 (or any sub-window below the
+    // 20-beat minimum) → the single full-window periodogram. Don't push S past ~4 or the 0.04 Hz LF
+    // band under-resolves within a sub-window.
+    let psd: number[] | null = null;
+    if (this.t.spectralSegments >= 2) {
+      psd = this.welchAveragedLS(tt, y, Math.round(this.t.spectralSegments), this.t.spectralOverlapPct / 100);
     }
+    if (!psd) psd = this.periodogramLS(tt, y);
 
     const cr = computeCoherenceRatio(freqs, psd, this.t);
 
@@ -159,5 +151,78 @@ export class LombScargleCore {
       hfnu,
       nBeats: n,
     };
+  }
+
+  /** Variance-normalized Lomb–Scargle periodogram of `values` at irregular `times`, evaluated over
+   * `this.freqs`. `values` are assumed already detrended/centered by the caller. Returns an all-zero
+   * spectrum for a ~flat segment. This is the single-segment estimator that #2 averages. */
+  private periodogramLS(times: number[], values: number[]): number[] {
+    const freqs = this.freqs;
+    const psd = new Array<number>(freqs.length).fill(0);
+    const n = times.length;
+    const variance = n > 1 ? values.reduce((s, v) => s + v * v, 0) / (n - 1) : 0;
+    if (variance <= 1e-9) return psd;
+    for (let k = 0; k < freqs.length; k++) {
+      const w = 2.0 * Math.PI * freqs[k];
+      let s2 = 0.0;
+      let c2 = 0.0;
+      for (let i = 0; i < n; i++) {
+        s2 += Math.sin(2 * w * times[i]);
+        c2 += Math.cos(2 * w * times[i]);
+      }
+      const tau = Math.atan2(s2, c2) / (2 * w);
+      let yc = 0.0;
+      let ys = 0.0;
+      let cc = 0.0;
+      let ss = 0.0;
+      for (let i = 0; i < n; i++) {
+        const a = w * (times[i] - tau);
+        const c = Math.cos(a);
+        const sn = Math.sin(a);
+        yc += values[i] * c;
+        ys += values[i] * sn;
+        cc += c * c;
+        ss += sn * sn;
+      }
+      const pc = cc > 1e-12 ? (yc * yc) / cc : 0;
+      const ps = ss > 1e-12 ? (ys * ys) / ss : 0;
+      psd[k] = (0.5 * (pc + ps)) / variance; // variance-normalized (cancels in CR)
+    }
+    return psd;
+  }
+
+  /** #2 — average the LS periodogram over `S` overlapping TIME sub-windows of the (already-detrended)
+   * window, reducing spectral variance. Returns null if any sub-window holds fewer than the 20-beat
+   * minimum, so `compute` cleanly falls back to the single full-window periodogram. */
+  private welchAveragedLS(tt: number[], y: number[], S: number, ov: number): number[] | null {
+    if (S < 2 || tt.length === 0) return null;
+    const t0 = tt[0];
+    const t1 = tt[tt.length - 1];
+    const span = t1 - t0;
+    if (span <= 0) return null;
+    const o = Math.max(0, Math.min(0.95, ov));
+    // Tile [t0,t1] with S equal sub-windows of length L at fractional overlap o:
+    //   span = L·(1 + (S−1)·(1−o)),  step = L·(1−o).
+    const L = span / (1 + (S - 1) * (1 - o));
+    const step = L * (1 - o);
+    const acc = new Array<number>(this.freqs.length).fill(0);
+    let count = 0;
+    for (let s = 0; s < S; s++) {
+      const a = t0 + s * step;
+      const b = a + L;
+      const segT: number[] = [];
+      const segY: number[] = [];
+      for (let i = 0; i < tt.length; i++) {
+        if (tt[i] >= a - 1e-9 && tt[i] <= b + 1e-9) {
+          segT.push(tt[i]);
+          segY.push(y[i]);
+        }
+      }
+      if (segT.length < 20) return null; // too few beats in a sub-window → caller uses the single path
+      const p = this.periodogramLS(segT, segY);
+      for (let k = 0; k < acc.length; k++) acc[k] += p[k];
+      count += 1;
+    }
+    return count > 0 ? acc.map((v) => v / count) : null;
   }
 }

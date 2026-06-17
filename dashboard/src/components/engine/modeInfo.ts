@@ -31,10 +31,11 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
     sub: 'Follow',
     desc: 'App-side coherence training that paces your breathing.',
     details:
-      'Coherence biofeedback, computed in the app. Every second it measures your heart-rate variability with a Lomb–Scargle spectrum, finds the breathing rate you are naturally drifting toward, and gently paces you there (drifting ±0.2 br/min per breath, never jumping). The lens clears as your HRV becomes more coherent — the score is the field-standard coherence ratio, peak ÷ (total − peak), shown 0–100. Works with the earclip or a Polar H10.',
+      'Coherence biofeedback, computed in the app, with two readouts kept honestly separate. "Rhythm steadiness" is how concentrated your heart-rate variability is at a single breathing-like frequency (the field-standard coherence ratio, peak ÷ (total − peak), shown 0–100); it drives the lens, but on its own it cannot tell whether that rhythm is actually your breathing. When a Polar H10 is connected, the app also measures the real thing — "breath–heart coherence" (γ²), the magnitude-squared coherence between your breathing (sensed from the H10 accelerometer) and your heart rate, which approaches 1 with near-0° phase when the two line up at resonance. If the rhythm the pacer is following is not being driven by your breathing (for example the ≈0.1 Hz Mayer wave), it is flagged as confounded rather than shown as a confident score. Each second it tracks your variability with a smoothness-priors-detrended, variance-reduced Lomb–Scargle spectrum, finds the rate you are drifting toward, and gently paces you there (±0.2 br/min per breath, never jumping). Works with the earclip or a Polar H10; the measured breath–heart coherence needs the H10.',
     references: [
       'McCraty R, Childre D. Coherence: bridging personal, social, and global health. Altern Ther Health Med. 2010;16(4):10–24. (the coherence-ratio method)',
       'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
+      'Carter GC. Coherence and time delay estimation. Proc IEEE. 1987;75(2):236–255. (magnitude-squared coherence between two signals)',
       'Shaffer F, Ginsberg JP. An overview of heart rate variability metrics and norms. Front Public Health. 2017;5:258.',
     ],
   },
