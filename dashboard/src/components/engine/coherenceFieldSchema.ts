@@ -17,6 +17,7 @@ export type CohSectionId =
   | 'lombscargle'
   | 'spectral'
   | 'lens'
+  | 'modeC'
   | 'pacer'
   | 'fastAmp'
   | 'resonance'
@@ -34,6 +35,7 @@ export const COH_SECTIONS: CohSectionDef[] = [
   { id: 'lombscargle', label: 'Lomb–Scargle & coherence', modes: ['modeA', 'modeB'], defaultExpanded: true },
   { id: 'spectral', label: 'Detrend & spectral averaging', modes: ['modeA', 'modeB'], defaultExpanded: false },
   { id: 'lens', label: 'Lens program', modes: ['modeA', 'modeB'], defaultExpanded: false },
+  { id: 'modeC', label: 'Mode C — settle & find', modes: ['modeC'], defaultExpanded: true },
   { id: 'pacer', label: 'Mode A — follow pacer', modes: ['modeA'], defaultExpanded: true },
   { id: 'fastAmp', label: 'Mode B — fast amplitude', modes: ['modeB'], defaultExpanded: true },
   { id: 'resonance', label: 'Mode B — resonance search', modes: ['modeB'], defaultExpanded: true },
@@ -136,6 +138,12 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'respMinHz', section: 'acc', modes: ['modeB'], label: 'Sway floor', min: 0.05, max: 0.12, step: 0.005, unit: 'Hz', help: 'ACC peaks below this are de-weighted as postural sway. Raise if a low-freq wobble reads as breathing; lower for very slow breathers.' }),
   f({ key: 'respNearPeakHz', section: 'acc', modes: ['modeB'], label: 'Peak window', min: 0.02, max: 0.08, step: 0.005, unit: 'Hz', help: '± band treated as the breathing peak (confidence numerator).' }),
   f({ key: 'respHarmonicExcludeMult', section: 'acc', modes: ['modeB'], label: 'Harmonic cutoff', min: 1.3, max: 2.5, step: 0.1, unit: '×', help: 'Confidence ignores power above this × the peak, so breathing harmonics do not deflate it.' }),
+
+  // --- Mode C settle & find (warm-up gate) ---
+  f({ key: 'modeCWarmupS', section: 'modeC', modes: ['modeC'], label: 'Warm-up minimum', min: 30, max: 300, step: 5, unit: 's', help: 'Min Follow warm-up before the gate can pass.' }),
+  f({ key: 'modeCWarmupMaxS', section: 'modeC', modes: ['modeC'], label: 'Warm-up cap', min: 60, max: 600, step: 5, unit: 's', help: 'Relaxes ONLY the stability gate; confident ACC is always required.' }),
+  f({ key: 'modeCStabilityWindowS', section: 'modeC', modes: ['modeC'], label: 'Stability window', min: 10, max: 60, step: 5, unit: 's', help: 'Window for the detected-rate SD + ACC-confidence fraction.' }),
+  f({ key: 'modeCStabilityBpmSd', section: 'modeC', modes: ['modeC'], label: 'Stability SD', min: 0.2, max: 1.5, step: 0.1, unit: 'BPM', help: 'Detected-rate SD must be ≤ this to transition before the cap.' }),
 ];
 
 /** Click-to-expand detail for each knob (the ⓘ button on the field). Says what the parameter
@@ -194,7 +202,7 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   epsilonPctOfA: 'Hysteresis: how much higher one rate amplitude must be (as a fraction of A) to count as better, so noise does not flip the bracket. 5%.',
   searchLoBPM: 'Low end of the breathing-rate range Mode B searches (4.0 br/min). Narrow the range if you know roughly where your resonance is.',
   searchHiBPM: 'High end of the search range (7.5 br/min). Most adults resonate around 5.5-6 br/min.',
-  respVerifyToleranceBPM: 'How close the accelerometer breathing rate must be to the paced rate for a dwell to count as followed (+/-0.5 BPM). RAISE toward 1.0 if good dwells keep being rejected; lower for stricter verification.',
+  respVerifyToleranceBPM: 'How close the accelerometer breathing rate must be to the paced rate for a dwell to count as followed (+/-0.8 BPM). The 45 s respiration window can only resolve rate to ~0.7-1.3 br/min, so values much below 0.8 reject real breathing. RAISE toward 1.0 if good dwells keep being rejected; lower only if sway is being accepted.',
   confirmProbeBPM: 'On a warm start from a saved resonance frequency, the half-range re-checked around it before re-locking.',
   maxUnverifiedDwells: 'Mode B aborts the search after this many dwells in a row it cannot verify against the accelerometer (you are moving or not following). RAISE if it gives up too readily; the hold-still hint appears as this climbs.',
   ditherAmpBPM: 'While holding lock, the pace is nudged by this much (sub-perceptual, 0.1 BPM) to keep tracking a drifting resonance.',
@@ -216,6 +224,11 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   respMinHz: 'Accelerometer peaks below this (~4.8 br/min) are treated as body sway and de-weighted, so the verifier locks onto real breathing (~6) instead of postural drift (~3.9). RAISE if a slow wobble still reads as breathing; LOWER for genuinely slow (under 5 br/min) breathers.',
   respNearPeakHz: 'The +/- window around the detected peak counted as the breath when scoring confidence. Wider tolerates a slightly spread peak (higher confidence); narrower is stricter.',
   respHarmonicExcludeMult: 'Confidence ignores spectral power above this multiple of the breathing rate, so the 2nd and 3rd harmonics of a non-sinusoidal breath do not drag the score down. 1.6 cuts just below the 2x harmonic.',
+  // Mode C settle & find
+  modeCWarmupS: 'Minimum time in the Follow warm-up before Mode C hands off to the resonance search, even if your breathing is already steady and confirmed. Gives you time to settle in. 120 s default.',
+  modeCWarmupMaxS: 'Upper bound on the warm-up. Past this, Mode C transitions on confident breathing alone without waiting for the steadiness test, so a naturally variable breather is not trapped in warm-up. It NEVER relaxes the accelerometer-confirmation requirement.',
+  modeCStabilityWindowS: 'Trailing window over which Mode C measures how steady your detected breathing rate is, and how consistently the accelerometer can see your breath. 30 s.',
+  modeCStabilityBpmSd: 'How steady your breathing must be to hand off before the cap: the detected rate must vary no more than this (standard deviation, BPM) over the stability window. LOWER is stricter. 0.4 is tight, so many steady breathers still transition on the cap; raise toward 0.6 to 0.8 if it rarely passes the real gate.',
 };
 
 const FIELDS_BY_KEY: Record<string, CohNumericField> = (() => {
@@ -228,14 +241,27 @@ export function cohFieldFor(key: CoherenceTunableKey): CohNumericField {
   return FIELDS_BY_KEY[key];
 }
 
+/**
+ * Does a `modes` list apply to the selected engine mode? Mode C runs the Mode A Follow warm-up
+ * THEN the exact Mode B search, so it uses every Mode A and Mode B tunable plus its own warm-up
+ * gate — a field/section tagged for modeA OR modeB OR modeC is therefore visible in Mode C.
+ * Mode A and Mode B are unaffected (plain membership).
+ */
+function appliesTo(modes: ActiveEngineMode[], mode: EngineMode): boolean {
+  if (mode === 'firmware') return false;
+  if (mode === 'modeC') {
+    return modes.includes('modeA') || modes.includes('modeB') || modes.includes('modeC');
+  }
+  return modes.includes(mode);
+}
+
 /** A tunable section is shown only when the selected mode is one it applies to. */
 export function sectionVisible(section: CohSectionDef, mode: EngineMode): boolean {
-  return mode !== 'firmware' && section.modes.includes(mode);
+  return appliesTo(section.modes, mode);
 }
 
 export function fieldsForSection(section: CohSectionId, mode: EngineMode): CohNumericField[] {
-  if (mode === 'firmware') return [];
-  return COH_FIELDS.filter((fld) => fld.section === section && fld.modes.includes(mode));
+  return COH_FIELDS.filter((fld) => fld.section === section && appliesTo(fld.modes, mode));
 }
 
 /** Every tunable key (for validation / preset round-trips). */

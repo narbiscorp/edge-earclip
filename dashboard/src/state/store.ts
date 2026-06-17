@@ -18,6 +18,7 @@ import {
   type PolarDisconnectedDetail,
   type PolarErrorDetail,
 } from '../ble/polarH10';
+import { stampAccPacket } from './accClock';
 import {
   edgeDevice,
   type EdgeStatus,
@@ -263,8 +264,8 @@ export interface DashboardState {
     dutyPct?: number,
   ) => Promise<void>;
   setUiMode: (mode: 'basic' | 'expert' | 'mobile') => void;
-  /** Select the app-side engine mode (firmware/modeA/modeB). Starts/stops the engine,
-   * takes over or hands back the lens, and (Mode B) asserts the H10 + ACC source. */
+  /** Select the app-side engine mode (firmware/modeA/modeB/modeC). Starts/stops the engine,
+   * takes over or hands back the lens, and (Mode B/Mode C) asserts the H10 + ACC source. */
   setEngineMode: (mode: EngineMode) => Promise<void>;
   /** Update every engine tunable, persist, and push the new values to the running engine live. */
   setCoherenceTunables: (t: CoherenceTunables) => void;
@@ -314,11 +315,12 @@ const replayBuffers = makeBuffers();
 export const accMagBuffer = new StreamBuffer<number>(3600); // ~72 s at 50 Hz
 export const ACC_STREAM_HZ = 50;
 
-/* ACC start is deferred/debounced (the H10 link is fragile right after connect), and samples are
- * stamped on a global monotonic clock (the H10 batches ~5 s/notification — see the accReceived
- * handler). Module-level so they persist across notifications and reconnects. */
+/* ACC start is deferred/debounced (the H10 link is fragile right after connect). `accLastTs` is the
+ * last emitted ACC sample timestamp — the monotonic seam guard for stampAccPacket() (the H10 batches
+ * ~5 s/notification — see the accReceived handler). Module-level so they persist across notifications
+ * and reconnects; reset to 0 on a real disconnect so the next stream re-anchors freely. */
 let accStartTimer: ReturnType<typeof setTimeout> | null = null;
-let accSampleClockMs = 0;
+let accLastTs = 0;
 
 // Session accumulator — module-level mutable arrays avoid GC pressure from
 // spread-cloning on every beat. Consumers call the getters; the modal reads
@@ -442,7 +444,7 @@ const ENGINE_MODE_KEY = 'coherenceEngineMode';
 function loadEngineMode(): EngineMode {
   try {
     const v = localStorage.getItem(ENGINE_MODE_KEY);
-    return v === 'modeA' || v === 'modeB' ? v : 'firmware';
+    return v === 'modeA' || v === 'modeB' || v === 'modeC' ? v : 'firmware';
   } catch {
     return 'firmware';
   }
@@ -504,7 +506,7 @@ const _chimeInit = loadChime();
 
 /** Start (or restart) the ported engine for the given app-side mode. The engine ingests
  * beats from whichever HR source feeds the glasses and streams lens duty over 0xA5. */
-function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
+function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
   const s = useDashboardStore.getState();
   const source = s.hrSourceForGlasses === 'h10' ? 'polarH10' : 'edgeRelay';
   edgeDevice.resetLensState(); // fresh full re-send of the lens params on (re)start
@@ -513,18 +515,26 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB'): void {
     source,
     tunables: s.coherenceTunables,
     brightness: 100,
+    // Mode B warm-starts from the stored RF. Mode C seeds from the warm-up settled rate instead,
+    // so it gets no priorRF (its controller isn't created until the gate fires).
     priorRF: mode === 'modeB' ? loadModeBRF() : null,
     // Engine commands the firmware's breathe/static program (it renders the smooth cycle); we no
     // longer stream per-tick PWM. driveLens coalesces, depth comes from the engine's coherence.
     onLens: (state) => {
       if (edgeDevice.isConnected) void edgeDevice.driveLens(state);
     },
+    // Phase-lock the firmware breathe to our breath clock — fired at start, each cycle boundary,
+    // and on resync(). New glasses firmware (>= 4.15.5) acts on it; older firmware ignores the
+    // unknown opcode, so the driveLens path above still drives those glasses (no regression).
+    onSync: (cycleMs, inhalePct) => {
+      if (edgeDevice.isConnected) void edgeDevice.syncBreath(cycleMs, inhalePct);
+    },
   });
-  // The H10 accelerometer feeds Mode B's breath verification AND Mode A's cross-spectral breath–heart
-  // coherence (γ²), so stream it for either app-side mode when the source is the H10. This adds a small
+  // The H10 accelerometer feeds Mode B/C breath verification AND Mode A's cross-spectral breath–heart
+  // coherence (γ²), so stream it for ANY app-side mode when the source is the H10. Small added
   // BLE/power cost in Mode A (the PMD stream, which Mode A previously ran without) — worth it for the
   // honest, measured coherence.
-  if (source === 'polarH10') scheduleAccStart('engine active');
+  if (source === 'polarH10') scheduleAccStart(`${mode} active`);
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
@@ -539,14 +549,14 @@ function stopCoherenceEngine(): void {
 /** Defer + debounce the ACC stream start. Firing the PMD setup (service discovery + control
  * writes) immediately on connect — especially on every transient reconnect — correlated with the
  * H10 dropping the link. Wait ~2 s for it to settle, then start only if still connected, still in an
- * app-side mode (A or B), the engine's running, and not already streaming. */
+ * app-side mode (A, B, or C), the engine's running, and not already streaming. */
 function scheduleAccStart(reason: string): void {
   if (accStartTimer) clearTimeout(accStartTimer);
   accStartTimer = setTimeout(() => {
     accStartTimer = null;
     if (polarH10.status !== 'connected') return;
     if (!coherenceEngine.running) return;
-    if (useDashboardStore.getState().engineMode === 'firmware') return; // modeA + modeB both use ACC now
+    if (useDashboardStore.getState().engineMode === 'firmware') return; // modeA + modeB + modeC all use ACC
     if (polarH10.isAccStreaming) return;
     appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
     void polarH10.startAccStream().catch((err) => {
@@ -561,7 +571,7 @@ function scheduleAccStart(reason: string): void {
 export function initCoherenceEngine(): void {
   const s = useDashboardStore.getState();
   if (s.engineMode === 'firmware' || coherenceEngine.running) return;
-  if (s.engineMode === 'modeB' && s.hrSourceForGlasses !== 'h10') {
+  if ((s.engineMode === 'modeB' || s.engineMode === 'modeC') && s.hrSourceForGlasses !== 'h10') {
     s.setHrSourceForGlasses('h10');
   }
   startCoherenceEngine(s.engineMode);
@@ -684,7 +694,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     // ingests from the right feed (and starts/stops the ACC stream as needed).
     if (coherenceEngine.running) {
       const m = useDashboardStore.getState().engineMode;
-      if (m === 'modeA' || m === 'modeB') startCoherenceEngine(m);
+      if (m === 'modeA' || m === 'modeB' || m === 'modeC') startCoherenceEngine(m);
     }
   },
   setCoherenceParams: async (params) => {
@@ -761,14 +771,16 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       scheduleAutoStartProgram('coherence engine off');
       return;
     }
-    // Entering Mode A / Mode B — the engine owns the lens; clear any firmware program.
+    // Entering Mode A / Mode B / Mode C — the engine owns the lens; clear any firmware program.
     set({ activeProgram: null, standaloneMode: null });
-    if (mode === 'modeB' && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
-      // Mode B needs validated H10 RR + the independent ACC respiration channel.
+    if ((mode === 'modeB' || mode === 'modeC') && useDashboardStore.getState().hrSourceForGlasses !== 'h10') {
+      // Mode B and Mode C need validated H10 RR + the independent ACC respiration channel.
       useDashboardStore.getState().setHrSourceForGlasses('h10');
     }
     startCoherenceEngine(mode);
-    appendBleLog('system', 'info', `coherence engine ON — ${mode === 'modeA' ? 'Mode A (Follow)' : 'Mode B (Find resonance)'}`);
+    const label =
+      mode === 'modeA' ? 'Mode A (Follow)' : mode === 'modeB' ? 'Mode B (Find resonance)' : 'Mode C (Settle & Find)';
+    appendBleLog('system', 'info', `coherence engine ON — ${label}`);
   },
   setCoherenceTunables: (t) => {
     set({ coherenceTunables: t });
@@ -914,21 +926,18 @@ polarH10.addEventListener('accReceived', (e) => {
   const n = acc.samples.length;
   if (n === 0) return;
   const stepMs = 1000 / (acc.sampleRateHz || ACC_STREAM_HZ);
-  // The H10 batches ~5 s of ACC per notification. Stamp samples on a GLOBAL monotonic, evenly
-  // spaced clock instead of per-frame device/arrival times — otherwise consecutive frames overlap
-  // in time and the line chart draws backwards (the sawtooth). Re-anchor if it drifts > 2 s.
-  const now = Date.now();
-  if (accSampleClockMs === 0 || Math.abs(accSampleClockMs + (n - 1) * stepMs - now) > 2000) {
-    accSampleClockMs = now - (n - 1) * stepMs;
-  }
-  const lastMs = accSampleClockMs + (n - 1) * stepMs;
+  // Stamp on the H10's device-clock-derived lastSampleMs (jitter-free, wall-anchored, monotonic
+  // across frames), walking back stepMs/sample, with a strict monotonic seam guard. The old
+  // synthetic free-running clock re-anchored with a hard ±jump on >2 s drift and could step
+  // BACKWARD on bursty BLE delivery — that was the breathing-wave "doubling-back" time skew.
+  const { firstMs, lastMs } = stampAccPacket(accLastTs, acc.lastSampleMs, n, stepMs);
   if (coherenceEngine.running) coherenceEngine.onAccPacket(acc.samples, lastMs / 1000);
   for (let i = 0; i < n; i++) {
     const s = acc.samples[i];
     const mag = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
-    accMagBuffer.push(accSampleClockMs + i * stepMs, mag);
+    accMagBuffer.push(firstMs + i * stepMs, mag);
   }
-  accSampleClockMs += n * stepMs;
+  accLastTs = lastMs;
 });
 
 // Surface ACC stream diagnostics (service found, device accept/reject, first frame) to the
@@ -1296,7 +1305,7 @@ polarH10.addEventListener('connected', (e) => {
   }));
   appendBleLog('polar', 'info', `connected to ${name}`);
   autoSelectHrSourceIfApplicable('h10 connected');
-  // If an app-side engine (Mode A or B) is already running (H10 reconnected mid-session), (re)start
+  // If an app-side engine (Mode A, B, or C) is already running (H10 reconnected mid-session), (re)start
   // the ACC stream — deferred so a reconnect storm doesn't hammer the fragile post-connect link.
   if (coherenceEngine.running && useDashboardStore.getState().engineMode !== 'firmware') {
     scheduleAccStart('h10 connected');
@@ -1324,7 +1333,7 @@ polarH10.addEventListener('disconnected', (e) => {
    * so a brief drop doesn't churn the glasses' central. */
   if (polarH10.status === 'disconnected') {
     h10DisplayGate.reset(); // don't carry the dRR history across a strap swap
-    accSampleClockMs = 0; // re-anchor the ACC clock on the next stream
+    accLastTs = 0; // re-anchor the ACC clock on the next stream
     if (accStartTimer) {
       clearTimeout(accStartTimer);
       accStartTimer = null;
@@ -1511,6 +1520,16 @@ edgeDevice.addEventListener('connected', (e) => {
    * trigger we'd run from the polar 'connected' listener — covers the
    * connect-order H10-first-then-glasses. */
   autoSelectHrSourceIfApplicable('edge connected with h10 ready');
+  /* If the app-side engine is already running (it started before the glasses
+   * connected, or this is a reconnect), re-establish the lens: clear the
+   * coalesced driveLens state so the full breathe program re-sends, then push
+   * an immediate breath sync so the firmware phase-locks to our clock without
+   * waiting for the next cycle boundary. The auto-start below skips while the
+   * engine owns the lens, so these don't fight. */
+  if (coherenceEngine.running) {
+    edgeDevice.resetLensState();
+    coherenceEngine.resync();
+  }
   /* Schedule the default-program auto-start. Fires after a short delay
    * so the user has time to pick something else, and so the post-connect
    * burst of GATT writes (coh params, raw relay, hr source) doesn't

@@ -17,7 +17,7 @@ import {
 } from './coherenceFieldSchema';
 import { validateCoherenceTunables } from './validateCoherenceTunables';
 import CoherenceField from './CoherenceField';
-import { ENGINE_MODE_INFO, modeBStatusText } from './modeInfo';
+import { ENGINE_MODE_INFO, modeBStatusText, modeCStatusText } from './modeInfo';
 import { useLastMetrics } from '../../state/useLastMetrics';
 
 export default function CoherenceEnginePanel() {
@@ -60,8 +60,8 @@ export default function CoherenceEnginePanel() {
         ) : null}
       </div>
 
-      {/* Mode selector — 3 modes total. Each has an (i) info popover. */}
-      <div className="grid grid-cols-3 gap-1 text-[11px]">
+      {/* Mode selector — 4 modes total. Each has an (i) info popover. */}
+      <div className="grid grid-cols-2 gap-1 text-[11px]">
         {ENGINE_MODE_INFO.map((opt) => {
           const active = engineMode === opt.id;
           return (
@@ -106,9 +106,9 @@ export default function CoherenceEnginePanel() {
               Connect the glasses — the engine drives the lens over BLE.
             </div>
           ) : null}
-          {engineMode === 'modeB' && !polarConnected ? (
+          {(engineMode === 'modeB' || engineMode === 'modeC') && !polarConnected ? (
             <div className="rounded border border-amber-700/40 bg-amber-900/10 px-2 py-1 text-[10px] text-amber-300">
-              Mode B needs a Polar H10 (validated RR + accelerometer for dwell verification).
+              {engineMode === 'modeB' ? 'Mode B' : 'Mode C'} needs a Polar H10 (validated RR + accelerometer for dwell verification).
             </div>
           ) : null}
           <EngineReadout />
@@ -189,6 +189,7 @@ export default function CoherenceEnginePanel() {
 function EngineReadout() {
   const status = useDashboardStore((s) => s.engineStatus);
   const metrics = useLastMetrics();
+  const respConfidenceMin = useDashboardStore((s) => s.coherenceTunables.respConfidenceMin);
   if (!status || !status.running) {
     return (
       <div className="text-[10px] text-slate-500">Engine idle — waiting for a beat source.</div>
@@ -232,6 +233,25 @@ function EngineReadout() {
           <span>LF/HF <span className="text-slate-100">{metrics.lfHfRatio.toFixed(2)}</span></span>
         </div>
       ) : null}
+      {status.mode === 'modeB' && status.modeBState === 'searching' ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-slate-400">
+          <span title="Breathing rate measured from the H10 accelerometer — the independent channel Mode B verifies each dwell against">
+            ACC <span className="text-slate-100">{status.accMeasuredBpm != null ? status.accMeasuredBpm.toFixed(1) : '—'}</span> br/min
+          </span>
+          <span title="Spectral confidence of the ACC breathing peak; must clear the min-confidence knob to count as verified">
+            conf{' '}
+            <span className={status.accRespConfidence >= respConfidenceMin ? 'text-emerald-400' : 'text-amber-400'}>
+              {status.accRespConfidence.toFixed(2)}
+            </span>
+            <span className="text-slate-600">/{respConfidenceMin.toFixed(2)}</span>
+          </span>
+          {status.modeBVerifiedRatio != null ? (
+            <span title="Fraction of this dwell's scored breaths whose ACC rate matched the paced rate">
+              verified <span className="text-slate-100">{Math.round(status.modeBVerifiedRatio * 100)}%</span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {status.mode === 'modeB' && status.modeBState ? (
         <div
           className={
@@ -244,6 +264,21 @@ function EngineReadout() {
           }
         >
           {modeBStatusText(status)}
+        </div>
+      ) : status.mode === 'modeC' ? (
+        <div
+          className={
+            'pt-0.5 border-t border-slate-800/60 ' +
+            (status.modeCPhase === 'maintaining'
+              ? 'text-emerald-300'
+              : status.modeCPhase === 'searching'
+                ? 'text-amber-300'
+                : status.modeCAccConfident
+                  ? 'text-cyan-300'
+                  : 'text-slate-400')
+          }
+        >
+          {modeCStatusText(status)}
         </div>
       ) : null}
     </div>

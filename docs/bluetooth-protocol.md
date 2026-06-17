@@ -682,6 +682,7 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xB7` | PPG program | 0–3 | no | 0 heartbeat, 1 coh-breathe, 2 coh-lens, 3 coh-breathe-strobe |
 | `0xB8` | Coherence difficulty | 0–3 | yes | easy / medium / hard / expert |
 | `0xB9` | Adaptive pacer | 0/1 | yes | |
+| **`0xBA`** | **Breathe sync** 🆕 | 3 B payload | no | Mode A/B phase-lock (firmware ≥ 4.15.5). 4 B on the wire: `[0xBA][cycle_ms:u16 LE][inhale_pct:u8]`. Restarts the `LED_MODE_BREATHE` cosine at the moment of the write (the dashboard's on-screen inhale boundary) and renders at the exact cycle length sent, so the glasses lens, the on-screen breathing cue, and the audio chime share one clock. The dashboard issues it at each breath-cycle boundary + on Mode A/B start / glasses-connect. A firmware lens slew-rate limiter fades any re-anchor (~250 ms) so resyncs never snap. Auto-expires 2 cycles after the last sync (hall-button BREATHE reverts to integer-BPM). Ignored by firmware < 4.15.5 (unknown opcode), so it's safe to always send. |
 | `0xBF` | Factory reset | any | n/a | wipes the `narbis_prefs` NVS namespace |
 | `0xC0` | *(reserved)* | — | — | Listed in firmware's internal opcode comment table but has no dispatcher case — do not use |
 | **`0xC1`** | **Forget earclip** 🆕 | any (ignored) | no | Path B. Wipes the `narbis_pair` NVS entry, drops the central connection to the earclip, starts a fresh general scan. Visual feedback: 3 fast lens-opacity pulses. Same effect as 5 short magnet taps. |

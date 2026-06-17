@@ -190,6 +190,7 @@ export const CTRL = {
   PROGRAM_SELECT:   0xB7,  // 1..4 PPG program (1=heartbeat, 2=coh breathe, 3=coh lens, 4=coh breathe+strobe)
   DIFFICULTY:       0xB8,  // 0..3 (0=easy, 1=med, 2=hard, 3=expert)
   ADAPTIVE_PACER:   0xB9,  // 0/1 track measured respiration rate
+  BREATHE_SYNC:     0xBA,  // [cycle_ms u16 LE][inhale_pct u8] phase-lock breathe to dashboard clock (fw >= 4.15.5; older ignore)
   STROBE_FREQ_HZ:   0xAB,  // 1..50 Hz, strobe flash rate
   STROBE_DUTY_PCT:  0xAC,  // 10..90 % dark fraction per cycle
   FACTORY_RESET:    0xBF,  // 0x00 wipe ALL stored prefs
@@ -578,6 +579,22 @@ export class EdgeDevice extends EventTarget {
    * engine starts/stops, since the firmware program gets changed out from under us). */
   resetLensState(): void {
     this.lastLens = {};
+  }
+
+  /** Phase-lock the firmware-rendered breathe to the dashboard's breath clock. Sends the exact
+   * cycle length (ms) + inhale ratio; the firmware restarts its cosine at the moment of the call.
+   * The engine fires this at each breath-cycle boundary (= the on-screen inhale start) plus on
+   * Mode A/B start and glasses-connect, so the lens, the on-screen orb, and the chime share one
+   * clock. Firmware >= 4.15.5 acts on it; older firmware ignores the unknown opcode (no-op), so the
+   * existing driveLens path still drives those glasses (rate-matched, not phase-locked) — no
+   * regression. Low rate; rides the serial write queue so it never collides with driveLens /
+   * injectIbi writes. Silently no-ops if not connected. */
+  async syncBreath(cycleMs: number, inhalePct: number): Promise<void> {
+    if (!this.chCtrl) return;
+    const c = clamp(Math.round(cycleMs), 2000, 30000);
+    const inh = clamp(Math.round(inhalePct), 10, 90);
+    const payload = new Uint8Array([c & 0xff, (c >> 8) & 0xff, inh]);
+    await this.sendCtrlCommand(CTRL.BREATHE_SYNC, payload);
   }
 
   private async openSession(): Promise<void> {

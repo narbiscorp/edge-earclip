@@ -15,8 +15,10 @@
  */
 
 /** Which engine drives the lens. `firmware` = the glasses' own coherence pipeline
- * (the existing on-glasses behavior); `modeA`/`modeB` = the ported app-side engine. */
-export type EngineMode = 'firmware' | 'modeA' | 'modeB';
+ * (the existing on-glasses behavior); `modeA`/`modeB`/`modeC` = the ported app-side engine.
+ * `modeC` (Settle & Find) = Mode A warm-up until a stability + ACC gate passes, then the exact
+ * Mode B resonance search seeded at the settled rate. */
+export type EngineMode = 'firmware' | 'modeA' | 'modeB' | 'modeC';
 
 export interface CoherenceTunables {
   // --- Ingest / artifact ---
@@ -110,6 +112,12 @@ export interface CoherenceTunables {
   detrendLambda: number; // Tarvainen λ; sets the trend cutoff (≈0.035 Hz on the RR series at 500)
   spectralSegments: number; // Welch-averaged LS sub-windows (variance↓~1/S, resolution↓~S); 1 = single
   spectralOverlapPct: number; // sub-window overlap %
+
+  // --- Mode C "Settle & Find" warm-up gate ---
+  modeCWarmupS: number; // min Follow warm-up before the gate can pass
+  modeCWarmupMaxS: number; // cap: relaxes ONLY the stability requirement — the ACC gate is NEVER relaxed
+  modeCStabilityWindowS: number; // rolling window for the detected-rate SD + ACC-confidence fraction
+  modeCStabilityBpmSd: number; // detected-rate SD (BPM) must be ≤ this over the window to count as "stable"
 }
 
 export const DEFAULT_TUNABLES: CoherenceTunables = {
@@ -153,7 +161,7 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   epsilonPctOfA: 0.05,
   searchLoBPM: 4.0,
   searchHiBPM: 7.5,
-  respVerifyToleranceBPM: 0.5,
+  respVerifyToleranceBPM: 0.8, // ≈1.1 periodogram bins; 0.5 was sub-resolution (45 s window ⇒ ~0.73 br/min/bin, ~1.3 br/min Rayleigh), rejecting real cue-imperfect breathing
   confirmProbeBPM: 0.5,
   maxUnverifiedDwells: 12,
   // Mode B maintenance
@@ -191,6 +199,14 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   detrendLambda: 500,
   spectralSegments: 3,
   spectralOverlapPct: 50,
+  // Mode C "Settle & Find" warm-up gate. NOTE: these stability defaults are TIGHT — 0.4 BPM SD
+  // over 30 s is ~6–8 breaths and tighter than most genuinely steady breathers hold, so many
+  // sessions will transition on the cap rather than the real gate. Left as specified; revisit
+  // against real warm-up traces (likely loosen to ~0.6–0.8).
+  modeCWarmupS: 120.0,
+  modeCWarmupMaxS: 240.0,
+  modeCStabilityWindowS: 30.0,
+  modeCStabilityBpmSd: 0.4,
 };
 
 /** Recombine the four flattened gamma scalars into the difficulty table the lens uses. */

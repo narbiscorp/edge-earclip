@@ -60,6 +60,9 @@ export function buildReplayEvents(chunks: RecordingChunk[]): ReplayEvent[] {
     if (c.polarBeats) {
       for (const p of c.polarBeats) events.push({ t: p.timestamp, kind: 'polarBeat', payload: p });
     }
+    if (c.accPackets) {
+      for (const a of c.accPackets) events.push({ t: a.timestamp, kind: 'acc', payload: a });
+    }
     if (c.metrics) {
       for (const m of c.metrics) events.push({ t: m.timestamp, kind: 'metric', payload: m });
     }
