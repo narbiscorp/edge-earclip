@@ -81,7 +81,14 @@ export function modeBStatusText(status: EngineStatus): string {
     }.`;
   }
   // Searching.
-  const rate = status.modeBCommandedBpm != null ? status.modeBCommandedBpm.toFixed(1) : '—';
+  const commandedBpm = status.modeBCommandedBpm;
+  const rate = commandedBpm != null ? commandedBpm.toFixed(1) : '—';
+  // While the pacer is still easing up/down to a newly-chosen test rate it sits ~0.2–0.4 br/min off
+  // the command for a couple of breaths, and the cue shows that live rate. Say "easing you to X"
+  // then — not "holding X" — so the text never claims a rate you haven't reached yet (the bug where
+  // it read "holding 6.0" while the cue paced 5.6). Both rates live on the 0.2 br/min grid, so a
+  // >0.15 gap means genuinely still moving; once settled the gap is 0 and it reads "holding".
+  const easing = commandedBpm != null && Math.abs(status.pacerBpm - commandedBpm) > 0.15;
   const p = status.modeBProgress;
   const breath = p ? ` (breath ${Math.min(p.breath, p.dwellBreaths)} of ${p.dwellBreaths})` : '';
   const best = p && p.bestRate != null ? ` Strongest response so far: ${p.bestRate.toFixed(1)} br/min.` : '';
@@ -95,16 +102,24 @@ export function modeBStatusText(status: EngineStatus): string {
   let lead: string;
   switch (p?.phase) {
     case 'baseline':
-      lead = `Pacing you at ${rate} br/min to read your baseline${breath}.`;
+      lead = easing
+        ? `Easing you to ${rate} br/min to read your baseline${breath}.`
+        : `Pacing you at ${rate} br/min to read your baseline${breath}.`;
       break;
     case 'climbing':
-      lead = `Climbing toward your resonance — holding ${rate} br/min${breath} and comparing how strong your heart-rate swings are.${best}`;
+      lead = `Climbing toward your resonance — ${
+        easing ? `easing you to ${rate}` : `holding ${rate}`
+      } br/min${breath} and comparing how strong your heart-rate swings are.${best}`;
       break;
     case 'refining':
-      lead = `Zeroing in — fine-tuning around ${rate} br/min${breath}.${best}`;
+      lead = `Zeroing in — ${
+        easing ? `easing you to ${rate}` : `fine-tuning around ${rate}`
+      } br/min${breath}.${best}`;
       break;
     default:
-      lead = `Pacing you at ${rate} br/min and measuring your heart-rate swings${breath}.`;
+      lead = easing
+        ? `Easing you to ${rate} br/min, then measuring your heart-rate swings${breath}.`
+        : `Pacing you at ${rate} br/min and measuring your heart-rate swings${breath}.`;
   }
   return lead + tested + hold;
 }
