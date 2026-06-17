@@ -25,12 +25,15 @@ export default function ClientDetail({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  async function doArchive() {
+  async function doSetArchived(archived: boolean) {
     setBusy(true);
-    await archiveClient(client.id, true);
+    await archiveClient(client.id, archived);
     setBusy(false);
     onChanged();
-    onBack();
+    // Archiving drops the client out of the default (active-only) roster, so
+    // bounce back to the list. Unarchiving keeps them visible — stay on the
+    // page so the button flips to "Archive" and the restored state is obvious.
+    if (archived) onBack();
   }
 
   async function doDelete() {
@@ -50,7 +53,14 @@ export default function ClientDetail({
           ← All clients
         </button>
         <div className="min-w-0">
-          <div className="text-lg font-semibold text-slate-100 truncate">{client.display_name}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-lg font-semibold text-slate-100 truncate">{client.display_name}</div>
+            {client.archived && (
+              <span className="shrink-0 text-[10px] uppercase tracking-wide text-amber-300/80 border border-amber-500/30 rounded px-1.5 py-0.5">
+                archived
+              </span>
+            )}
+          </div>
           <div className="text-xs text-slate-500">
             {[
               client.external_code ? `Code ${client.external_code}` : null,
@@ -66,14 +76,25 @@ export default function ClientDetail({
           >
             {editing ? 'Cancel edit' : 'Edit'}
           </button>
-          <button
-            onClick={doArchive}
-            disabled={busy}
-            className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-amber-300 transition disabled:opacity-50"
-            title="Hide from the active-client picker but keep all history"
-          >
-            Archive
-          </button>
+          {client.archived ? (
+            <button
+              onClick={() => void doSetArchived(false)}
+              disabled={busy}
+              className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-emerald-300 transition disabled:opacity-50"
+              title="Restore — show this client in the active-client picker again"
+            >
+              Unarchive
+            </button>
+          ) : (
+            <button
+              onClick={() => void doSetArchived(true)}
+              disabled={busy}
+              className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-amber-300 transition disabled:opacity-50"
+              title="Hide from the active-client picker but keep all history"
+            >
+              Archive
+            </button>
+          )}
           <button
             onClick={() => setConfirmDelete(true)}
             disabled={busy}
