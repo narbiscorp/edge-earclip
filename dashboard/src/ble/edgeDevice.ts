@@ -252,7 +252,14 @@ export class EdgeDevice extends EventTarget {
   /* Coalesced lens state for driveLens — only write a firmware opcode when its value actually
    * changed (the engine pushes its full desired state ~1 Hz). lensDriveInFlight drops an overlapping
    * push (the next one catches up). Both reset on disconnect / engine restart. */
-  private lastLens: { style?: string; bpm?: number; depthPct?: number; inhalePct?: number } = {};
+  private lastLens: {
+    style?: string;
+    bpm?: number;
+    depthPct?: number;
+    inhalePct?: number;
+    strobeHz?: number;
+    strobeDutyPct?: number;
+  } = {};
   private lensDriveInFlight = false;
   /* Serializes ALL writes to the CTRL characteristic. Web Bluetooth rejects a
    * second GATT write while one is in flight ("operation already in progress");
@@ -541,33 +548,72 @@ export class EdgeDevice extends EventTarget {
    * when its value changed. Depth comes from the engine's app-side coherence via 0xA2 (breathe
    * amplitude) / 0xA5 (static tint). Silently no-ops if not connected or a push is still in flight. */
   async driveLens(s: {
-    style: 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
+    style: 'heartbeat' | 'breathingGuide' | 'coherenceLens' | 'breatheStrobe';
     bpm: number;
     depthPct: number;
     inhalePct: number;
+    strobeHz?: number;
+    strobeDutyPct?: number;
   }): Promise<void> {
     if (!this.chCtrl || this.lensDriveInFlight) return;
     this.lensDriveInFlight = true;
     try {
+      // On style change, enter the matching firmware lens mode once, then force a full param re-send.
       if (s.style !== this.lastLens.style) {
-        // Entering a new style → set the firmware mode once, then force a full param re-send.
-        if (s.style !== 'coherenceLens') {
-          await this.setStandaloneBreathe(); // 0xB0 plain BREATHE; firmware renders the cosine fade
+        switch (s.style) {
+          case 'heartbeat':
+            // PULSE_ON_BEAT: firmware flashes the lens on each beat it receives (the host re-enables
+            // 0xCA IBI injection for this program so the H10 beats reach the glasses).
+            await this.setStandalonePulseOnBeat(); // 0xB6
+            break;
+          case 'coherenceLens':
+            // Steady tint set below via 0xA5; no mode-enter opcode needed.
+            break;
+          case 'breatheStrobe':
+            // Firmware PPG Program 4 (LED_MODE_COHERENCE_BREATHE_STROBE): the glasses pace the breath
+            // and modulate the strobe from their own coherence (fed by injected beats). We only set
+            // the strobe shape below. Full engine-driven pacing would need a standalone breathe+strobe
+            // opcode (firmware mode 3) — see plan; not exposed yet.
+            await this.setProgram(4); // 0xB7 = 4
+            break;
+          case 'breathingGuide':
+          default:
+            await this.setStandaloneBreathe(); // 0xB0 plain BREATHE; firmware renders the cosine fade
+            break;
         }
         this.lastLens = { style: s.style };
       }
-      if (s.style === 'coherenceLens') {
-        // Steady tint — a slow 0xA5 setpoint (refreshed ~1 Hz as coherence drifts), NOT a stream.
-        if (s.depthPct !== this.lastLens.depthPct) await this.setStandaloneStatic(s.depthPct);
-      } else {
-        // breathingGuide / breatheStrobe → plain BREATHE. (breatheStrobe's strobe overlay needs a
-        // firmware standalone breathe+strobe (LED_MODE 3) opcode the dashboard doesn't expose yet —
-        // follow-up; for now it renders as a plain breathe cue.)
-        if (s.bpm !== this.lastLens.bpm) await this.setBreathRateBpm(s.bpm); // 0xB1 rate
-        if (s.inhalePct !== this.lastLens.inhalePct) await this.setBreathInhalePct(s.inhalePct); // 0xB2
-        if (s.depthPct !== this.lastLens.depthPct) await this.setLensLimitPct(s.depthPct); // 0xA2 amplitude
+      switch (s.style) {
+        case 'heartbeat':
+          // Beat-driven flash rendered firmware-side; no per-tick params to push.
+          break;
+        case 'coherenceLens':
+          // Steady tint — a slow 0xA5 setpoint (refreshed ~1 Hz as coherence drifts), NOT a stream.
+          if (s.depthPct !== this.lastLens.depthPct) await this.setStandaloneStatic(s.depthPct);
+          break;
+        case 'breatheStrobe': {
+          // Program 4 paces + computes coherence on-glasses; we only shape the strobe.
+          const hz = s.strobeHz ?? 10;
+          const duty = s.strobeDutyPct ?? 50;
+          if (hz !== this.lastLens.strobeHz) await this.setStrobeFreqHz(hz); // 0xAB
+          if (duty !== this.lastLens.strobeDutyPct) await this.setStrobeDutyPct(duty); // 0xAC
+          break;
+        }
+        case 'breathingGuide':
+        default:
+          if (s.bpm !== this.lastLens.bpm) await this.setBreathRateBpm(s.bpm); // 0xB1 rate
+          if (s.inhalePct !== this.lastLens.inhalePct) await this.setBreathInhalePct(s.inhalePct); // 0xB2
+          if (s.depthPct !== this.lastLens.depthPct) await this.setLensLimitPct(s.depthPct); // 0xA2 amplitude
+          break;
       }
-      this.lastLens = { style: s.style, bpm: s.bpm, depthPct: s.depthPct, inhalePct: s.inhalePct };
+      this.lastLens = {
+        style: s.style,
+        bpm: s.bpm,
+        depthPct: s.depthPct,
+        inhalePct: s.inhalePct,
+        strobeHz: s.strobeHz,
+        strobeDutyPct: s.strobeDutyPct,
+      };
     } catch (err) {
       this.emitError(err, 'driveLens');
     } finally {
