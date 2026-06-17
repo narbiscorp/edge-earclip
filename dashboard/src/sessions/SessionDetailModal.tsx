@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import Plotly from 'plotly.js-dist-min';
 import type { Shape } from 'plotly.js';
 import { darkLayout } from '../charts/chartTheme';
+import { pacerOverlay } from '../charts/pacerOverlay';
 import { useSessionDetail } from './useSessions';
 import { deleteSession, updateSessionNotes } from './saveSession';
 import type { SessionRow } from './types';
@@ -72,6 +73,13 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
   const [notes, setNotes] = useState(row.notes ?? '');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Paced breathing-rate overlay (Mode B/C) — persisted in device_info, aligned 1:1 with the coherence
+  // log. Lets the report correlate the swept breathing rates with the IBI tachogram + coherence graph.
+  const pacerLog = row.device_info?.pacer_bpm_log ?? null;
+  const em = row.device_info?.engine_mode;
+  const showPacer = (em === 'modeB' || em === 'modeC') && !!pacerLog && pacerLog.length > 0;
+  const pacerXSec = (row.coherence_log_t_ms ?? []).map((ms) => ms / 1000);
+
   // Render IBI tachogram (timestamps reconstruct from cumulative sum).
   useEffect(() => {
     const div = ibiDivRef.current;
@@ -84,15 +92,17 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
       xs.push(cum / 1000);
       ys.push(ibi);
     }
+    const ov = showPacer ? pacerOverlay(pacerXSec, pacerLog!) : null;
     void Plotly.newPlot(div, [{
-      x: xs, y: ys, type: 'scatter', mode: 'lines+markers',
+      x: xs, y: ys, type: 'scatter', mode: 'lines+markers', name: 'IBI',
       line: { color: '#22d3ee', width: 1.5, shape: 'spline' },
       marker: { color: '#22d3ee', size: 3 },
-    }], darkLayout({
+    }, ...(ov ? [ov.trace] : [])], darkLayout({
       xaxis: { title: { text: 'Time (s)' }, gridcolor: '#334155', zerolinecolor: '#475569', linecolor: '#475569' },
       yaxis: { title: { text: 'IBI (ms)' }, gridcolor: '#334155', zerolinecolor: '#475569', linecolor: '#475569' },
+      ...(ov ? { yaxis2: ov.yaxis2 } : {}),
       showlegend: false,
-      margin: { l: 56, r: 16, t: 8, b: 40 },
+      margin: { l: 56, r: ov ? 52 : 16, t: 8, b: 40 },
     }), { responsive: true, displayModeBar: false });
     return () => { void Plotly.purge(div); };
   }, [row.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -108,16 +118,18 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
       { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: 40, y1: 70,  fillcolor: 'rgba(251,191,36,0.07)', line: { width: 0 } },
       { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: 70, y1: 100, fillcolor: 'rgba(52,211,153,0.07)', line: { width: 0 } },
     ];
+    const ov = showPacer ? pacerOverlay(xs, pacerLog!) : null;
     void Plotly.newPlot(div, [{
-      x: xs, y: ys, type: 'scatter', mode: 'lines+markers',
+      x: xs, y: ys, type: 'scatter', mode: 'lines+markers', name: 'Coherence',
       line: { color: '#34d399', width: 2, shape: 'spline' },
       marker: { color: '#34d399', size: 5 },
-    }], darkLayout({
+    }, ...(ov ? [ov.trace] : [])], darkLayout({
       xaxis: { title: { text: 'Time (s)' }, gridcolor: '#334155', zerolinecolor: '#475569', linecolor: '#475569' },
       yaxis: { title: { text: 'Coherence' }, range: [0, 100], gridcolor: '#334155', zerolinecolor: '#475569', linecolor: '#475569' },
+      ...(ov ? { yaxis2: ov.yaxis2 } : {}),
       shapes: bandShapes as Shape[],
       showlegend: false,
-      margin: { l: 56, r: 16, t: 8, b: 40 },
+      margin: { l: 56, r: ov ? 52 : 16, t: 8, b: 40 },
     }), { responsive: true, displayModeBar: false });
     return () => { void Plotly.purge(div); };
   }, [row.id]); // eslint-disable-line react-hooks/exhaustive-deps
