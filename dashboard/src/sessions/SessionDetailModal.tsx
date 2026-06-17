@@ -197,7 +197,7 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
             <StatCard
               label="Coh change"
               value={row.coh_change_pct != null ? `${row.coh_change_pct > 0 ? '+' : ''}${fmt(row.coh_change_pct, 1)}` : '—'}
-              unit="%"
+              unit="pts"
               colorClass={row.coh_change_pct == null ? 'text-slate-500'
                 : row.coh_change_pct > 5 ? 'text-emerald-400'
                 : row.coh_change_pct < -5 ? 'text-rose-400'

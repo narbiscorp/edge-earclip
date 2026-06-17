@@ -163,11 +163,14 @@ export default function SessionSummaryModal() {
       ? (cohValues.filter((c) => c >= 70).length / cohValues.length) * 100
       : 0;
   const cohSlice    = Math.max(3, Math.floor(cohValues.length * 0.1));
-  const cohPctChange =
+  // Coherence change is an ABSOLUTE delta in points (coherence is a 0–100 score), NOT a relative
+  // "(last − first) / first" %. Sessions almost always start at ~0 coherence while settling, so a
+  // relative change divides by ~0 → +Infinity (the bug) or, with a tiny baseline, absurd values
+  // (e.g. +1300%). A point delta is well-defined from a zero baseline and is what the user cares
+  // about (0 → 28 reads as "+28", not "∞").
+  const cohChange =
     cohValues.length >= cohSlice * 2
-      ? ((mean(cohValues.slice(-cohSlice)) - mean(cohValues.slice(0, cohSlice))) /
-          mean(cohValues.slice(0, cohSlice))) *
-        100
+      ? mean(cohValues.slice(-cohSlice)) - mean(cohValues.slice(0, cohSlice))
       : null;
 
   const lastBeatTs  = validBeats.length > 0 ? validBeats[validBeats.length - 1].timestamp : null;
@@ -621,21 +624,21 @@ export default function SessionSummaryModal() {
                   <StatCard
                     label="Coh change"
                     value={
-                      cohPctChange != null
-                        ? `${cohPctChange > 0 ? '+' : ''}${fmt(cohPctChange, 1)}`
+                      cohChange != null
+                        ? `${cohChange > 0 ? '+' : ''}${fmt(cohChange, 1)}`
                         : '—'
                     }
-                    unit="%"
+                    unit="pts"
                     colorClass={
-                      cohPctChange == null
+                      cohChange == null
                         ? 'text-slate-500'
-                        : cohPctChange > 5
+                        : cohChange > 5
                           ? 'text-emerald-400'
-                          : cohPctChange < -5
+                          : cohChange < -5
                             ? 'text-rose-400'
                             : 'text-slate-200'
                     }
-                    help="(last 10% − first 10%) / first 10% — positive = coherence improved"
+                    help="(last 10% − first 10%) in coherence points (0–100) — positive = coherence improved"
                   />
                 </>
               )}
