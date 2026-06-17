@@ -14,7 +14,7 @@ import type { SessionRow } from './types';
 export type SessionListRow = Omit<SessionRow, 'ibi_log' | 'coherence_log_t_ms' | 'coherence_log_value'>;
 
 const LIST_COLUMNS = [
-  'id', 'schema_version',
+  'id', 'schema_version', 'client_id',
   'started_at', 'ended_at', 'session_local_date', 'duration_seconds',
   'beat_count', 'avg_hr_bpm', 'avg_ibi_ms', 'ibi_min_ms', 'ibi_max_ms',
   'ibi_sd_ms', 'ibi_cv_pct', 'ibi_change_pct', 'rmssd_ms',
@@ -32,7 +32,17 @@ interface ListState {
   refresh: () => void;
 }
 
-export function useSessionList(): ListState {
+export interface SessionListOptions {
+  /**
+   * Scope the fetch to one clinician-portal client. Omit for the personal
+   * history (returns every RLS-visible row, which for a clinician is *all*
+   * their clients' sessions). Pass a client id to filter to that client.
+   */
+  clientId?: string;
+}
+
+export function useSessionList(opts?: SessionListOptions): ListState {
+  const clientId = opts?.clientId;
   const authStatus = useAuthStore((s) => s.status);
   const [tick, setTick] = useState(0);
   const [state, setState] = useState<Omit<ListState, 'refresh'>>({
@@ -47,11 +57,13 @@ export function useSessionList(): ListState {
     let cancelled = false;
     setState((s) => ({ ...s, status: 'loading' }));
     void (async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('sessions')
         .select(LIST_COLUMNS)
         .order('started_at', { ascending: false })
         .limit(500);
+      if (clientId) query = query.eq('client_id', clientId);
+      const { data, error } = await query;
       if (cancelled) return;
       if (error) {
         setState({ status: 'error', rows: [], error: error.message });
@@ -60,7 +72,7 @@ export function useSessionList(): ListState {
       }
     })();
     return () => { cancelled = true; };
-  }, [authStatus, tick]);
+  }, [authStatus, tick, clientId]);
 
   return { ...state, refresh: () => setTick((t) => t + 1) };
 }

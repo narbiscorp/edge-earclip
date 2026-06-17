@@ -13,6 +13,8 @@ import {
 } from '../state/store';
 import { darkLayout } from '../charts/chartTheme';
 import { useAuthStore } from '../auth/authStore';
+import { useClientStore } from '../clients/clientStore';
+import { useClientList } from '../clients/useClients';
 import { SUPABASE_CONFIGURED } from '../lib/supabase';
 import { buildSessionRow } from '../sessions/buildSessionRow';
 import { saveSession, updateSessionNotes } from '../sessions/saveSession';
@@ -78,6 +80,24 @@ export default function SessionSummaryModal() {
   const clearSession = useDashboardStore((s) => s.clearSession);
   const authStatus = useAuthStore((s) => s.status);
   const setShowLogin = useAuthStore((s) => s.setShowLogin);
+
+  // ── clinician context ──────────────────────────────────────────────────────
+  // The signed-in user is "a clinician" iff they have ≥1 client. Until the
+  // client list resolves we don't know, so auto-save is held (see clientsLoading
+  // in autoSaveEligible) to avoid silently saving a clinician's session as
+  // Unassigned before their clients load.
+  const clients = useClientList();
+  const clinicianMode = authStatus === 'signed_in' && clients.rows.length > 0;
+  const clientsLoading =
+    SUPABASE_CONFIGURED && authStatus === 'signed_in' && clients.status === 'loading';
+  const activeClientId = useClientStore((s) => s.activeClientId);
+  const setActiveClient = useClientStore((s) => s.setActiveClient);
+
+  // confirmedClientId: undefined = clinician hasn't confirmed yet this modal;
+  // null = confirmed "Unassigned"; string = confirmed client id. selectedClientId
+  // is the confirm banner's dropdown value, seeded from the active client.
+  const [confirmedClientId, setConfirmedClientId] = useState<string | null | undefined>(undefined);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(activeClientId);
 
   const ibiDivRef = useRef<HTMLDivElement | null>(null);
   const cohDivRef = useRef<HTMLDivElement | null>(null);
@@ -177,12 +197,30 @@ export default function SessionSummaryModal() {
 
   const canSave = !empty && sessionId != null && sessionStartTs != null;
   const autoSaveEligible =
-    canSave && authStatus === 'signed_in' && durationSec >= AUTO_SAVE_MIN_DURATION_SEC;
+    canSave && authStatus === 'signed_in' && durationSec >= AUTO_SAVE_MIN_DURATION_SEC
+    // Clinician gate: wait for the client list, then require an explicit client
+    // confirmation. For a non-clinician (zero clients) both clauses are true, so
+    // this expression is identical to the pre-clinician-portal behavior.
+    && !clientsLoading
+    && (!clinicianMode || confirmedClientId !== undefined);
   const manualSaveAvailable =
     canSave && authStatus === 'signed_in' && durationSec < AUTO_SAVE_MIN_DURATION_SEC;
   const persisted = saveStatus === 'saved' || saveStatus === 'queued';
 
-  async function doSaveInternal(savedVia: 'auto' | 'manual', notesAtSaveTime: string): Promise<void> {
+  const selectedClientName =
+    selectedClientId == null
+      ? 'Unassigned'
+      : clients.rows.find((c) => c.id === selectedClientId)?.display_name ?? 'selected client';
+  const savedClientName =
+    confirmedClientId == null
+      ? 'Unassigned'
+      : clients.rows.find((c) => c.id === confirmedClientId)?.display_name ?? 'client';
+
+  async function doSaveInternal(
+    savedVia: 'auto' | 'manual',
+    notesAtSaveTime: string,
+    clientId: string | null = null,
+  ): Promise<void> {
     if (!sessionId || !sessionStartTs) return;
     setSaveStatus('saving');
     setSaveError(null);
@@ -194,11 +232,30 @@ export default function SessionSummaryModal() {
       notes: notesAtSaveTime,
       savedVia,
       deviceInfo: { dashboard_build_id: __BUILD_ID__ },
+      clientId,
     });
     savedRowIdRef.current = row.id;
     const result = await saveSession(row);
     setSaveStatus(result.status);
     setSaveError(result.error ?? null);
+  }
+
+  /**
+   * Clinician confirm: lock in the chosen client (syncing the header's active
+   * client if they changed it here) and kick off the save. Long sessions are
+   * saved by the auto-save effect once confirmedClientId is set; short sessions
+   * never trigger that effect, so we save them explicitly here.
+   */
+  function confirmClient(): void {
+    if (selectedClientId !== activeClientId) {
+      const c = clients.rows.find((r) => r.id === selectedClientId);
+      setActiveClient(c ? { id: c.id, name: c.display_name } : null);
+    }
+    setConfirmedClientId(selectedClientId);
+    const willAutoSave = canSave && durationSec >= AUTO_SAVE_MIN_DURATION_SEC;
+    if (!willAutoSave) {
+      void doSaveInternal('manual', notes, selectedClientId);
+    }
   }
 
   // Auto-save once when auth + session state are ready. Guarded so it never
@@ -207,17 +264,24 @@ export default function SessionSummaryModal() {
     if (autoSaveAttemptedRef.current) return;
     if (authStatus === 'loading') return;       // wait for getSession() to resolve
     if (!autoSaveEligible) {
-      // Sessions that don't qualify (short / not signed in / empty) just
-      // mark as attempted so we don't re-evaluate every render.
-      if (!canSave || authStatus !== 'signed_in' || durationSec < AUTO_SAVE_MIN_DURATION_SEC) {
+      // Don't disarm auto-save while we're still resolving whether this user is
+      // a clinician (clientsLoading), or while waiting for them to confirm the
+      // client — both flip autoSaveEligible true later. Otherwise mark sessions
+      // that simply don't qualify (short / not signed in / empty) as attempted.
+      const waiting =
+        clientsLoading ||
+        (clinicianMode && confirmedClientId === undefined &&
+          canSave && durationSec >= AUTO_SAVE_MIN_DURATION_SEC);
+      if (!waiting &&
+          (!canSave || authStatus !== 'signed_in' || durationSec < AUTO_SAVE_MIN_DURATION_SEC)) {
         autoSaveAttemptedRef.current = true;
       }
       return;
     }
     autoSaveAttemptedRef.current = true;
-    void doSaveInternal('auto', '');
+    void doSaveInternal('auto', '', clinicianMode ? (confirmedClientId ?? null) : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps — snapshot-based
-  }, [authStatus, autoSaveEligible]);
+  }, [authStatus, autoSaveEligible, clientsLoading, clinicianMode, confirmedClientId]);
 
   // Debounced notes-update once the row has been persisted server-side.
   useEffect(() => {
@@ -350,6 +414,13 @@ export default function SessionSummaryModal() {
               empty={empty}
             />
 
+            {/* Which client the row was attributed to — confirms the save target. */}
+            {clinicianMode && persisted && (
+              <span className="inline-flex items-center px-2 py-1 rounded border text-xs border-emerald-600/40 bg-emerald-900/20 text-emerald-200">
+                Saved to {savedClientName}
+              </span>
+            )}
+
             {/* Sign-in CTA when logged out and there's something to save */}
             {!empty && SUPABASE_CONFIGURED && authStatus === 'signed_out' && (
               <button
@@ -360,10 +431,16 @@ export default function SessionSummaryModal() {
               </button>
             )}
 
-            {/* Manual save for short sessions (or retry after queued/error) */}
-            {!empty && authStatus === 'signed_in' && (manualSaveAvailable || saveStatus === 'queued' || saveStatus === 'error') && saveStatus !== 'saving' && (
+            {/* Manual save for short sessions (or retry after queued/error).
+                In clinician mode this stays hidden until the client is confirmed
+                via the banner below — then it reappears for retries, carrying the
+                confirmed client. */}
+            {!empty && authStatus === 'signed_in'
+              && (!clinicianMode || confirmedClientId !== undefined)
+              && (manualSaveAvailable || saveStatus === 'queued' || saveStatus === 'error')
+              && saveStatus !== 'saving' && (
               <button
-                onClick={() => void doSaveInternal('manual', notes)}
+                onClick={() => void doSaveInternal('manual', notes, clinicianMode ? (confirmedClientId ?? null) : null)}
                 className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white transition"
                 title={manualSaveAvailable ? 'Session shorter than 5 min — save anyway' : 'Retry cloud save'}
               >
@@ -393,6 +470,41 @@ export default function SessionSummaryModal() {
           </div>
         ) : (
           <>
+            {/* Clinician client-confirmation gate. Blocks auto-save until the
+                clinician confirms who this session belongs to. Hidden entirely
+                for non-clinician (zero-client) users. */}
+            {clinicianMode && confirmedClientId === undefined && (
+              <div className="rounded-lg border border-cyan-600/40 bg-cyan-950/30 p-4 space-y-3">
+                <div className="text-sm text-cyan-100 font-medium">
+                  Confirm the client for this session
+                </div>
+                <div className="text-xs text-cyan-200/70">
+                  This session will be saved to the client below — double-check it's the
+                  right person before saving, since the data is attributed to them.
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={selectedClientId ?? ''}
+                    onChange={(e) => setSelectedClientId(e.target.value || null)}
+                    className="rounded bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500 min-w-[14rem]"
+                  >
+                    <option value="">Unassigned (no client)</option>
+                    {clients.rows.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.display_name}{c.external_code ? ` · ${c.external_code}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={confirmClient}
+                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white transition"
+                  >
+                    Confirm &amp; save to {selectedClientName}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Metrics grid */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <StatCard

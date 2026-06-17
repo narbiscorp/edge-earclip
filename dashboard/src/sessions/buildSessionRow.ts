@@ -65,10 +65,12 @@ export interface BuildSessionRowInput {
   notes: string;
   savedVia: 'auto' | 'manual';
   deviceInfo?: DeviceInfo | null;
+  /** Clinician-portal client this session is attributed to. null/undefined = Unassigned. */
+  clientId?: string | null;
 }
 
 export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
-  const { sessionId, startTs, beats, coherence, notes, savedVia, deviceInfo } = input;
+  const { sessionId, startTs, beats, coherence, notes, savedVia, deviceInfo, clientId } = input;
 
   // Validity gate matches the live modal — guards against spurious IBIs.
   const validBeats = beats.filter((b) => b.ibi_ms >= 200 && b.ibi_ms <= 2500);
@@ -102,6 +104,7 @@ export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
   return {
     id: sessionId,
     schema_version: SESSION_SCHEMA_VERSION,
+    client_id: clientId ?? null,
     started_at: new Date(startTs).toISOString(),
     ended_at: new Date(lastBeatTs).toISOString(),
     session_local_date: localDateISO(startTs),

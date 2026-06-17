@@ -42,8 +42,8 @@ function ChipNumber({ label, value, unit, tone = 'default' }: {
   );
 }
 
-export default function SessionList() {
-  const list = useSessionList();
+export default function SessionList({ clientId }: { clientId?: string } = {}) {
+  const list = useSessionList(clientId ? { clientId } : undefined);
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 

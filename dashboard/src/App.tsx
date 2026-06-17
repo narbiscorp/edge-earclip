@@ -25,6 +25,8 @@ import SlimHeader from './components/SlimHeader';
 import AuthButton from './auth/AuthButton';
 import LoginModal from './auth/LoginModal';
 import HistoryView from './sessions/HistoryView';
+import ClinicianPortal from './clients/ClinicianPortal';
+import ClientPicker from './clients/ClientPicker';
 import { useAuthStore } from './auth/authStore';
 import { SUPABASE_CONFIGURED } from './lib/supabase';
 import { metricsRunner } from './state/metricsRunner';
@@ -33,6 +35,9 @@ import { useDashboardStore, initCoherenceEngine } from './state/store';
 // Side-effect import: subscribes the pending-sync queue to window 'online'
 // and auth-state events. Must be imported somewhere in the app.
 import './sessions/pendingSyncQueue';
+// Side-effect import: subscribes the active-client store to auth changes so
+// the clinician's selected client hydrates on sign-in and clears on sign-out.
+import './clients/clientStore';
 
 export default function App() {
   const checkForOrphans = useRecordingStore((s) => s.checkForOrphanedSessions);
@@ -46,6 +51,8 @@ export default function App() {
   // History view is a sibling overlay, not auth-gated — sign-in CTA lives
   // inside it so the route exists for everyone.
   const [showHistory, setShowHistory] = useState(false);
+  // Clinician portal is a sibling overlay too; its own sign-in CTA gates content.
+  const [showClinician, setShowClinician] = useState(false);
 
   useEffect(() => {
     metricsRunner.start();
@@ -115,11 +122,25 @@ export default function App() {
               History
             </button>
           )}
+          {SUPABASE_CONFIGURED && (
+            <button
+              onClick={() => setShowClinician(true)}
+              className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 shrink-0 transition"
+              title="Manage client profiles and review their progress"
+            >
+              Clinician portal
+            </button>
+          )}
+          {/* Renders nothing until the signed-in user has ≥1 client. */}
+          <ClientPicker compact />
           <AuthButton />
           <ConnectionPanel />
         </header>
       ) : (
-        <SlimHeader onShowHistory={() => setShowHistory(true)} />
+        <SlimHeader
+          onShowHistory={() => setShowHistory(true)}
+          onOpenClinicianPortal={() => setShowClinician(true)}
+        />
       )}
 
       {uiMode === 'basic' ? (
@@ -159,6 +180,7 @@ export default function App() {
       {showSessionSummary && <SessionSummaryModal />}
       {showLogin && <LoginModal />}
       {showHistory && <HistoryView onClose={() => setShowHistory(false)} />}
+      {showClinician && <ClinicianPortal onClose={() => setShowClinician(false)} />}
     </div>
   );
 }
