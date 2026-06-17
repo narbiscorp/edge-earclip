@@ -17,6 +17,12 @@ export interface DeviceInfo {
   polar_h10_used?: boolean;
   relay_used?: boolean;
   hr_source?: 'earclip' | 'h10' | null;
+  /** App-engine mode this session ran. Drives the report's breathing-rate overlay (shown for B/C). */
+  engine_mode?: 'firmware' | 'modeA' | 'modeB' | 'modeC' | null;
+  /** Paced breathing rate (br/min) per coherence sample, aligned 1:1 with coherence_log_t_ms. Present
+   * only for Mode B/C sessions — lets the report correlate the swept rates with the IBI/coherence graphs.
+   * Stored in this jsonb field (not a top-level column) so it needs no DB migration. */
+  pacer_bpm_log?: number[] | null;
 }
 
 export interface SessionRow {

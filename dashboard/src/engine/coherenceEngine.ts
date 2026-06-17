@@ -20,7 +20,7 @@ import { FollowPacer } from './followPacer';
 import { FastAmplitudeTracker } from './fastAmplitude';
 import { RespirationFromACC } from './respirationFromAcc';
 import { ResonanceController, type ModeBState, type SearchProgress } from './resonanceController';
-import { computeBreathHeartCoherence } from './breathHeartCoherence';
+import { computeBreathHeartCoherence, GAMMA2_CONFOUND_FLOOR } from './breathHeartCoherence';
 
 export type { EngineMode } from './tunables';
 
@@ -112,6 +112,7 @@ export interface StartOptions {
 }
 
 const LENS_TICK_MS = 83; // ~12 Hz lens-duty stream (smooth breathing, BLE-friendly)
+const BH_NULL_RESET_TICKS = 8; // ~8 s with no cross-spectral estimate ⇒ clear the smoothed breath–heart readout
 
 export class CoherenceEngine extends EventTarget {
   private t: CoherenceTunables = { ...DEFAULT_TUNABLES };
@@ -155,13 +156,23 @@ export class CoherenceEngine extends EventTarget {
   private _coherence = 0;
   private _cr = 0;
   private _respHz = 0;
-  private _breathHeartCoh: number | null = null;
-  private _breathHeartPhase: number | null = null;
+  private _breathHeartCoh: number | null = null; // EWMA-smoothed γ² (null until first estimate / after a sustained ACC gap)
+  private _bhPhaseRe = 0; // γ²-weighted EWMA of cos(phase) — circular-mean accumulator (avoids ±180° wrap)
+  private _bhPhaseIm = 0; // γ²-weighted EWMA of sin(phase)
   private _confounded = false;
+  private _bhNullTicks = 0; // consecutive ticks with no cross-spectral estimate (decay-to-null guard)
   private _lastDuty = 0;
   // ACC respiration estimate cached at each breath boundary (Mode B verification input), for status.
   private _accMeasuredBpm: number | null = null;
   private _accRespConfidence = 0;
+
+  // Lens depth + rate are LATCHED per breath: sampled once at each boundary (where frac ≈ 0) and held
+  // for the whole breath. The firmware renders effective_duty = wave(frac) × depth; pushing a new
+  // depth (0xA2) or rate (0xB1) mid-inhale makes that product non-monotonic — the lens darkens, clears
+  // a bit, then darkens again (a visible stutter). Holding them constant within a breath kills it, on
+  // any firmware. Updated in latchLensParams(); emitLens sends these, not the live values.
+  private latchedDepthPct = 0;
+  private latchedBpm = 6;
 
   get running(): boolean {
     return this.secTimer !== null;
@@ -208,8 +219,10 @@ export class CoherenceEngine extends EventTarget {
     this._cr = 0;
     this._respHz = 0;
     this._breathHeartCoh = null;
-    this._breathHeartPhase = null;
+    this._bhPhaseRe = 0;
+    this._bhPhaseIm = 0;
     this._confounded = false;
+    this._bhNullTicks = 0;
     this._lastDuty = 0;
     this._accMeasuredBpm = null;
     this._accRespConfidence = 0;
@@ -220,6 +233,7 @@ export class CoherenceEngine extends EventTarget {
     this.warmupAcc = [];
     this.modeCAccConfident = false;
     this.modeCStable = false;
+    this.latchLensParams(); // seed the per-breath lens depth + rate from the initial state
 
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
@@ -319,7 +333,12 @@ export class CoherenceEngine extends EventTarget {
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       breathHeartCoherence: this._breathHeartCoh,
-      breathHeartPhaseDeg: this._breathHeartPhase,
+      // Phase is only meaningful when coherence is significant — hide it below the floor so a flailing
+      // angle never shows. The value is the γ²-weighted circular mean of the per-tick phases.
+      breathHeartPhaseDeg:
+        this._breathHeartCoh != null && this._breathHeartCoh >= GAMMA2_CONFOUND_FLOOR
+          ? (Math.atan2(this._bhPhaseIm, this._bhPhaseRe) * 180) / Math.PI
+          : null,
       coherenceConfounded: this._confounded,
       modeBState: this.modeB?.state ?? null,
       modeBCommandedBpm: this.modeB ? this.modeB.commandedBPM : null,
@@ -373,9 +392,26 @@ export class CoherenceEngine extends EventTarget {
       r && est
         ? computeBreathHeartCoherence(win, this.resp.magnitudeWindow(), r.respPeakHz, est.bpm / 60, this.t)
         : null;
-    this._breathHeartCoh = bh ? bh.gammaSq : null;
-    this._breathHeartPhase = bh ? bh.phaseDeg : null;
-    this._confounded = bh ? bh.confounded : false;
+    // Temporal averaging makes the readout meaningful: a 1 Hz cross-spectrum from ~3 Welch segments is
+    // high-variance, so EWMA the γ² and take a coherence-WEIGHTED circular mean of the phase (low-γ²
+    // ticks barely move the angle). Brief gaps (bh == null) HOLD the last smoothed value; a SUSTAINED
+    // gap (ACC truly gone) decays it to null so the UI falls back to "needs a Polar H10".
+    if (bh) {
+      const a = Math.max(0, Math.min(1, this.t.bhSmoothAlpha));
+      this._breathHeartCoh =
+        this._breathHeartCoh == null ? bh.gammaSq : a * bh.gammaSq + (1 - a) * this._breathHeartCoh;
+      const th = (bh.phaseDeg * Math.PI) / 180;
+      const w = bh.gammaSq; // weight the phase phasor by instantaneous coherence
+      this._bhPhaseRe = a * (w * Math.cos(th)) + (1 - a) * this._bhPhaseRe;
+      this._bhPhaseIm = a * (w * Math.sin(th)) + (1 - a) * this._bhPhaseIm;
+      this._confounded = bh.rateMismatch || this._breathHeartCoh < GAMMA2_CONFOUND_FLOOR;
+      this._bhNullTicks = 0;
+    } else if (++this._bhNullTicks > BH_NULL_RESET_TICKS) {
+      this._breathHeartCoh = null;
+      this._bhPhaseRe = 0;
+      this._bhPhaseIm = 0;
+      this._confounded = false;
+    }
     // Mode C warm-up: sample the UNSMOOTHED detected rate + the independent ACC respiration
     // confidence at 1 Hz for the transition gate (deliberately NOT the slew-limited pacer output,
     // which reads "stable" by construction even for an erratic breather).
@@ -441,6 +477,7 @@ export class CoherenceEngine extends EventTarget {
       }
     }
     this.cycleMs = this.pacer.latch();
+    this.latchLensParams(); // re-sample depth + rate ONCE per breath, at the seam (frac ≈ 0)
     this.emitStatus();
   }
 
@@ -495,15 +532,24 @@ export class CoherenceEngine extends EventTarget {
     return Math.max(0, Math.min(100, (this.brightness * (100 - clearPct)) / 100));
   }
 
-  /** Push the desired lens state to the host (coalesced into firmware commands downstream).
-   * Called on start, ~1 Hz, and at each breath boundary — NOT per render tick. */
+  /** Latch the lens depth + rate for the whole upcoming breath. Sampled at start and at each breath
+   * boundary (where frac ≈ 0, so the change is invisible). Holding them constant within a breath is
+   * what keeps the firmware's effective_duty = wave×depth monotonic — pushing a new depth/rate
+   * mid-inhale is what made the lens "darken → clear a bit → darken." */
+  private latchLensParams(): void {
+    this.latchedDepthPct = Math.round(this.depthFromCoherence());
+    this.latchedBpm = Math.round(this.pacer.currentQuintet / 5.0);
+  }
+
+  /** Push the desired lens state to the host (coalesced into firmware commands downstream). Sends the
+   * LATCHED per-breath depth + rate, so the ~1 Hz calls never change a value mid-breath — only the
+   * boundary re-latch does. Called on start, ~1 Hz, and at each breath boundary. */
   private emitLens(): void {
-    const depthPct = Math.round(this.depthFromCoherence());
-    this._lastDuty = depthPct;
+    this._lastDuty = this.latchedDepthPct;
     this.onLens?.({
       style: this.lensStyle,
-      bpm: Math.round(this.pacer.currentQuintet / 5.0),
-      depthPct,
+      bpm: this.latchedBpm,
+      depthPct: this.latchedDepthPct,
       inhalePct: Math.round(this.t.breatheInhalePct),
       strobeHz: this.strobeHz,
       strobeDutyPct: this.strobeDutyPct,

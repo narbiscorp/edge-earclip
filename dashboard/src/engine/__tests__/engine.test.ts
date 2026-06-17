@@ -367,7 +367,7 @@ describe('computeBreathHeartCoherence (#3) — the Mayer-wave defense', () => {
     expect(bh).not.toBeNull();
     expect(bh!.gammaSq).toBeGreaterThan(0.8);
     expect(Math.abs(bh!.phaseDeg)).toBeLessThan(30);
-    expect(bh!.confounded).toBe(false);
+    expect(bh!.rateMismatch).toBe(false);
   });
 
   it('breathing ≠ HR rhythm (RR 0.1 Hz, ACC 0.15 Hz) → γ² drops vs the coupled case + confounded', () => {
@@ -397,8 +397,8 @@ describe('computeBreathHeartCoherence (#3) — the Mayer-wave defense', () => {
     const mismatch = run(0.15); // ACC breathing differs from the RR rhythm
     expect(coupled.gammaSq).toBeGreaterThan(0.8);
     expect(mismatch.gammaSq).toBeLessThan(coupled.gammaSq - 0.2); // coherence clearly collapses
-    expect(coupled.confounded).toBe(false); // same rate, strong coupling
-    expect(mismatch.confounded).toBe(true); // |6 − 9| br/min > respVerifyToleranceBPM
+    expect(coupled.rateMismatch).toBe(false); // same rate, strong coupling
+    expect(mismatch.rateMismatch).toBe(true); // |6 − 9| br/min > respVerifyToleranceBPM
   });
 
   it('returns null when no ACC window is available (host falls back to the single-signal CR)', () => {

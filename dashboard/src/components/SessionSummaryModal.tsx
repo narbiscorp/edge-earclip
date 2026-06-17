@@ -17,6 +17,7 @@ import { useClientStore } from '../clients/clientStore';
 import { useClientList } from '../clients/useClients';
 import { SUPABASE_CONFIGURED } from '../lib/supabase';
 import { buildSessionRow } from '../sessions/buildSessionRow';
+import { pacerOverlay } from '../charts/pacerOverlay';
 import { saveSession, updateSessionNotes } from '../sessions/saveSession';
 import { AUTO_SAVE_MIN_DURATION_SEC, type SaveStatus } from '../sessions/types';
 
@@ -111,6 +112,8 @@ export default function SessionSummaryModal() {
   const pauseMarkersSnap = useRef(getSessionPauseMarkers().slice());
   const pauseTotalMsSnap = useRef(getSessionPauseTotalMs());
   const sessionEndedAtSnap = useRef(getSessionEndedAt());
+  // Mode active when the session ended — gates the paced breathing-rate overlay (Mode B/C only).
+  const engineModeSnap = useRef(useDashboardStore.getState().engineMode);
 
   const beats   = beatsSnap.current;
   const cohData = cohSnap.current;
@@ -148,6 +151,11 @@ export default function SessionSummaryModal() {
       : null;
 
   const cohValues   = cohData.map((c) => c.coh);
+  // Paced breathing-rate overlay inputs (Mode B/C) — time-aligned 1:1 with the coherence samples.
+  const engineMode = engineModeSnap.current;
+  const showPacer = engineMode === 'modeB' || engineMode === 'modeC';
+  const pacerOffsetSec = cohData.map((c) => (sessionStartTs ? (c.ts - sessionStartTs) / 1000 : 0));
+  const pacerVals = cohData.map((c) => c.pacerBpm);
   const avgCoh      = mean(cohValues);
   const peakCoh     = cohValues.length > 0 ? Math.max(...cohValues) : 0;
   const highCohPct  =
@@ -233,6 +241,7 @@ export default function SessionSummaryModal() {
       savedVia,
       deviceInfo: { dashboard_build_id: __BUILD_ID__ },
       clientId,
+      engineMode,
     });
     savedRowIdRef.current = row.id;
     const result = await saveSession(row);
@@ -302,6 +311,7 @@ export default function SessionSummaryModal() {
       sessionStartTs ? (b.timestamp - sessionStartTs) / 1000 : 0,
     );
 
+    const ov = showPacer ? pacerOverlay(pacerOffsetSec, pacerVals) : null;
     void Plotly.newPlot(
       div,
       [
@@ -310,9 +320,11 @@ export default function SessionSummaryModal() {
           y: ibis,
           type: 'scatter',
           mode: 'lines+markers',
+          name: 'IBI',
           line: { color: '#22d3ee', width: 1.5, shape: 'spline' },
           marker: { color: '#22d3ee', size: 3 },
         },
+        ...(ov ? [ov.trace] : []),
       ],
       darkLayout({
         xaxis: {
@@ -328,9 +340,10 @@ export default function SessionSummaryModal() {
           zerolinecolor: '#475569',
           linecolor: '#475569',
         },
+        ...(ov ? { yaxis2: ov.yaxis2 } : {}),
         shapes: pauseShapes as Shape[],
         showlegend: false,
-        margin: { l: 56, r: 16, t: 8, b: 40 },
+        margin: { l: 56, r: ov ? 52 : 16, t: 8, b: 40 },
       }),
       { responsive: true, displayModeBar: false },
     );
@@ -356,6 +369,7 @@ export default function SessionSummaryModal() {
       { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: 70, y1: 100, fillcolor: 'rgba(52,211,153,0.07)', line: { width: 0 } },
     ];
 
+    const ov = showPacer ? pacerOverlay(pacerOffsetSec, pacerVals) : null;
     void Plotly.newPlot(
       div,
       [
@@ -364,9 +378,11 @@ export default function SessionSummaryModal() {
           y: cohValues,
           type: 'scatter',
           mode: 'lines+markers',
+          name: 'Coherence',
           line: { color: '#34d399', width: 2, shape: 'spline' },
           marker: { color: '#34d399', size: 5 },
         },
+        ...(ov ? [ov.trace] : []),
       ],
       darkLayout({
         xaxis: {
@@ -383,9 +399,10 @@ export default function SessionSummaryModal() {
           zerolinecolor: '#475569',
           linecolor: '#475569',
         },
+        ...(ov ? { yaxis2: ov.yaxis2 } : {}),
         shapes: [...bandShapes, ...pauseShapes] as Shape[],
         showlegend: false,
-        margin: { l: 56, r: 16, t: 8, b: 40 },
+        margin: { l: 56, r: ov ? 52 : 16, t: 8, b: 40 },
       }),
       { responsive: true, displayModeBar: false },
     );

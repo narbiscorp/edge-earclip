@@ -328,7 +328,7 @@ let accLastTs = 0;
 const SESSION_BEAT_CAP = 10800; // ~3 h at 60 BPM
 const SESSION_COH_CAP  = 10800; // ~3 h at 1 Hz
 const sessionBeatArray: NarbisBeatEvent[] = [];
-const sessionCohArray: Array<{ ts: number; coh: number }> = [];
+const sessionCohArray: Array<{ ts: number; coh: number; pacerBpm: number }> = [];
 let _sessionStartTs: number | null = null;
 // Client-generated session ID — minted on the first beat of a session so
 // save-to-cloud can be idempotent (upsert by id, retry safe).
@@ -345,7 +345,7 @@ const _sessionPauseMarkers: Array<{ start: number; end: number }> = [];
 let _sessionEndedAt: number | null = null;
 
 export function getSessionBeats(): NarbisBeatEvent[] { return sessionBeatArray; }
-export function getSessionCoherence(): Array<{ ts: number; coh: number }> { return sessionCohArray; }
+export function getSessionCoherence(): Array<{ ts: number; coh: number; pacerBpm: number }> { return sessionCohArray; }
 export function getSessionStartTs(): number | null { return _sessionStartTs; }
 export function getSessionId(): string | null { return _sessionId; }
 export function getSessionPausedAt(): number | null { return _sessionPausedAt; }
@@ -376,10 +376,10 @@ function pushSessionBeat(beat: NarbisBeatEvent): void {
   }
 }
 
-function pushSessionCoh(ts: number, coh: number): void {
+function pushSessionCoh(ts: number, coh: number, pacerBpm: number): void {
   if (sessionCohArray.length >= SESSION_COH_CAP) return;
   if (_sessionPausedAt !== null || _sessionEndedAt !== null) return;
-  sessionCohArray.push({ ts, coh });
+  sessionCohArray.push({ ts, coh, pacerBpm });
 }
 
 function clearSessionArrays(): void {
@@ -915,7 +915,7 @@ coherenceEngine.addEventListener('status', (e) => {
     coh: frame.coh, respMhz: frame.respMhz, lf: 0, hf: 0,
     lfNorm: 0, hfNorm: 0, lfHf: 0, nIbis: st.beats, pacerBpm: st.pacerBpm,
   });
-  pushSessionCoh(frame.timestamp, frame.coh);
+  pushSessionCoh(frame.timestamp, frame.coh, frame.pacerBpm);
   setState({ lastEdgeCoherence: frame });
 });
 
@@ -1614,6 +1614,15 @@ edgeDevice.addEventListener('ctrlSent', (e) => {
  * (no dashboard-side beat source). */
 edgeDevice.addEventListener('edgeCoherence', (e) => {
   const f = (e as CustomEvent<EdgeCoherenceFrame>).detail;
+  /* When the app-side engine (Mode A/B/C) is running it is the coherence authority and already
+   * feeds the chart buffer + lastEdgeCoherence + session accumulator from its own 1 Hz status
+   * (the coherenceEngine 'status' handler above). The firmware 0xF2 stream can STILL arrive in
+   * engine mode — we inject H10 beats into the glasses, so its coherence task keeps emitting — and
+   * pushing it into the SAME buffer interleaves two ~1 Hz series into a sawtooth (the values
+   * diverge over a session, so the zigzag grows). Drop it here in engine mode; in Standard/firmware
+   * mode the engine is stopped and 0xF2 owns these channels as before. */
+  const s = useDashboardStore.getState();
+  if (s.engineMode !== 'firmware' && s.engineStatus?.running) return;
   edgeCoherenceBuffers.live.push(f.timestamp, {
     coh: f.coh,
     respMhz: f.respMhz,
@@ -1625,7 +1634,7 @@ edgeDevice.addEventListener('edgeCoherence', (e) => {
     nIbis: f.nIbis,
     pacerBpm: f.pacerBpm,
   });
-  pushSessionCoh(f.timestamp, f.coh);
+  pushSessionCoh(f.timestamp, f.coh, f.pacerBpm);
   setState({ lastEdgeCoherence: f });
 });
 
