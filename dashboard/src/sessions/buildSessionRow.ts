@@ -45,6 +45,17 @@ function pctChange(arr: number[]): number | null {
   return ((last - first) / first) * 100;
 }
 
+/**
+ * Absolute change (last 10% − first 10%) of a series. Used for coherence: it's a 0–100 score that
+ * routinely starts at ~0 (settling), so a relative %-change divides by ~0 (→ ±Infinity / absurd
+ * values). A point delta is well-defined from a zero baseline.
+ */
+function absChange(arr: number[]): number | null {
+  const slice = Math.max(3, Math.floor(arr.length * 0.1));
+  if (arr.length < slice * 2) return null;
+  return mean(arr.slice(-slice)) - mean(arr.slice(0, slice));
+}
+
 function localDateISO(ts: number): string {
   // YYYY-MM-DD in the user's local timezone (so "sessions per day" doesn't
   // break across UTC midnight).
@@ -142,7 +153,10 @@ export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
     high_coh_time_pct: highPct,
     med_coh_time_pct: medPct,
     low_coh_time_pct: lowPct,
-    coh_change_pct: pctChange(cohVals),
+    // Absolute point delta on the 0–100 coherence scale (see absChange). The column keeps its
+    // `_pct` name — coherence points ARE percentage points of the 0–100 score — but it is NOT a
+    // relative %, so it never blows up when the session starts at ~0 coherence.
+    coh_change_pct: absChange(cohVals),
 
     notes: notes.trim() ? notes.trim() : null,
     device_info: deviceInfoOut,
