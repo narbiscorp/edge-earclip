@@ -83,6 +83,7 @@ export const COH_FIELDS: CohNumericField[] = [
   f({ key: 'detrendLambda', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Detrend λ', min: 100, max: 1000, step: 50, help: 'Tarvainen smoothness-priors λ. Higher removes only slower drift.' }),
   f({ key: 'spectralSegments', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Welch segments', min: 1, max: 5, step: 1, help: '1 = single periodogram; ≥2 averages overlapping sub-windows to cut variance.' }),
   f({ key: 'spectralOverlapPct', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Welch overlap', min: 0, max: 75, step: 5, unit: '%', help: 'Overlap between the averaged sub-windows.' }),
+  f({ key: 'bhSmoothAlpha', section: 'spectral', modes: ['modeA', 'modeB'], label: 'Coherence smoothing α', min: 0.02, max: 0.5, step: 0.01, help: 'EWMA on the measured breath–heart γ²/phase (1 Hz). Lower = steadier/slower.' }),
 
   // --- Lens program (shared) ---
   f({ key: 'ewmaAlpha', section: 'lens', modes: ['modeA', 'modeB'], label: 'Program-2 EWMA α', min: 0.002, max: 0.02, step: 0.001 }),
@@ -174,6 +175,7 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   detrendLambda: 'Stiffness of the detrend trend line (Tarvainen lambda). HIGHER (toward 1000) removes only the slowest drift and keeps more low-frequency content; LOWER (toward 100) removes faster wander too. 500 puts the cutoff near 0.035 Hz, below the LF band, so it cleans drift without touching the breathing peak.',
   spectralSegments: 'How many overlapping sub-windows the spectrum is averaged over (Welch averaging). 1 is a single periodogram (sharpest resolution, noisiest score). 3 averages three sub-windows, which steadies the live score at the cost of coarser resolution within each. 2-3 is a good balance; above 4 the LF band under-resolves.',
   spectralOverlapPct: 'How much the averaged sub-windows overlap. More overlap forms more sub-windows from the same data (steadier) at the cost of correlated segments. 50 percent is standard.',
+  bhSmoothAlpha: 'Time-smoothing for the measured breath-heart coherence readout (gamma-squared and phase). Each 1 Hz cross-spectrum estimate is noisy, so the displayed value is an exponential moving average; the phase is a coherence-weighted circular mean so low-coherence moments barely move it. LOWER (toward 0.02) is steadier but slower to react; higher (toward 0.5) tracks faster but jitters more. 0.08 is about a 12 second average.',
   // Lens program
   ewmaAlpha: 'Legacy smoothing for the old app-rendered lens. The firmware now renders the cycle and depth tracks live coherence, so this has little effect. Leave at default.',
   gammaEasy: 'Difficulty curve for Easy: lens depth = brightness x (1 - (coh/100)^gamma). Gamma 1.0 is linear (50% coherence = 50% clear).',
