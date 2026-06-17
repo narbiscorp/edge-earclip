@@ -1613,6 +1613,15 @@ edgeDevice.addEventListener('ctrlSent', (e) => {
  * (no dashboard-side beat source). */
 edgeDevice.addEventListener('edgeCoherence', (e) => {
   const f = (e as CustomEvent<EdgeCoherenceFrame>).detail;
+  /* When the app-side engine (Mode A/B/C) is running it is the coherence authority and already
+   * feeds the chart buffer + lastEdgeCoherence + session accumulator from its own 1 Hz status
+   * (the coherenceEngine 'status' handler above). The firmware 0xF2 stream can STILL arrive in
+   * engine mode — we inject H10 beats into the glasses, so its coherence task keeps emitting — and
+   * pushing it into the SAME buffer interleaves two ~1 Hz series into a sawtooth (the values
+   * diverge over a session, so the zigzag grows). Drop it here in engine mode; in Standard/firmware
+   * mode the engine is stopped and 0xF2 owns these channels as before. */
+  const s = useDashboardStore.getState();
+  if (s.engineMode !== 'firmware' && s.engineStatus?.running) return;
   edgeCoherenceBuffers.live.push(f.timestamp, {
     coh: f.coh,
     respMhz: f.respMhz,
