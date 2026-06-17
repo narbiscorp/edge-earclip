@@ -4,7 +4,9 @@
 // where the DB column is nullable. `user_id` is filled by the Postgres
 // `default auth.uid()` so the client doesn't need to set it.
 
-export const SESSION_SCHEMA_VERSION = 1;
+// v2 added the nullable `client_id` column (clinician portal). Rows written by
+// v1 clients have no client_id and read back as NULL = "Unassigned".
+export const SESSION_SCHEMA_VERSION = 2;
 
 /** Soft cutoff (seconds) for auto-save vs manual-save in the modal. */
 export const AUTO_SAVE_MIN_DURATION_SEC = 5 * 60;
@@ -26,6 +28,11 @@ export interface DeviceInfo {
 export interface SessionRow {
   id: string;                              // client-generated uuid
   schema_version: number;
+
+  // Clinician-portal attribution. NULL = "Unassigned" (personal use, or a
+  // client that was later deleted — the FK is `on delete set null`). Set by
+  // the save-confirmation flow when the signed-in user is acting as a clinician.
+  client_id: string | null;
 
   started_at: string;                      // ISO timestamp
   ended_at: string;

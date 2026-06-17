@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from '../state/store';
 import { useAuthStore } from '../auth/authStore';
+import { useClientStore } from '../clients/clientStore';
+import ClientPicker from '../clients/ClientPicker';
 import { SUPABASE_CONFIGURED } from '../lib/supabase';
 import { getPairedDeviceName } from '../ble/narbisDevice';
 import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevice';
@@ -31,9 +33,10 @@ const STATE_DOT: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
 
 interface SlimHeaderProps {
   onShowHistory: () => void;
+  onOpenClinicianPortal: () => void;
 }
 
-export default function SlimHeader({ onShowHistory }: SlimHeaderProps) {
+export default function SlimHeader({ onShowHistory, onOpenClinicianPortal }: SlimHeaderProps) {
   const narbis = useDashboardStore((s) => s.connection.narbis);
   const edge = useDashboardStore((s) => s.connection.edge);
   const polar = useDashboardStore((s) => s.connection.polar);
@@ -72,6 +75,9 @@ export default function SlimHeader({ onShowHistory }: SlimHeaderProps) {
         <span className="text-slate-500 hidden sm:inline">HRV Glasses Dashboard</span>
       </div>
 
+      <RecordingForChip />
+
+
       <div className="flex items-center gap-1.5 ml-auto flex-wrap justify-end">
         <DevicePill
           name="Earclip"
@@ -91,7 +97,11 @@ export default function SlimHeader({ onShowHistory }: SlimHeaderProps) {
           sub={polarSocPct != null ? `${polarSocPct}%` : null}
           popover={<PolarPopover />}
         />
-        <CogTray uiMode={uiMode} setUiMode={setUiMode} />
+        <CogTray
+          uiMode={uiMode}
+          setUiMode={setUiMode}
+          onOpenClinicianPortal={onOpenClinicianPortal}
+        />
         <KebabMenu
           onEndSession={endSessionAndSave}
           onShowHistory={onShowHistory}
@@ -315,10 +325,11 @@ function PopoverButton({
    the existing AuthButton behavior).
    ────────────────────────────────────────────────────────────── */
 function CogTray({
-  uiMode, setUiMode,
+  uiMode, setUiMode, onOpenClinicianPortal,
 }: {
   uiMode: 'basic' | 'expert' | 'mobile';
   setUiMode: (m: 'basic' | 'expert' | 'mobile') => void;
+  onOpenClinicianPortal: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -380,6 +391,13 @@ function CogTray({
                   <div className="px-2 py-1 text-xs text-slate-400 truncate" title={authUser?.email ?? ''}>
                     {authUser?.email ?? 'Signed in'}
                   </div>
+                  {/* Active training-client picker — renders nothing until the
+                      clinician has created at least one client. Sits directly
+                      below the email per the clinician-portal flow. */}
+                  <ClientPicker />
+                  <PopoverButton onClick={() => { onOpenClinicianPortal(); setOpen(false); }}>
+                    Clinician portal
+                  </PopoverButton>
                   <PopoverButton onClick={() => { void signOut(); setOpen(false); }}>
                     Sign out
                   </PopoverButton>
@@ -435,6 +453,27 @@ function KebabMenu({
         </div>
       )}
     </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────
+   "Recording for" chip — shows the active training client in the
+   brand area so a clinician sees who the live session will be
+   attributed to *before* the end-of-session confirm. Hidden when no
+   client is selected (personal use), keeping the header clean.
+   ────────────────────────────────────────────────────────────── */
+function RecordingForChip() {
+  const activeClientName = useClientStore((s) => s.activeClientName);
+  if (!activeClientName) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-200 truncate max-w-[40vw] shrink min-w-0"
+      title={`New sessions will be saved to ${activeClientName}`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 shrink-0" style={{ boxShadow: '0 0 6px #22d3ee' }} />
+      <span className="text-cyan-400/70">rec</span>
+      <span className="truncate">{activeClientName}</span>
+    </span>
   );
 }
 

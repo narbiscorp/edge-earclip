@@ -58,7 +58,7 @@ Owner: `dgreco@narbis.com`. To grant another developer access: Supabase dashboar
 
 Schema source of truth: [`dashboard/supabase/schema.sql`](../dashboard/supabase/schema.sql).
 
-### One table
+### Tables
 
 `public.sessions` — one row per saved training session. Columns map 1:1 to the in-memory session summary computed by `dashboard/src/sessions/buildSessionRow.ts`:
 
@@ -66,11 +66,27 @@ Schema source of truth: [`dashboard/supabase/schema.sql`](../dashboard/supabase/
 - Time-in-zone percentages: `low_coh_time_pct`, `med_coh_time_pct`, `high_coh_time_pct`
 - Raw arrays: `ibi_log int[]`, `coherence_log_t_ms int[]`, `coherence_log_value smallint[]`
 - Identity: `id uuid` (client-generated), `user_id uuid` (defaults to `auth.uid()`)
-- Metadata: `notes`, `device_info jsonb`, `saved_via ('auto'|'manual')`, `schema_version int`
+- Attribution: `client_id uuid` (nullable FK → `clients.id`, `on delete set null`). NULL = "Unassigned" (personal use, or a deleted client). Set by the clinician-portal save-confirmation flow.
+- Metadata: `notes`, `device_info jsonb`, `saved_via ('auto'|'manual')`, `schema_version int` (now `2` — v2 added `client_id`)
+
+`public.clients` — clinician portal. One row per client a clinician trains. There is no "clinician" role: any signed-in user becomes a clinician in the UI simply by having ≥1 row here.
+
+- `id uuid`, `clinician_id uuid` (defaults to `auth.uid()`, `on delete cascade`)
+- Profile: `display_name` (required), `external_code` (optional MRN/chart #), `birth_year int` (optional, year-only to limit PII), `notes`
+- `archived boolean` (the UI prefers archiving over deleting), `created_at`
+
+> ⚠️ **Applying the schema:** the clinician-portal additions (`clients` table + `sessions.client_id`) must be run against the live Supabase project — paste the relevant block of `dashboard/supabase/schema.sql` into the SQL editor. The whole file is idempotent (`create … if not exists`, `drop policy if exists`), so re-running it is safe.
+
+> 🔒 **PHI reminder:** client names / codes / birth years are clinically sensitive. Per [Deferred work](#deferred-work) item 7, the free tier is **not** HIPAA-covered — keep `display_name` to initials or a code and avoid storing real PHI until on a HIPAA tier.
 
 ### Row-level security
 
-Enabled on `sessions` with four policies (select / insert / update / delete own). Each policy is `auth.uid() = user_id`. The anon key bundled in the client cannot bypass this — a user can only ever see/modify their own rows.
+Both tables enable RLS with four owner-scoped policies (select / insert / update / delete own):
+
+- `sessions`: `auth.uid() = user_id`
+- `clients`: `auth.uid() = clinician_id`
+
+A clinician owns all their clients *and* all their clients' sessions, so the existing per-user session fetch (`useSessionList`) already returns everything they're allowed to see — the portal just filters it by `client_id` client-side. The anon key bundled in the client cannot bypass RLS — a user can only ever see/modify their own rows.
 
 ### Adding a column
 
@@ -357,6 +373,8 @@ Not built yet, listed roughly in priority order:
 | Row construction | `dashboard/src/sessions/buildSessionRow.ts` |
 | Offline queue | `dashboard/src/sessions/pendingSyncQueue.ts` |
 | History list / trends UI | `dashboard/src/sessions/{HistoryView,SessionList,SessionDetailModal,TrendsView}.tsx` |
+| Clinician portal (clients, per-client + overview trends) | `dashboard/src/clients/` |
+| Active-client selection | `dashboard/src/clients/clientStore.ts`, `ClientPicker.tsx` |
 | Schema source of truth | `dashboard/supabase/schema.sql` |
 | Build-time env injection | `.github/workflows/dashboard-deploy.yml` |
 | Local env template | `dashboard/.env.example` |

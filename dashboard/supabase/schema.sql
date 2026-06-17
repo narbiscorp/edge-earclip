@@ -98,3 +98,72 @@ create policy "update own" on sessions
 create policy "delete own" on sessions
   for delete to authenticated
   using (auth.uid() = user_id);
+
+-- ─── Clinician portal: clients ─────────────────────────────────────────────
+--
+-- A clinician is just a normal signed-in user. Each row here is one of their
+-- clients. RLS is the same shape as `sessions` (owner-scoped on auth.uid()),
+-- so a clinician owns all their clients and — via sessions.client_id below —
+-- all their clients' sessions. There is no "role" column: a user becomes a
+-- clinician in the UI simply by having ≥1 row here.
+--
+-- PII note: `birth_year` is year-only on purpose (enough to disambiguate two
+-- same-named clients without storing a full DOB). `display_name` may be a code
+-- or initials — the clinician chooses what to put there.
+
+create table if not exists clients (
+  id            uuid primary key default uuid_generate_v4(),
+  clinician_id  uuid not null default auth.uid()
+                     references auth.users on delete cascade,
+  display_name  text not null,
+  external_code text,                  -- optional MRN / chart number
+  birth_year    int,                   -- optional; year-only (less PII than full DOB)
+  notes         text,
+  archived      boolean not null default false,
+  created_at    timestamptz not null default now(),
+
+  check (char_length(display_name) between 1 and 120),
+  check (birth_year is null or birth_year between 1900 and 2100)
+);
+
+create index if not exists clients_clinician_idx
+  on clients (clinician_id, archived, display_name);
+
+alter table clients enable row level security;
+
+drop policy if exists "clients select own" on clients;
+drop policy if exists "clients insert own" on clients;
+drop policy if exists "clients update own" on clients;
+drop policy if exists "clients delete own" on clients;
+
+create policy "clients select own" on clients
+  for select to authenticated
+  using (auth.uid() = clinician_id);
+
+create policy "clients insert own" on clients
+  for insert to authenticated
+  with check (auth.uid() = clinician_id);
+
+create policy "clients update own" on clients
+  for update to authenticated
+  using (auth.uid() = clinician_id)
+  with check (auth.uid() = clinician_id);
+
+create policy "clients delete own" on clients
+  for delete to authenticated
+  using (auth.uid() = clinician_id);
+
+-- ─── sessions.client_id ────────────────────────────────────────────────────
+--
+-- Nullable FK attributing a session to a client. Existing rows stay NULL and
+-- render as "Unassigned" in the dashboard. `on delete set null` means deleting
+-- a client preserves their training history (it falls back to Unassigned)
+-- rather than cascading the sessions away — the clinician-facing UI prefers
+-- archiving a client over hard-deleting.
+
+alter table sessions
+  add column if not exists client_id uuid
+  references clients (id) on delete set null;
+
+create index if not exists sessions_client_started_idx
+  on sessions (client_id, started_at desc);

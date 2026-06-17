@@ -42,8 +42,8 @@ function rolling(values: (number | null)[], window: number): (number | null)[] {
   return out;
 }
 
-export default function TrendsView() {
-  const list = useSessionList();
+export default function TrendsView({ clientId }: { clientId?: string } = {}) {
+  const list = useSessionList(clientId ? { clientId } : undefined);
   const rmssdRef = useRef<HTMLDivElement | null>(null);
   const zoneRef  = useRef<HTMLDivElement | null>(null);
 
