@@ -134,9 +134,20 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
       ? (lastEdgeCoh.respMhz * 60) / 1000
       : null;
   const pacerBpm = engineActive ? engineStatus!.pacerBpm : (lastEdgeCoh?.pacerBpm ?? 0);
-  /* RMSSD comes from the worker pipeline (1 Hz updates). Null until the
+  /* RMSSD + SDNN come from the worker pipeline (1 Hz updates). Null until the
    * worker has produced a result on the current beat source. */
   const rmssd = lastMetrics?.rmssd ?? null;
+  const sdnn = lastMetrics?.sdnn ?? null;
+  /* Live inter-beat interval for the IBI card readout, from whichever source is actually
+   * reporting: the earclip exposes ibi_ms per beat; the H10 reports an RR array per notification,
+   * so take its last RR. (Previously this read the earclip beat only, so it showed "— ms" for
+   * H10-only users.) */
+  const lastIbiMs =
+    effectiveHrSource === 'h10'
+      ? lastPolarBeat && lastPolarBeat.rr.length > 0
+        ? lastPolarBeat.rr[lastPolarBeat.rr.length - 1]
+        : null
+      : lastBeat?.ibi_ms ?? null;
 
   const edgeConnected = edgeConn === 'connected';
   const hrConnected = polarConn === 'connected' || narbisConn === 'connected';
@@ -279,7 +290,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         )}
         <ChartCard
           title="IBI · Beat-to-Beat"
-          valueLabel={lastBeat?.ibi_ms != null ? `${lastBeat.ibi_ms} ms` : '— ms'}
+          valueLabel={lastIbiMs != null ? `${Math.round(lastIbiMs)} ms` : '— ms'}
         >
           <BeatChart compact defaultSmoothN={7} defaultShape="spline" windowSec={30} />
         </ChartCard>
@@ -296,13 +307,14 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
         {(engineMode === 'modeB' || engineMode === 'modeC') && <AccChart windowSec={30} />}
 
         {/* ── Bottom metric strip ────────────────────────────────
-            HEART (bpm) · BREATH (per min) · RMSSD (ms). Compact
-            cards with a uppercase label and tabular number. RMSSD
-            comes from the metrics worker. */}
-        <section className="grid grid-cols-3 gap-2 sm:gap-3">
+            HEART (bpm) · BREATH (per min) · RMSSD (ms) · SDNN (ms).
+            Compact cards with an uppercase label and tabular number.
+            RMSSD + SDNN come from the metrics worker (1 Hz). */}
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
           <StatChip label="Heart"  value={hrBpm != null ? `${hrBpm}` : '—'}              unit="bpm" />
           <StatChip label="Breath" value={respBpm != null ? respBpm.toFixed(1) : '—'}    unit="/min" />
           <StatChip label="RMSSD"  value={rmssd != null ? `${Math.round(rmssd)}` : '—'} unit="ms" />
+          <StatChip label="SDNN"   value={sdnn != null ? `${Math.round(sdnn)}` : '—'}   unit="ms" />
         </section>
 
         {/* ── Pick a mode strip ─────────────────────────────────

@@ -166,6 +166,14 @@ export class CoherenceEngine extends EventTarget {
   private _accMeasuredBpm: number | null = null;
   private _accRespConfidence = 0;
 
+  // Lens depth + rate are LATCHED per breath: sampled once at each boundary (where frac ≈ 0) and held
+  // for the whole breath. The firmware renders effective_duty = wave(frac) × depth; pushing a new
+  // depth (0xA2) or rate (0xB1) mid-inhale makes that product non-monotonic — the lens darkens, clears
+  // a bit, then darkens again (a visible stutter). Holding them constant within a breath kills it, on
+  // any firmware. Updated in latchLensParams(); emitLens sends these, not the live values.
+  private latchedDepthPct = 0;
+  private latchedBpm = 6;
+
   get running(): boolean {
     return this.secTimer !== null;
   }
@@ -225,6 +233,7 @@ export class CoherenceEngine extends EventTarget {
     this.warmupAcc = [];
     this.modeCAccConfident = false;
     this.modeCStable = false;
+    this.latchLensParams(); // seed the per-breath lens depth + rate from the initial state
 
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
@@ -468,6 +477,7 @@ export class CoherenceEngine extends EventTarget {
       }
     }
     this.cycleMs = this.pacer.latch();
+    this.latchLensParams(); // re-sample depth + rate ONCE per breath, at the seam (frac ≈ 0)
     this.emitStatus();
   }
 
@@ -522,15 +532,24 @@ export class CoherenceEngine extends EventTarget {
     return Math.max(0, Math.min(100, (this.brightness * (100 - clearPct)) / 100));
   }
 
-  /** Push the desired lens state to the host (coalesced into firmware commands downstream).
-   * Called on start, ~1 Hz, and at each breath boundary — NOT per render tick. */
+  /** Latch the lens depth + rate for the whole upcoming breath. Sampled at start and at each breath
+   * boundary (where frac ≈ 0, so the change is invisible). Holding them constant within a breath is
+   * what keeps the firmware's effective_duty = wave×depth monotonic — pushing a new depth/rate
+   * mid-inhale is what made the lens "darken → clear a bit → darken." */
+  private latchLensParams(): void {
+    this.latchedDepthPct = Math.round(this.depthFromCoherence());
+    this.latchedBpm = Math.round(this.pacer.currentQuintet / 5.0);
+  }
+
+  /** Push the desired lens state to the host (coalesced into firmware commands downstream). Sends the
+   * LATCHED per-breath depth + rate, so the ~1 Hz calls never change a value mid-breath — only the
+   * boundary re-latch does. Called on start, ~1 Hz, and at each breath boundary. */
   private emitLens(): void {
-    const depthPct = Math.round(this.depthFromCoherence());
-    this._lastDuty = depthPct;
+    this._lastDuty = this.latchedDepthPct;
     this.onLens?.({
       style: this.lensStyle,
-      bpm: Math.round(this.pacer.currentQuintet / 5.0),
-      depthPct,
+      bpm: this.latchedBpm,
+      depthPct: this.latchedDepthPct,
       inhalePct: Math.round(this.t.breatheInhalePct),
       strobeHz: this.strobeHz,
       strobeDutyPct: this.strobeDutyPct,
