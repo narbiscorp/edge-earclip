@@ -150,7 +150,8 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   quintetDefault: 30,
   pacerAvgN: 15,
   pacerSlewQuintet: 1,
-  pacerJumpThresholdBPM: 1.0,
+  pacerJumpThresholdBPM: 0.5, // snap to the target once it's ≥~0.6 BPM away (was 1.0 — left 0.6–1.0 BPM
+  // offsets crawling at 0.2 BPM/breath); the sustain count below still walls off single-breath spikes
   pacerJumpSustainBreaths: 2,
   // Fast amplitude
   ampWindowBreaths: 2.5,
