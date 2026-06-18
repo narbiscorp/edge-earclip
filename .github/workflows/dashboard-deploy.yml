@@ -62,9 +62,11 @@ jobs:
           cp index.html _site/index.html
           # OTA updater
           cp webapp/ota/index.html _site/webapp/ota/index.html
-          # Protocol + algorithm docs (served as plain text / raw markdown).
-          # Copy every .md in docs/ so new files don't need workflow edits.
-          cp docs/*.md _site/docs/
+          # Protocol + algorithm docs: render every docs/*.md to styled HTML. Each becomes
+          # _site/docs/<name>.md/index.html (a directory keeping the .md suffix), so the existing
+          # .md URLs render as HTML on Pages — no link changes needed. See docs/render.mjs.
+          npm --prefix docs install --no-save
+          node docs/render.mjs _site/docs
 
       - uses: actions/configure-pages@v5
 

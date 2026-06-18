@@ -1,0 +1,15 @@
+{
+  "name": "narbis-docs-render",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Build step: render docs/*.md to styled HTML for GitHub Pages (see render.mjs).",
+  "scripts": {
+    "build": "node render.mjs ../_site/docs"
+  },
+  "dependencies": {
+    "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.2.0",
+    "github-slugger": "^2.0.0"
+  }
+}
