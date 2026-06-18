@@ -7,3 +7,6 @@
 dashboard/.env
 dashboard/.env.local
 dashboard/.env.*.local
+
+# Docs HTML renderer deps (installed in CI by dashboard-deploy.yml; see docs/render.mjs).
+docs/node_modules/
