@@ -101,7 +101,14 @@ for (const file of files) {
   const title = (src.match(/^#\s+(.+)$/m)?.[1] ?? basename(file, '.md')).trim();
   const dir = join(outDir, file); // e.g. _site/docs/coherence-engine.md  (a directory)
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'index.html'), page(title, html));
+  // Publish the RAW markdown alongside the rendered page. Pages renders the `.md` URL to HTML, so
+  // this `.txt` sibling (served text/plain) is the only raw-servable copy — it backs the download
+  // button below. The button `download` attr saves it back under the original `.md` name.
+  writeFileSync(join(dir, `${file}.txt`), src);
+  const downloadBar =
+    `<p style="text-align:right;margin:0 0 1.25rem;font-size:.9em">` +
+    `<a href="${esc(file)}.txt" download="${esc(file)}">⬇ Download raw Markdown (.md)</a></p>`;
+  writeFileSync(join(dir, 'index.html'), page(title, downloadBar + html));
   index.push({ href: `${file}/`, title });
   console.log('rendered', file, '->', join(file, 'index.html'));
 }
