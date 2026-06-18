@@ -1,24 +1,28 @@
-# Narbis Bluetooth Protocol — iOS / Apple Watch Integration Guide
+# Narbis Bluetooth Protocol — App Integration Guide (iOS / Apple Watch / web)
 
-> **Audience.** Engineers building iOS 13+ and watchOS 6+ apps that talk to the **Narbis Edge** glasses and the **Narbis Earclip** over BLE using Apple's Core Bluetooth framework.
+> **Audience.** Engineers building apps that talk to the **Narbis Edge** glasses and the **Narbis Earclip** over BLE — iOS 13+ / watchOS 6+ via Core Bluetooth, or a web app via Web Bluetooth. The wire protocol is identical; the Swift snippets below port directly to `navigator.bluetooth` + `characteristic.writeValue()`.
 >
-> **Scope.** Scanning, connecting, GATT discovery, command writes, notification parsing, OTA firmware update, troubleshooting. Includes Swift snippets you can paste into a project.
+> **Scope.** Scanning, connecting, GATT discovery, command writes, notification parsing, **driving the lens** ([§4.8](#48-driving-the-edge-lens)), OTA firmware update, troubleshooting. Includes Swift snippets you can paste into a project.
 >
-> **Out of scope.** HRV math (compute on the client), pairing/bonding (neither device requires encryption today; that's a v2 item).
+> **Architecture — read this first.** **All coherence + breathing-pacer processing runs app-side**, in every client (iOS *and* web), via the same Mode A/B/C engine — see [`coherence-engine.md`](./coherence-engine.md). The glasses are a **display**: the app does the HRV math and **drives the lens by commanding the firmware's breathe / static program** ([§4.8](#48-driving-the-edge-lens)), so the glasses render the smooth waveform locally while the app owns the algorithm. The older "forward beats to the Edge and let its firmware compute coherence + drive the lens" flow (`0xCA` + `0xB7`) still exists as the **legacy / Standard on-glasses mode** ([§4.7](#47-integration-patterns--where-coherence-runs)) but is **no longer the recommended path**.
+>
+> **Out of scope.** Pairing/bonding (neither device requires encryption today; that's a v2 item).
 >
 > **Related.** [`docs/coherence-engine.md`](./coherence-engine.md) documents the app-side Coherence Engine (the three modes, the HRV math, and the lens-drive path); [`docs/coherence-algorithm-reference.md`](./coherence-algorithm-reference.md) is the verbatim firmware coherence pipeline. [`docs/protocol.md`](./protocol.md) is historical background; [`docs/path-b-implementation-brief.md`](./path-b-implementation-brief.md) and [`docs/path-b-relay-handoff.md`](./path-b-relay-handoff.md) document the current relay architecture in detail.
 
 > ### 📝 Changelog
 >
-> **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (Follow / Resonance / Standard); [§4.7](#47-driving-the-edge-from-an-external-hr-source-polar-h10--apple-watch--app-side-detector) now lists all three integration patterns.
+> **2026-06-17 — coherence is app-side, period.** All coherence + breathing-pacer processing now runs **app-side** in every client (iOS *and* web) via the Mode A/B/C engine; the glasses are a **display** the app drives by commanding the firmware's breathe / static program plus the new **`0xBA` breathe-sync** opcode. New **[§4.8 "Driving the Edge lens"](#48-driving-the-edge-lens)** documents the lens-drive scheme (stream-vs-command, breathe + strobe ops), the **lens duty→opacity floor**, and the **breath-phase sync rule** — send `0xBA` / rate / depth **only at the breath-cycle boundary**, never mid-breath, because the firmware re-renders `wave × depth` every 10 ms from live params and a mid-breath change warps the waveform into a visible stutter. [§4.7](#47-integration-patterns--where-coherence-runs) reframed: app-side is standard; the `0xCA` on-glasses pipeline is legacy/Standard.
+>
+> **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (Follow / Resonance / Standard); [§4.7](#47-integration-patterns--where-coherence-runs) frames app-side (recommended) vs the legacy on-glasses path.
 >
 > **2026-06-09 — audit + sync to current firmware.** Notable changes since the previous version of this doc:
 >
-> - **Polar H10 path is now first-class.** iOS apps that pair their own H10 (or any external HR source) should **send IBIs to the Edge via opcode `0xCA`** rather than computing coherence app-side. The Edge runs the same coherence pipeline regardless of source and drives the lens tinting automatically based on the active PPG program ([§4.3 opcode table](#43-control-characteristic-0xff01--command-opcodes), `0xCA` / `0xCB` / `0xB7`).
+> - **Polar H10 path is now first-class.** ~~iOS apps that pair their own H10 should send IBIs to the Edge via `0xCA` rather than computing coherence app-side.~~ **Superseded 2026-06-17 — coherence is now computed app-side (Mode A/B/C) in every client; the `0xCA` on-glasses pipeline is the legacy/Standard path ([§4.7](#47-integration-patterns--where-coherence-runs)).** The `0xCA` / `0xCB` / `0xB7` opcodes remain valid for that legacy path and for a firmware-coherence readout, but the app should drive the lens itself ([§4.8](#48-driving-the-edge-lens)).
 > - **Edge BLE stack:** documentation corrected from `Bluedroid` → `NimBLE` (migration PR #22). No client-side impact — the GATT surface is identical.
 > - **New Edge opcodes documented:** `0xC5` refresh earclip config, `0xCA` external-IBI injection (H10 path), `0xCB` set HR source (`0` = earclip, `1` = H10/external), `0xE0` live coherence-pipeline tuning. `0xC0` marked as reserved / no-op.
 > - **New [§4.3.1 "Edge-side algorithm tuning"](#431-edge-side-algorithm-tuning) subsection** — full `narbis_coh_params_t` byte layout, defaults, ranges, FFT-bin grid reference, Swift mirror, and notes on `0xB8` difficulty preset + `0xB9` adaptive pacer.
-> - **New [§4.7 "Driving the Edge from an external HR source"](#47-driving-the-edge-from-an-external-hr-source-polar-h10--apple-watch--app-side-detector) end-to-end Swift example** for the H10 path (per-connect setup + per-beat forward).
+> - **New [§4.7 "Driving the Edge from an external HR source"](#47-integration-patterns--where-coherence-runs) end-to-end Swift example** for the H10 path (per-connect setup + per-beat forward).
 > - **Edge MTU corrected:** `247`, not `517`. Doc was wrong on this since the original draft — both Edge and earclip request the same MTU.
 > - **Edge TX power corrected:** uniform **0 dBm** across ADV / SCAN / CONN (was previously tiered `−6 dBm` ADV / `−12 dBm` CONN). Roughly 4× connected range at +1 mA idle.
 > - **§3.1.8 diagnostics bitmask:** added `0x20 DETECTOR_STATS` (adaptive-detector per-beat snapshot, v4 / Path C only).
@@ -49,7 +53,7 @@
 1. [The two devices at a glance](#1-the-two-devices-at-a-glance)
 2. [Scanning & connecting](#2-scanning--connecting)
 3. [Earclip BLE — full reference](#3-earclip-ble--full-reference) (incl. 🆕 [§3.7 PEER_ROLE](#37-peer_role--e987719a))
-4. [Edge glasses BLE — full reference](#4-edge-glasses-ble--full-reference) (incl. 🆕 [§4.6 The Edge as relay](#46-the-edge-as-relay-path-b))
+4. [Edge glasses BLE — full reference](#4-edge-glasses-ble--full-reference) (incl. 🆕 [§4.6 The Edge as relay](#46-the-edge-as-relay-path-b) · 🆕 [§4.7 Integration patterns](#47-integration-patterns--where-coherence-runs) · 🆕 [§4.8 Driving the lens](#48-driving-the-edge-lens))
 5. [Configuring the earclip from iOS](#5-configuring-the-earclip-from-ios)
 6. [OTA — shared between both devices](#6-ota--shared-between-both-devices)
 7. [iOS / Core Bluetooth gotchas](#7-ios--core-bluetooth-gotchas)
@@ -682,7 +686,7 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xB7` | PPG program | 0–3 | no | 0 heartbeat, 1 coh-breathe, 2 coh-lens, 3 coh-breathe-strobe |
 | `0xB8` | Coherence difficulty | 0–3 | yes | easy / medium / hard / expert |
 | `0xB9` | Adaptive pacer | 0/1 | yes | |
-| **`0xBA`** | **Breathe sync** 🆕 | 3 B payload | no | Mode A/B phase-lock (firmware ≥ 4.15.5). 4 B on the wire: `[0xBA][cycle_ms:u16 LE][inhale_pct:u8]`. Restarts the `LED_MODE_BREATHE` cosine at the moment of the write (the dashboard's on-screen inhale boundary) and renders at the exact cycle length sent, so the glasses lens, the on-screen breathing cue, and the audio chime share one clock. The dashboard issues it at each breath-cycle boundary + on Mode A/B start / glasses-connect. A firmware lens slew-rate limiter fades any re-anchor (~250 ms) so resyncs never snap. Auto-expires 2 cycles after the last sync (hall-button BREATHE reverts to integer-BPM). Ignored by firmware < 4.15.5 (unknown opcode), so it's safe to always send. |
+| **`0xBA`** | **Breathe sync** 🆕 | 3 B payload | no | App-side lens phase-lock (firmware ≥ 4.15.5). 4 B on the wire: `[0xBA][cycle_ms:u16 LE][inhale_pct:u8]`. Restarts the `LED_MODE_BREATHE` cosine at the moment of the write (= the app's on-screen inhale boundary) and renders at the exact cycle length sent, so the glasses lens, the on-screen breathing cue, and the audio chime share one clock. **Send ONLY at the breath-cycle boundary, never mid-breath** — full rationale + Swift in [§4.8.4](#484-phase-sync--the-one-rule-write-only-at-the-breath-boundary). The app issues it at each boundary + on Mode A/B/C start / glasses-connect. A firmware lens slew-rate limiter fades any re-anchor (~250 ms) so resyncs never snap. Auto-expires 2 cycles after the last sync (hall-button BREATHE reverts to integer-BPM). Ignored by firmware < 4.15.5 (unknown opcode), so it's safe to always send. |
 | `0xBF` | Factory reset | any | n/a | wipes the `narbis_prefs` NVS namespace |
 | `0xC0` | *(reserved)* | — | — | Listed in firmware's internal opcode comment table but has no dispatcher case — do not use |
 | **`0xC1`** | **Forget earclip** 🆕 | any (ignored) | no | Path B. Wipes the `narbis_pair` NVS entry, drops the central connection to the earclip, starts a fresh general scan. Visual feedback: 3 fast lens-opacity pulses. Same effect as 5 short magnet taps. |
@@ -1169,13 +1173,25 @@ func forgetEarclip() {
 }
 ```
 
-### 4.7 Driving the Edge from an external HR source (Polar H10 / Apple Watch / app-side detector)
+### 4.7 Integration patterns — where coherence runs
 
-🆕 **Path B.** If iOS is already paired with an external HR source — a Polar H10, an Apple Watch with healthkit, an app-internal PPG detector, anything that emits R-R intervals — you do **not** need to compute coherence or tinting on the app side. Forward the IBIs to the Edge via `0xCA` and the Edge will run the same coherence pipeline it uses for earclip beats and drive the lens automatically based on the selected PPG program.
+There are two ways to put coherence on the glasses. **Pattern A (app-side) is the standard;** Pattern B is legacy.
 
-This is the recommended path for any non-earclip HR source: one source of truth for the algorithm, identical lens behaviour regardless of source, and you get tuning (`0xE0` / `0xB8` / `0xB9`) and pacer overlay (`pacer_bpm` in `0xF2`) for free.
+#### 4.7.1 App-side coherence — recommended (Mode A/B/C)
 
-**Per-connect setup (do this once each time iOS connects to the Edge):**
+The app computes coherence + the breathing pacer itself — the **Mode A/B/C engine** (Follow / Resonance / Standard) — from whatever HR source it has (Polar H10, Apple Watch, an app-internal PPG detector, or the earclip's own IBI notifications). The glasses are a **display**: the app **drives the lens by commanding the firmware's breathe / static program**, so the glasses still render the smooth waveform locally while the app owns the algorithm. This is the path the Narbis dashboard uses and the one new iOS / web clients should implement.
+
+- **How to drive the lens:** see [§4.8 "Driving the Edge lens"](#48-driving-the-edge-lens) — the breathe ops, the strobe ops, the duty→opacity floor, and the breath-phase sync rule.
+- **The algorithm to reproduce:** [`coherence-engine.md`](./coherence-engine.md) (architecture + the three modes) and [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md) (the verbatim pipeline: outlier gate, IBI ring, Lomb–Scargle / FFT, band integration, peak pick, EWMA, adaptive pacer).
+- You do **not** send `0xCA` / `0xB7` in this pattern — the firmware's coherence pipeline is idle and the app owns the lens. (You *may* still read the firmware's own `0xF2` coherence for a parity check if an earclip is paired, but it is not what drives the lens.)
+
+#### 4.7.2 Legacy / Standard on-glasses mode (`0xCA` + `0xB7`)
+
+> **Legacy.** Use this only when you want the *glasses* to compute coherence and drive the lens themselves — a thin client with no app-side engine, or the on-glasses "Standard" program. New clients should prefer [§4.7.1](#471-app-side-coherence--recommended-mode-abc).
+
+Forward your HR source's IBIs to the Edge via `0xCA`; the Edge runs the same coherence pipeline it uses for earclip beats and drives the lens automatically based on the selected PPG program (`0xB7`). You get firmware tuning (`0xE0` / `0xB8` / `0xB9`) and the pacer overlay (`pacer_bpm` in `0xF2`) for free.
+
+**Per-connect setup (do this once each time you connect to the Edge):**
 
 ```swift
 // 1. Tell the Edge that beats will be coming from iOS, not the earclip.
@@ -1222,7 +1238,128 @@ func forwardBeatToEdge(rrMs: UInt16, confidence: UInt8 = 100, isArtifact: Bool =
 - **Pulse-on-beat program (`0xB7 0`)** works with `0xCA` beats — the lens pulses each time your `0xCA` write lands. No earclip required.
 - **Coherence updates** arrive on `0xFF03` as `0xF2` frames once per second (see [§4.4.3](#443-coherence-packet-0xf2--18-b)). Byte 17 carries the current adaptive-pacer BPM if `0xB9` is enabled — useful for an in-app overlay.
 - **For tuning sliders / sensitivity presets**, see [§4.3.1 Edge-side algorithm tuning](#431-edge-side-algorithm-tuning). The `0xB8` difficulty preset (Easy/Medium/Hard/Expert) is the cheapest UX hook.
-- **If you want the algorithm app-side instead** — compute coherence + pacing on the client (e.g. directly off H10 R-R intervals) and use the glasses purely as a display — the **recommended drive is to command the firmware's own program** so the glasses still render the smooth waveform locally: select **plain breathe** (`0xB0`) + set the **rate** (`0xB1`) + set the **depth/amplitude** from your computed coherence via **brightness** (`0xA2`); or send a slow **static-duty setpoint** (`0xA5`) for a steady coherence tint; add **strobe** (`0xAB`/`0xAC`) for breathe+strobe. Push these only when a value changes (~1 Hz) — **not** per frame; streaming raw duty every tick is choppy over BLE. The Narbis dashboard's app-side engine, its three modes, and this exact drive path are documented in [`coherence-engine.md`](./coherence-engine.md). The verbatim firmware pipeline you would be reproducing (outlier gate, IBI ring, resample, FFT, band integration, peak detection, EWMA smoothing, adaptive pacer, and the four PPG-program lens mappings) is in [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md).
+- **Prefer app-side coherence** ([§4.7.1](#471-app-side-coherence--recommended-mode-abc)) for new clients — compute the algorithm on the client and drive the lens yourself via [§4.8](#48-driving-the-edge-lens). This `0xCA` path is kept for thin clients and the on-glasses Standard program.
+
+---
+
+### 4.8 Driving the Edge lens
+
+In app-side mode ([§4.7.1](#471-app-side-coherence--recommended-mode-abc)) the app owns the algorithm and tells the lens what to do. This section is the complete drive surface: how to make the lens breathe, how to strobe, the opacity curve, and — the part that bites everyone — how to keep the lens **in phase** with your on-screen cue and audio.
+
+#### 4.8.1 Command the renderer — don't stream PWM
+
+There are two ways to make the lens "breathe" (fade clear → dark → clear):
+
+- **❌ Stream per-tick PWM.** Compute the waveform value every frame and write it as a static duty (`0xA5`) at ~12 Hz. Don't: it's a continuous write stream (BLE air-time + glasses power), and any link jitter or a dropped write shows up as a visible stutter — smoothness becomes hostage to the link.
+- **✅ Command the breathe program.** Send a handful of parameter writes **once** and the glasses render the smooth **100 Hz cosine locally**. The link carries only occasional writes; the waveform is smooth regardless of BLE conditions. This is the "fade clear→dark over the inhale, dark→clear over the exhale, repeating" primitive — the firmware owns the interpolation.
+
+> There is **no one-shot "ramp A→B over T seconds" opcode.** Breathe mode *is* the timed fade, but it is **cyclic** (repeats every breath). For a steady, non-breathing tint that just tracks a slow value, use `0xA5` as a **setpoint you refresh ~1 Hz** — not a per-frame stream.
+
+#### 4.8.2 The breathe op set
+
+| Opcode | Arg | Meaning |
+|---|---|---|
+| `0xB0` | `0x00` | enter BREATHE mode (firmware renders the cosine from here on) |
+| `0xB1` | bpm 1–30 | breathe rate — **integer BPM** (see §4.8.4) |
+| `0xB2` | pct 10–90 | inhale fraction (40 = inhale 40 % / exhale 60 %) |
+| `0xA2` | pct 0–100 | amplitude / depth — peak lens darkness at full inhale (your coherence → depth map) |
+| `0xBA` | `[cycle_ms u16 LE][inhale_pct u8]` | **phase-lock + exact cycle** (fw ≥ 4.15.5) — see §4.8.4 |
+| `0xA5` | pct 0–100 | STATIC mode — immediate tint; use as a slow setpoint, not a stream |
+
+```swift
+func edgeEnterBreathe(ctrl: CBCharacteristic, on p: CBPeripheral) {
+    p.writeValue(Data([0xB0, 0x00]), for: ctrl, type: .withResponse)   // enter breathe (once)
+}
+
+// Call ONLY at a breath boundary (see §4.8.4). cycleMs = full breath; depthPct from your coherence.
+func edgePushBreath(cycleMs: UInt16, inhalePct: UInt8, depthPct: UInt8,
+                    ctrl: CBCharacteristic, on p: CBPeripheral) {
+    let bpm = UInt8(max(1, min(30, (60_000 + Int(cycleMs) / 2) / Int(cycleMs))))
+    p.writeValue(Data([0xBA, UInt8(cycleMs & 0xFF), UInt8(cycleMs >> 8), inhalePct]),
+                 for: ctrl, type: .withoutResponse)                      // exact cycle + phase anchor
+    p.writeValue(Data([0xB1, bpm]),       for: ctrl, type: .withoutResponse)  // integer-rate fallback (old fw)
+    p.writeValue(Data([0xB2, inhalePct]), for: ctrl, type: .withoutResponse)
+    p.writeValue(Data([0xA2, depthPct]),  for: ctrl, type: .withoutResponse)  // depth for THIS breath
+}
+```
+
+#### 4.8.3 Lens opacity is not linear — the duty→opacity floor (fw ≥ 4.15.4)
+
+The electrochromic cell shows **no visible tint below ~26 % drive**, so the firmware remaps your duty onto the *visible* range: **duty 0 → fully clear; duty 1..100 → raw [265..1023]** (duty 1 is already the first visible step, ~26 % electrically). Consequences for your coherence → `0xA2` / `0xA5` mapping:
+
+- `depth = 0` is the only fully-clear value. `depth = 1` is **already visibly tinted** — the bottom of the range is a **hard step**, not a fade-in.
+- Usable contrast is `1..100`. Treat `0` as "off"; map coherence onto `1..100` (or a floor like `8..100` if you want the lens to always show *something*).
+
+#### 4.8.4 Phase sync — the one rule: write only at the breath boundary
+
+The firmware's breathe phase is **free-running**: `t = (tick_count × 10 ms) mod cycle_ms`, and nothing resets it. So the glasses' inhale/exhale boundaries fall at **arbitrary times** relative to your on-screen breathing cue and your audio chime — they drift apart. And `0xB1` is **integer BPM**, so a fractional pacer (e.g. 5.4 br/min) rounds, adding a rate mismatch.
+
+**`0xBA BREATHE_SYNC` `[cycle_ms u16 LE][inhale_pct u8]`** fixes both: it **restarts the cosine at the instant of the write** (phase origin = now = start of inhale) **and** sets the **exact** cycle length in ms.
+
+> ### ⚠️ Send `0xBA` (and any `0xB1` / `0xA2` change) **only at the breath-cycle boundary** — never mid-breath
+>
+> Two independent reasons:
+> 1. **The correction is invisible at the seam.** Re-anchor when *your* clock is at the start of inhale (waveform ≈ 0, lens at its clearest). Both clocks are at the same point, so the phase fix is a visual no-op. Re-anchoring mid-inhale teleports the firmware's phase → a visible snap.
+> 2. **Mid-breath param changes warp the waveform.** The firmware recomputes `effective_duty = wave(frac) × depth` every 10 ms from the *live* params. Change the rate (→ `cycle_ms` / `inhale_ms`) or the depth (`0xA2`) mid-inhale and `frac` or the product moves **non-monotonically** — the lens darkens, clears a bit, then darkens again. (This exact stutter is a bug we shipped, then fixed by moving to boundary-only writes.)
+>
+> **So: latch your breathe params per breath.** Sample rate + depth once at each boundary, hold them for the whole breath, and push (`0xBA` + `0xB1` + `0xA2`) only at the next boundary.
+
+The firmware also **slew-rate-limits** the breathe tint (≤ 4 %/10 ms ≈ 250 ms full-scale fade) as belt-and-suspenders, so the one unavoidable correction — the very first anchor, a deliberate rate snap, or a reconnect — *fades* instead of snapping. You do nothing for this; just know it exists, and that it does **not** apply to strobe.
+
+**Drive the on-screen cue and the audio chime off the SAME app breath clock** as your `0xBA` writes. Because the lens is now phase-locked to that clock, screen + sound + physical lens all line up — including as the pacer rate drifts.
+
+```swift
+// The app owns a breath clock: cycleMs, and phase ∈ [0,1) advanced by elapsed time.
+// Drive the on-screen cue AND the chime from THIS clock too — one clock for everything.
+var phase = 0.0
+var cycleMs: UInt16 = 10_000
+var pendingCycleMs: UInt16 = 10_000   // engine updates these continuously…
+var pendingDepth: UInt8 = 0           // …but they are APPLIED only at the boundary.
+
+func onEnterBreathe() {
+    edgeEnterBreathe(ctrl: ctrl, on: p)
+    edgePushBreath(cycleMs: cycleMs, inhalePct: 40, depthPct: pendingDepth, ctrl: ctrl, on: p) // initial anchor
+}
+
+func onFrame(dtMs: Double) {
+    phase += dtMs / Double(cycleMs)
+    if phase >= 1.0 {                       // ← BREATH BOUNDARY (frac ≈ 0)
+        phase -= 1.0
+        cycleMs = pendingCycleMs            // re-sample rate ONCE, here
+        edgePushBreath(cycleMs: cycleMs, inhalePct: 40, depthPct: pendingDepth, ctrl: ctrl, on: p) // + depth, here
+    }
+    updateOnScreenCue(phase)                // smooth, app-side
+    maybePlayChime(phase)                   // inhale/exhale edges off the same clock
+    // NOTHING about rate/depth/cycle is written to the glasses between boundaries.
+}
+```
+
+#### 4.8.5 Strobe
+
+| Opcode | Arg | Meaning |
+|---|---|---|
+| `0xA6` | `0x00` | enter STROBE mode |
+| `0xAB` | see below | strobe frequency |
+| `0xAC` | pct 10–90 | dark fraction of each strobe period |
+
+`0xAB` has **two wire forms** — use the deci-Hz form for sub-Hz precision (brainwave-entrainment targets like 13.5 / 17.5 Hz):
+
+```swift
+// integer Hz (2 bytes):        [0xAB, hz]
+// deci-Hz   (3 bytes, prefer): [0xAB, dHz_lo, dHz_hi]  where dHz = round(hz * 10)
+func edgeSetStrobeHz(_ hz: Double, ctrl: CBCharacteristic, on p: CBPeripheral) {
+    let dHz = UInt16((max(1.0, min(50.0, hz)) * 10).rounded())          // e.g. 13.5 Hz → 135
+    p.writeValue(Data([0xAB, UInt8(dHz & 0xFF), UInt8(dHz >> 8)]), for: ctrl, type: .withResponse)
+}
+```
+
+> **Strobe needs hard edges — never smooth, slew, or ramp it.** Write the params once and let the firmware's ISR toggle. (The breathe slew limiter in §4.8.4 deliberately does not touch strobe.)
+>
+> **Breathe + strobe** (a strobe whose dark-duty is modulated by the breathing wave) exists as a firmware LED mode but has **no dedicated standalone opcode yet** — a known follow-up. For now: pure breathe (`0xB0`) **or** pure strobe (`0xA6`).
+
+#### 4.8.6 Backward compatibility & version
+
+`0xBA` is **ignored by firmware < 4.15.5** (unknown opcode → silent no-op), so you can always send it; on old firmware the lens stays on the integer-`0xB1` rate path (rate-matched, not phase-locked). **The Edge does not expose a Device Information Service**, so there is **no BLE firmware-version readback on the glasses** — send `0xBA` unconditionally (it's safe) rather than gating on version. (The *earclip* does expose DIS `0x180A` / `0x2A26` — [§3.4](#34-device-information-service--0x180a) — but that is the earclip's version, not the Edge's.)
 
 ---
 
