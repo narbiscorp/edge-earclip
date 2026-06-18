@@ -52,11 +52,11 @@
 
 1. [The two devices at a glance](#1-the-two-devices-at-a-glance)
 2. [Scanning & connecting](#2-scanning--connecting)
-3. [Earclip BLE — full reference](#3-earclip-ble--full-reference) (incl. 🆕 [§3.7 PEER_ROLE](#37-peer_role--e987719a))
+3. [Earclip BLE — full reference](#3-earclip-ble--full-reference) (incl. 🆕 [§3.7 PEER_ROLE](#37-peer_role--e987719a) · 🆕 [§3a Polar H10 data source](#3a-polar-h10--app-side-data-source))
 4. [Edge glasses BLE — full reference](#4-edge-glasses-ble--full-reference) (incl. 🆕 [§4.6 The Edge as relay](#46-the-edge-as-relay-path-b) · 🆕 [§4.7 Integration patterns](#47-integration-patterns--where-coherence-runs) · 🆕 [§4.8 Driving the lens](#48-driving-the-edge-lens))
 5. [Configuring the earclip from iOS](#5-configuring-the-earclip-from-ios)
 6. [OTA — shared between both devices](#6-ota--shared-between-both-devices)
-7. [iOS / Core Bluetooth gotchas](#7-ios--core-bluetooth-gotchas)
+7. [iOS / Core Bluetooth gotchas](#7-ios--core-bluetooth-gotchas) (incl. 🆕 [§7a Web Bluetooth](#7a-web-bluetooth-gotchas))
 8. [Troubleshooting matrix](#8-troubleshooting-matrix)
 9. [Reference data](#9-reference-data)
 
@@ -146,6 +146,33 @@ final class NarbisCentral: NSObject, CBCentralManagerDelegate {
 }
 ```
 
+**✅ Exact working JS (Web Bluetooth — the Narbis dashboard's `connect()` methods).** There is no background scan list in Web Bluetooth: `requestDevice()` opens the browser's device chooser and must be called from a **user gesture** (a click/tap — see [§7a](#7a-web-bluetooth-gotchas)). You connect one device per call, with its own filter:
+
+```js
+// Edge glasses — dashboard/src/ble/edgeDevice.ts
+const EDGE_SVC = '000000ff-0000-1000-8000-00805f9b34fb';
+const edge = await navigator.bluetooth.requestDevice({
+  filters: [{ name: 'Narbis_Edge' }, { services: [EDGE_SVC] }],
+  optionalServices: [EDGE_SVC],
+});
+
+// Earclip — dashboard/src/ble/narbisDevice.ts
+const NARBIS_SVC = 'a24080b2-8857-4785-b3ba-a43b66af4f28';
+const earclip = await navigator.bluetooth.requestDevice({
+  filters: [{ services: [NARBIS_SVC] }, { namePrefix: 'Narbis Earclip' }],
+  optionalServices: [NARBIS_SVC, 0x180d, 0x180f, 0x180a],
+});
+
+// Polar H10 — dashboard/src/ble/polarH10.ts (HR + the PMD accelerometer service)
+const PMD_SVC = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+const h10 = await navigator.bluetooth.requestDevice({
+  filters: [{ services: [0x180d] }, { namePrefix: 'Polar' }],
+  optionalServices: [0x180d, PMD_SVC],
+});
+```
+
+> ⚠️ **`optionalServices` is mandatory in Web Bluetooth.** Every service you later call `getPrimaryService()` on must appear in a filter **or** `optionalServices`, or the call throws `SecurityError`. This is the #1 Web-Bluetooth footgun — see [§7a](#7a-web-bluetooth-gotchas).
+
 ### 2.3 Discovery
 
 After `centralManager(_:didConnect:)` fires, call `discoverServices(nil)`. Both devices have small GATT tables — just discover everything.
@@ -161,6 +188,25 @@ func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/narbisDevice.ts` — `openSession()`).** Web Bluetooth discovers on demand: connect the GATT server, get the service, then each characteristic:
+
+```js
+const server = await device.gatt.connect();
+const svc = await server.getPrimaryService(NARBIS_SVC); // must be in optionalServices (see §2.2)
+const [chIbi, chSqi, chRaw, chBatt, chCfg, chCfgWrite, chMode] = await Promise.all([
+  svc.getCharacteristic(NARBIS_CHR_IBI_UUID),
+  svc.getCharacteristic(NARBIS_CHR_SQI_UUID),
+  svc.getCharacteristic(NARBIS_CHR_RAW_PPG_UUID),
+  svc.getCharacteristic(NARBIS_CHR_BATTERY_UUID),
+  svc.getCharacteristic(NARBIS_CHR_CONFIG_UUID),
+  svc.getCharacteristic(NARBIS_CHR_CONFIG_WRITE_UUID),
+  svc.getCharacteristic(NARBIS_CHR_MODE_UUID),
+]);
+// Subscribe to a notify characteristic:
+chIbi.addEventListener('characteristicvaluechanged', (e) => onIbi(e.target.value /* DataView */));
+await chIbi.startNotifications();
+```
+
 ### 2.4 MTU — check it after discovery, not before
 
 ```swift
@@ -169,6 +215,8 @@ let writeWithRespMax = peripheral.maximumWriteValueLength(for: .withResponse)
 ```
 
 This value is final only **after** services are discovered. Both devices request an ATT MTU of 247, but iOS may cap lower — read the actual value before you start chunking OTA pages.
+
+> **JS note:** Web Bluetooth has **no MTU API** — `writeValue()` chunks for you, and the dashboard simply caps OTA chunks at a fixed 244 B (`CHUNK_SIZE` in `webapp/ota/index.html`). There is nothing to read; just keep writes ≤ 244 B and let the browser handle fragmentation.
 
 ### 2.5 Reconnection
 
@@ -238,6 +286,20 @@ struct NarbisIBI {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/parsers.ts`):**
+
+```js
+function parseNarbisIBI(dv /* DataView */) {
+  if (dv.byteLength < 4) throw new Error(`narbis IBI payload too short: ${dv.byteLength}`);
+  return {
+    ibi_ms:          dv.getUint16(0, true),
+    confidence_x100: dv.getUint8(2),
+    flags:           dv.getUint8(3),
+  };
+}
+const bpm = ibi_ms > 0 ? Math.round(60000 / ibi_ms) : 0;
+```
+
 #### 3.1.2 SQI — `2b614c61-…`
 
 | Offset | Size | Field | Type | Notes |
@@ -248,6 +310,20 @@ struct NarbisIBI {
 | 10 | 2 | `perfusion_idx_x1000` | u16 LE | Perfusion index × 1000 |
 
 Useful as a "is the earclip on the ear and well-coupled?" indicator. Below `sqi_x100 < 30` you should warn the user.
+
+**✅ Exact working JS (`dashboard/src/ble/parsers.ts`):**
+
+```js
+function parseSQI(dv /* DataView */) {
+  if (dv.byteLength < 12) throw new Error(`SQI payload too short: ${dv.byteLength}`);
+  return {
+    sqi_x100:            dv.getUint16(0, true),
+    dc_red:              dv.getUint32(2, true),
+    dc_ir:               dv.getUint32(6, true),
+    perfusion_idx_x1000: dv.getUint16(10, true),
+  };
+}
+```
 
 #### 3.1.3 RAW_PPG — `6bacca91-…`
 
@@ -291,6 +367,26 @@ struct NarbisRawPPG {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/parsers.ts`):**
+
+```js
+function parseRawPPG(dv /* DataView */) {
+  if (dv.byteLength < 4) throw new Error(`raw PPG header too short: ${dv.byteLength}`);
+  const sample_rate_hz = dv.getUint16(0, true);
+  const n_samples = dv.getUint16(2, true);
+  const expected = 4 + n_samples * 8;
+  if (dv.byteLength < expected) throw new Error(`raw PPG truncated: have ${dv.byteLength}, need ${expected}`);
+  const samples = [];
+  let off = 4;
+  for (let i = 0; i < n_samples; i++) {
+    const red = dv.getUint32(off, true); off += 4;
+    const ir  = dv.getUint32(off, true); off += 4;
+    samples.push({ red, ir });
+  }
+  return { sample_rate_hz, n_samples, samples };
+}
+```
+
 #### 3.1.4 BATTERY — `b59d3ba1-…`
 
 | Offset | Size | Field | Type | Notes |
@@ -300,6 +396,15 @@ struct NarbisRawPPG {
 | 3 | 1 | `charging` | u8 | 0 = not charging, 1 = charging |
 
 Use this rather than the standard `0x2A19` if you want the millivolts and charging-state bits.
+
+**✅ Exact working JS (`dashboard/src/ble/parsers.ts`):**
+
+```js
+function parseNarbisBattery(dv /* DataView */) {
+  if (dv.byteLength < 4) throw new Error(`narbis battery payload too short: ${dv.byteLength}`);
+  return { mv: dv.getUint16(0, true), soc_pct: dv.getUint8(2), charging: dv.getUint8(3) };
+}
+```
 
 #### 3.1.5 CONFIG — `553abc98-…`
 
@@ -332,6 +437,15 @@ Cheap 2-byte write to swap the two mode axes without touching the rest of the co
 func setLiveLowLatencyIBI(on p: CBPeripheral, mode chr: CBCharacteristic) {
     let bytes: [UInt8] = [/*LOW_LATENCY*/ 1, /*IBI_ONLY*/ 0]
     p.writeValue(Data(bytes), for: chr, type: .withResponse)
+}
+```
+
+**✅ Exact working JS (`dashboard/src/ble/narbisDevice.ts` — `writeMode()`):**
+
+```js
+async function writeMode(chMode, profile, format) {
+  const buf = new Uint8Array([profile & 0xff, format & 0xff]); // [1, 0] = LOW_LATENCY + IBI_ONLY
+  await chMode.writeValueWithResponse(buf);
 }
 ```
 
@@ -379,6 +493,18 @@ The role write is **not persisted** by the earclip — every central must re-ann
 // Right after services are discovered, write your role *first*.
 let role: UInt8 = 1   // DASHBOARD
 peripheral.writeValue(Data([role]), for: chPeerRole, type: .withResponse)
+```
+
+**✅ Exact working JS (`dashboard/src/ble/narbisDevice.ts` — `openSession()`):**
+
+```js
+const NARBIS_PEER_ROLE_DASHBOARD = 0x01;
+// Pre-Path-B earclips lack this characteristic, so wrap in try/catch and continue
+// (they fall back to BATCHED, which is fine).
+try {
+  const chPeerRole = await svc.getCharacteristic(NARBIS_CHR_PEER_ROLE_UUID);
+  await chPeerRole.writeValueWithResponse(new Uint8Array([NARBIS_PEER_ROLE_DASHBOARD]));
+} catch (err) { /* optional on older firmware */ }
 ```
 
 > Why it matters: on a multi-central earclip (you + the Edge), you want one set of conn parameters tuned for live UI updates and a different set tuned for power-efficient relay. PEER_ROLE lets each peer get its own profile rather than fighting over a single global setting.
@@ -445,6 +571,28 @@ struct HRMeasurement {
     }
 }
 ```
+
+**✅ Exact working JS (`dashboard/src/ble/parsers.ts` — used for the earclip *and* the Polar H10, same standard char):**
+
+```js
+function parseHeartRateMeasurement(dv /* DataView */) {
+  const flags = dv.getUint8(0);
+  let off = 1;
+  let bpm;
+  if (flags & 0x01) { bpm = dv.getUint16(off, true); off += 2; }   // bit0: u16 vs u8
+  else              { bpm = dv.getUint8(off);         off += 1; }
+  const rrIntervals_ms = [];
+  if (flags & 0x10) {                                              // bit4: RR present
+    while (off + 2 <= dv.byteLength) {
+      const raw = dv.getUint16(off, true); off += 2;
+      rrIntervals_ms.push(Math.round((raw * 1000) / 1024));        // 1/1024 s → ms
+    }
+  }
+  return { bpm, rrIntervals_ms };
+}
+```
+
+> **Swift-vs-JS note:** the JS deliberately omits the energy-expended skip (bit 3) the Swift does — neither the earclip nor the H10 sets that flag, so it never matters in practice. If you target a generic HRM that might, keep the Swift's `if (flags & 0x08) i += 2` skip. **For the Polar H10 RR path, also reconstruct per-beat timestamps — see [§3a.2](#3a2-rr-from-the-standard-hr-service--beat-timestamp-reconstruction).**
 
 ### 3.3 Battery Service — `0x180F`
 
@@ -622,7 +770,102 @@ func narbisCRC16(_ bytes: Data) -> UInt16 {
 }
 ```
 
+**✅ Exact working JS (`protocol/narbis_protocol.ts` — `serializeConfig()`; this produces the exact 74 B the dashboard writes to CONFIG_WRITE / §5):**
+
+```js
+// CRC-16-CCITT-FALSE (poly 0x1021, init 0xFFFF) — the only non-obvious part of the wire format:
+function narbisCrc16(buf, len) {
+  let crc = 0xFFFF;
+  for (let i = 0; i < len; i++) {
+    crc ^= buf[i] << 8;
+    for (let b = 0; b < 8; b++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+  }
+  return crc & 0xFFFF;
+}
+// serializeConfig(cfg): into a 74-byte buffer, write each field little-endian at its §3.6-table
+// offset (one DataView.setUintN per row, in table order), then the CRC over bytes 0..71:
+//   view.setUint16(72, narbisCrc16(buf, 72), true);
+// Full serializeConfig() + deserializeConfig() (the inverse, for the CONFIG read/notify) are in
+// protocol/narbis_protocol.ts.
+```
+
 > **Validation rules the firmware enforces.** Writes are rejected if any of these fail: `sample_rate_hz` is one of {50,100,200,400}; LED currents ≤ 510; `bandpass_low < bandpass_high`; `elgendi_w1 < elgendi_w2`; `ibi_min < ibi_max`; mode enums in range; `battery_low_mv` 2800–4200; `detector_mode` is `FIXED (0)` or `ADAPTIVE (1)`; `ncc_min_x1000 ≤ ncc_learn_min_x1000`; `alpha_min_x1000 < alpha_max_x1000`. Check `firmware/main/config_manager.c` for the canonical range list.
+
+---
+
+## 3a. Polar H10 — app-side data source
+
+> **Why this section exists.** In app-side mode (the standard — [§4.7.1](#471-app-side-coherence--recommended-mode-abc)) the app computes coherence itself, so it reads the sensor **directly**. The Polar H10 is the reference sensor. **Modes B and C cannot run without the H10's accelerometer** (the independent respiration channel that verifies resonance against the Mayer wave) — an app that reads only heart rate will silently fail those modes.
+
+### 3a.1 What each mode needs
+
+| Mode | Inputs the engine consumes | H10 services |
+|---|---|---|
+| **A — Follow** | RR intervals | HR `0x180D` / `0x2A37` |
+| **B — Resonance** | RR **+ accelerometer** | HR `0x180D` **+ PMD `fb005c80-…`** |
+| **C — Standard (Settle & Find)** | RR **+ accelerometer** | HR `0x180D` **+ PMD `fb005c80-…`** |
+
+Connect to the H10, subscribe to the **standard Heart Rate Service** for RR ([§3a.2](#3a2-rr-from-the-standard-hr-service--beat-timestamp-reconstruction)), and for **B/C** also start the **PMD accelerometer stream** ([§3a.3](#3a3-accelerometer-via-the-pmd-service-mode-bc)). The earclip can substitute as the RR source (its IBI characteristic, [§3.1.1](#311-ibi--78ef492f)) but has **no accelerometer** — B/C require the H10.
+
+> **Apple Watch caveat.** watchOS / HealthKit does **not** expose reliable beat-to-beat RR intervals to third-party apps, nor an accelerometer-respiration stream equivalent to the H10's PMD. Treat "Apple Watch as HR source" as experimental for **Mode A only** — it is **not** a drop-in for Mode B/C.
+
+```js
+// dashboard/src/ble/polarH10.ts — connect (both HR + PMD in optionalServices so both are reachable):
+const PMD_SVC = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+const device = await navigator.bluetooth.requestDevice({
+  filters: [{ services: [0x180d] }, { namePrefix: 'Polar' }],
+  optionalServices: [0x180d, PMD_SVC],
+});
+```
+
+### 3a.2 RR from the standard HR service + beat-timestamp reconstruction
+
+Subscribe to `0x180D` / `0x2A37` and parse it with the **same parser as the earclip** ([§3.2](#32-heart-rate-service--0x180d)): `rr_ms = raw * 1000 / 1024`.
+
+> ⚠️ **HR notifications carry RR but no timestamps**, and the coherence engine needs a time per beat. The naïve "sum RR backwards from the notify time" draws a **backwards-Z** tachogram under BLE jitter (a late notification's first beat lands before the previous one's last). Walk a **monotonic forward clock** from an anchor instead:
+
+```js
+// dashboard/src/ble/polarH10.ts — walkPolarBeatClock (condensed; full version adds drift-snap + re-anchor)
+function walkPolarBeatClock(prev, receiveTs, rrs) {            // prev = last emitted beat time, or null
+  if (rrs.length === 0) return { beatTimestamps: [], next: prev };
+  const reanchor = prev == null || receiveTs - prev > 10_000;  // big gap → re-anchor
+  let cursor = reanchor ? receiveTs - rrs.reduce((a, b) => a + b, 0) : prev;
+  const out = rrs.map((rr) => (cursor += rr));                 // walk FORWARD → monotonic by construction
+  return { beatTimestamps: out, next: out[out.length - 1] };   // (full impl also snaps forward on dropped notifies)
+}
+```
+
+### 3a.3 Accelerometer via the PMD service (Mode B/C)
+
+The H10 exposes its accelerometer through Polar's **PMD (Polar Measurement Data)** service — **not** the HR characteristic. Three characteristics:
+
+| Role | UUID |
+|---|---|
+| PMD Service | `fb005c80-02e7-f387-1cad-8acd2d8df0c8` |
+| Control point (write + indicate) | `fb005c81-02e7-f387-1cad-8acd2d8df0c8` |
+| Data (notify) | `fb005c82-02e7-f387-1cad-8acd2d8df0c8` |
+
+**Start sequence** (request→response on the control point; subscribe to **both** control-indicate and data-notify *before* writing):
+1. **Get settings:** write `[0x01, 0x02]` (GET_SETTINGS, ACC) → response lists supported rates / ranges / resolutions.
+2. **Start:** write `[0x02, 0x02, 0x00,0x01,<rate u16 LE>, 0x01,0x01,<res u16 LE>, 0x02,0x01,<range u16 LE>]` (the dashboard prefers **50 Hz / ±8 g / 16-bit**, falling back to an offered combo). Control responses begin `0xF0`; **status byte (offset 3) `0` = OK**.
+3. **Stop:** write `[0x03, 0x02]`.
+
+**Data frame:** `[0]=0x02` (ACC) · `[1..8]` u64 LE device timestamp (ns) · `[9]` frame type (**bit 7 = delta-compressed**) · `[10..]` payload. For raw frames (the H10's default in this config) the payload is consecutive `int16` LE x/y/z triplets in **milli-g** (≈1000 = 1 g). The engine takes the vector magnitude and band-passes it for the respiration estimate.
+
+```js
+// dashboard/src/ble/polarH10.ts — raw-frame ACC parse (condensed; delta-frame branch is in the file)
+function parseAccFrame(dv /* DataView */) {
+  if (dv.byteLength < 16 || dv.getUint8(0) !== 0x02) return [];
+  if (dv.getUint8(9) & 0x80) return parseDeltaFrame(dv);   // bit 7 = delta-compressed → full impl in polarH10.ts
+  const p = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
+  const i16 = (o) => ((p[o] | (p[o + 1] << 8)) << 16) >> 16;  // signed LE
+  const out = [];
+  for (let i = 0; i + 6 <= p.length; i += 6) out.push({ x: i16(i), y: i16(i + 2), z: i16(i + 4) });
+  return out;
+}
+```
+
+> **The control-point handshake is the part people get wrong.** Subscribe to the control point's *indications* before writing; send GET_SETTINGS first (don't assume a combo the device might reject with status 5); and **omit the CHANNELS TLV** (ACC is implicitly 3-axis — a malformed channels field is the classic "invalid parameter" rejection). The full, hardened `startAccStream()` is in `dashboard/src/ble/polarH10.ts`.
 
 ---
 
@@ -710,6 +953,22 @@ func edgeStartBreathe(bpm: UInt8, on p: CBPeripheral, ctrl chr: CBCharacteristic
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts`).** Every opcode goes through one helper (the real one chains writes onto a serial promise queue so concurrent writes never collide — condensed here):
+
+```js
+async function sendCtrlCommand(chCtrl, opcode, payload /* Uint8Array | undefined */) {
+  const total = Math.max(2, 1 + (payload?.length ?? 0)); // firmware drops writes < 2 B → pad to 2
+  const buf = new Uint8Array(total);
+  buf[0] = opcode & 0xff;
+  if (payload?.length) buf.set(payload, 1);
+  await chCtrl.writeValueWithResponse(buf);
+}
+// examples:
+sendCtrlCommand(chCtrl, 0xA2, new Uint8Array([Math.min(pct, 100)]));            // brightness
+sendCtrlCommand(chCtrl, 0xB0);                                                  // enter breathe → [0xB0,0x00]
+sendCtrlCommand(chCtrl, 0xB1, new Uint8Array([Math.max(1, Math.min(30, bpm))])); // breathe BPM
+```
+
 ### 4.3.1 Edge-side algorithm tuning
 
 The Edge exposes three families of runtime knobs over `0xFF01` for the coherence pipeline and the lens-driver feel. All three persist to NVS so a power cycle preserves what the user picked.
@@ -772,6 +1031,22 @@ func writeCohParams(_ p: EdgeCohParams, on perif: CBPeripheral, ctrl: CBCharacte
     ]
     perif.writeValue(Data(bytes), for: ctrl, type: .withResponse)
 }
+```
+
+**✅ Exact working JS (`protocol/narbis_protocol.ts` + `edgeDevice.ts`):**
+
+```js
+function serializeCoherenceParams(p) {            // 12 raw bytes, no CRC / no length prefix
+  return new Uint8Array([
+    p.min_ibis, p.conf_threshold,
+    p.vlf_band_lo, p.vlf_band_hi,
+    p.lf_band_lo,  p.lf_band_hi,
+    p.hf_band_lo,  p.hf_band_hi,
+    p.lf_peak_lo,  p.lf_peak_hi,
+    p.peak_halfwidth, p.coh_multiplier,
+  ]);
+}
+sendCtrlCommand(chCtrl, 0xE0, serializeCoherenceParams(p)); // 13 B on the wire
 ```
 
 > **No read-back characteristic.** There's no GATT read for the current `narbis_coh_params_t`. The firmware emits the active params on boot and after every accepted `0xE0` write as a `0xF1` log line (`0xE0 ok: lf=[..] hf=[..] pk=[..]±N mult=M`) — parse that if you want to mirror state. The success-log fields are LF band, HF band, LF-peak window, halfwidth, multiplier; `min_ibis` and `conf_threshold` are echoed on boot but not on every write.
@@ -927,6 +1202,13 @@ if data.count == 2 && data[0] == 0xF6 {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — type `0xF6`):**
+
+```js
+const connected = bytes[1] !== 0;   // 1 = earclip relay linked, 0 = lost
+ui.setEarclipBadge(connected);
+```
+
 #### 4.4.8 Relayed earclip diagnostics (`0xF7`) — variable
 
 🆕 **Path B.** Forwarded earclip DIAGNOSTICS frames (see [§3.1.8](#318-diagnostics--31d99572)). Only fires when the user has enabled diagnostic streams in the earclip config — usually a no-op.
@@ -971,6 +1253,15 @@ case 0xF9:
     }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — `onStatusNotify`, type `0xF9`):**
+
+```js
+const ibi_ms = bytes[1] | (bytes[2] << 8);
+const confidence_x100 = bytes[3];
+const flags = bytes[4];
+if (ibi_ms > 0) engine.pushBeat({ ibi_ms, confidence_x100, flags }); // gate on flags/conf client-side
+```
+
 Fires unconditionally per detected beat — apply the confidence gate / artifact filter client-side as needed. Confidence threshold is also configurable on the earclip itself via the `sqi_threshold_x100` config field ([§3.6](#36-the-runtime-config-struct)).
 
 #### 4.4.11 Link quality (`0xFA`) — 7 B
@@ -998,6 +1289,17 @@ case 0xFA:
     ui.setEdgeBars(dashRssi == 0x7F ? nil : Int(dashRssi))
     diagnostics.mtu = mtu
     diagnostics.notifyDrops = drops
+```
+
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts`, `dv` = DataView):**
+
+```js
+const earclipRssi   = dv.getInt8(1);          // 0x7F (127) = no link
+const dashboardRssi = dv.getInt8(2);
+const mtu   = bytes[3] | (bytes[4] << 8);
+const drops = bytes[5] | (bytes[6] << 8);
+ui.setBars(earclipRssi === 0x7F ? null : earclipRssi,
+           dashboardRssi === 0x7F ? null : dashboardRssi);
 ```
 
 ### 4.5 PPG stream characteristic `0xFF04`
@@ -1055,6 +1357,27 @@ struct EdgePPGBatch {
             return EdgeSample(raw: raw, index: index, flags: flags, ibiMs: ibi, bpm: bpm)
         }
     }
+}
+```
+
+> **JS note:** the Narbis dashboard consumes earclip PPG via the relay ([§4.6](#46-the-edge-as-relay-path-b)) or the direct earclip `RAW_PPG` ([§3.1.3](#313-raw_ppg--6bacca91)), **not** the Edge's own `0xFF04` stream — so there's no dashboard JS for this exact frame. Faithful port:
+
+```js
+function parseEdgePPG(dv /* DataView */) {
+  if (dv.byteLength < 6 || dv.getUint8(0) !== 0x03) return null;
+  const n = dv.getUint8(1);
+  if (dv.byteLength !== 6 + n * 8) return null;
+  const baseTimestampMs = dv.getUint32(2, true);
+  const samples = [];
+  for (let i = 0; i < n; i++) {
+    const o = 6 + i * 8;
+    samples.push({
+      raw: dv.getUint16(o, true), index: dv.getUint16(o + 2, true),
+      flags: dv.getUint8(o + 4), beatDetected: (dv.getUint8(o + 4) & 1) !== 0,
+      ibi_ms: dv.getUint16(o + 5, true), bpm: dv.getUint8(o + 7),
+    });
+  }
+  return { baseTimestampMs, samples }; // ts[i] = baseTimestampMs + i*20 (50 Hz nominal)
 }
 ```
 
@@ -1173,6 +1496,23 @@ func forgetEarclip() {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — `onStatusNotify` dispatch + relay-control writes; condensed, full frame layouts in §4.4):**
+
+```js
+switch (bytes[0]) {                                                       // 0xFF03 multiplex
+  case 0xF6: emit('centralRelayState', { connected: bytes[1] !== 0 }); break;
+  case 0xF9: emit('relayedIbi',     { ibi_ms: bytes[1]|(bytes[2]<<8), confidence_x100: bytes[3], flags: bytes[4] }); break;
+  case 0xF8: emit('relayedBattery', { mv: bytes[1]|(bytes[2]<<8), soc_pct: bytes[3], charging: bytes[4] }); break;
+  case 0xF4: emit('relayedConfig',     { bytes: bytes.slice(1) }); break; // 74 B → deserializeConfig (§3.6)
+  case 0xF5: emit('relayedRawPpg',     { bytes: bytes.slice(1) }); break;
+  case 0xF7: emit('relayedDiagnostic', { bytes: bytes.slice(1) }); break; // → parseDiagnostic (§3.1.8)
+}
+// relay-control writes:
+sendCtrlCommand(chCtrl, 0xC3, payload74B);                  // forward a CONFIG_WRITE to the earclip
+sendCtrlCommand(chCtrl, 0xC4, new Uint8Array([on ? 1 : 0])); // toggle raw-PPG relay
+sendCtrlCommand(chCtrl, 0xC1);                              // forget earclip pairing
+```
+
 ### 4.7 Integration patterns — where coherence runs
 
 There are two ways to put coherence on the glasses. **Pattern A (app-side) is the standard;** Pattern B is legacy.
@@ -1211,6 +1551,13 @@ edgePeripheral.writeValue(Data([0xB7, 0x02]), for: edgeControl, type: .withRespo
 edgePeripheral.setNotifyValue(true, for: edgeStatus)
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — `setHrSource` + `setProgram`):**
+
+```js
+sendCtrlCommand(chCtrl, 0xCB, new Uint8Array([1]));  // HR source: 1 = H10/external (pauses earclip scan)
+sendCtrlCommand(chCtrl, 0xB7, new Uint8Array([2]));  // PPG program: 2 = coh-lens
+```
+
 **Per-beat (call once for each beat your HR source emits):**
 
 ```swift
@@ -1226,6 +1573,15 @@ func forwardBeatToEdge(rrMs: UInt16, confidence: UInt8 = 100, isArtifact: Bool =
         flags,                      // bit 0 = ARTIFACT (Edge drops these silently)
     ]
     edgePeripheral.writeValue(Data(bytes), for: edgeControl, type: .withoutResponse)
+}
+```
+
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — `injectIbi`):**
+
+```js
+function injectIbi(chCtrl, ibi_ms, conf = 100, flags = 0) {
+  const ibi = Math.max(0, Math.min(0xffff, Math.round(ibi_ms)));
+  return sendCtrlCommand(chCtrl, 0xCA, new Uint8Array([ibi & 0xff, (ibi >> 8) & 0xff, conf, flags]));
 }
 ```
 
@@ -1283,6 +1639,20 @@ func edgePushBreath(cycleMs: UInt16, inhalePct: UInt8, depthPct: UInt8,
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — the `0xBA` write is exact; `driveLens` condensed):**
+
+```js
+async function syncBreath(chCtrl, cycleMs, inhalePct) {
+  const c   = Math.max(2000, Math.min(30000, Math.round(cycleMs)));
+  const inh = Math.max(10, Math.min(90, Math.round(inhalePct)));
+  await sendCtrlCommand(chCtrl, 0xBA, new Uint8Array([c & 0xff, (c >> 8) & 0xff, inh]));
+}
+// driveLens(state) coalesces the engine's desired lens state into 0xB0 (enter breathe, once) +
+// 0xB1 rate + 0xB2 inhale + 0xA2 depth, writing an opcode only when its value changed. The engine
+// calls driveLens ~1 Hz and syncBreath at each breath boundary (§4.8.4). Full driveLens() + the
+// per-breath latch are in edgeDevice.ts / coherenceEngine.ts.
+```
+
 #### 4.8.3 Lens opacity is not linear — the duty→opacity floor (fw ≥ 4.15.4)
 
 The electrochromic cell shows **no visible tint below ~26 % drive**, so the firmware remaps your duty onto the *visible* range: **duty 0 → fully clear; duty 1..100 → raw [265..1023]** (duty 1 is already the first visible step, ~26 % electrically). Consequences for your coherence → `0xA2` / `0xA5` mapping:
@@ -1334,6 +1704,19 @@ func onFrame(dtMs: Double) {
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/engine/coherenceEngine.ts` — the boundary push the dashboard uses):**
+
+```js
+onBreathBoundary() {              // fires once per breath, at frac ≈ 0
+  this.cycleMs = this.pacer.latch();
+  this.latchLensParams();         // sample depth + rate ONCE, here (held for the whole breath)
+  this.emitLens();                // → edgeDevice.driveLens: 0xB0 / 0xB1 / 0xB2 / 0xA2 (coalesced)
+  this.emitSync();                // → edgeDevice.syncBreath: 0xBA cycle_ms + inhale%
+}
+// Between boundaries, nothing rate/depth/cycle is sent; the on-screen cue + chime read
+// coherenceEngine.breathCyclePos() — the same clock the 0xBA writes anchor.
+```
+
 #### 4.8.5 Strobe
 
 | Opcode | Arg | Meaning |
@@ -1351,6 +1734,16 @@ func edgeSetStrobeHz(_ hz: Double, ctrl: CBCharacteristic, on p: CBPeripheral) {
     let dHz = UInt16((max(1.0, min(50.0, hz)) * 10).rounded())          // e.g. 13.5 Hz → 135
     p.writeValue(Data([0xAB, UInt8(dHz & 0xFF), UInt8(dHz >> 8)]), for: ctrl, type: .withResponse)
 }
+```
+
+**✅ Exact working JS (`dashboard/src/ble/edgeDevice.ts` — `setStrobeFreqHz`, deci-Hz form):**
+
+```js
+async function setStrobeFreqHz(chCtrl, hz) {
+  const dhz = Math.round(Math.max(1, Math.min(50, hz)) * 10);   // e.g. 13.5 Hz → 135
+  await sendCtrlCommand(chCtrl, 0xAB, new Uint8Array([dhz & 0xff, (dhz >> 8) & 0xff]));
+}
+// enter strobe: sendCtrlCommand(chCtrl, 0xA6);  set dark duty: sendCtrlCommand(chCtrl, 0xAC, new Uint8Array([pct]));
 ```
 
 > **Strobe needs hard edges — never smooth, slew, or ramp it.** Write the params once and let the firmware's ISR toggle. (The breathe slew limiter in §4.8.4 deliberately does not touch strobe.)
@@ -1406,6 +1799,17 @@ func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error:
 }
 ```
 
+**✅ Exact working JS (`dashboard/src/ble/narbisDevice.ts` — `writeConfig()`):**
+
+```js
+async function writeConfig(chConfigWrite, cfg) {
+  const blob = serializeConfig(cfg);   // 74 B incl. CRC — see §3.6 (offsets) + serializer there
+  await chConfigWrite.writeValueWithResponse(blob);
+}
+// On connect the dashboard reads CONFIG once → deserializeConfig(), and subscribes for live updates
+// (the earclip notifies the full 74 B after every accepted CONFIG_WRITE / MODE write).
+```
+
 For just changing the data format / profile, the 2-byte MODE write is much cheaper:
 
 ```swift
@@ -1413,6 +1817,12 @@ peripheral.writeValue(Data([1, 2]), for: chMode, type: .withResponse)
 //                          ^  ^
 //                          |  data_format = IBI_PLUS_RAW
 //                          ble_profile   = LOW_LATENCY
+```
+
+**✅ Exact working JS (`dashboard/src/ble/narbisDevice.ts` — `writeMode()`):**
+
+```js
+await chMode.writeValueWithResponse(new Uint8Array([1, 2])); // [ble_profile=LOW_LATENCY, data_format=IBI_PLUS_RAW]
 ```
 
 The earclip will notify on the CONFIG characteristic with the updated 74-byte payload after either write succeeds — subscribe to it once at startup so your view layer stays in sync.
@@ -1578,6 +1988,25 @@ func handleOTAStatus(_ data: Data) {
 }
 ```
 
+**✅ Exact working JS (`webapp/ota/index.html` — the dashboard's OTA updater; condensed, full loop in that file):**
+
+```js
+const CHUNK_SIZE = 244, PAGE_SIZE = 4096;
+function crc32(data) { /* ESP-IDF esp_rom_crc32_le, poly 0xEDB88320 — table-driven; see the file */ }
+
+async function sendPageChunks(cD /* 0xFF02 */, pageData) {
+  for (let i = 0; i * CHUNK_SIZE < pageData.length; i++) {
+    await cD.writeValueWithoutResponse(pageData.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
+  }
+}
+// 1. cC.writeValueWithoutResponse([0xA8, 0x00])  → wait for 0x01 READY
+// 2. per 4 KB page: sendPageChunks(cD, page) → wait for 0x06 PAGE_CRC, then:
+//      crc32(page) === frame.crc ? cC.write([0xAD, 0x01]) /*commit*/ : cC.write([0xAD, 0x00]) /*resend*/
+//    → 0x07 PAGE_OK (next page) | 0x08 PAGE_RESEND (retry)
+// 3. cC.write([0xA9, 0x00]) FINISH → 0x03 SUCCESS (device reboots)
+// Same state machine as the Swift above. Full impl (crc32 table, retries, MTU-safe chunking) in webapp/ota/index.html.
+```
+
 > **Do NOT treat a 5–10 second silence on `0xFF03` mid-OTA as a stall.** When the Edge erases its update partition, the radio can be blocked for **up to 19 seconds**. The 20-second supervision timeout is set for exactly this reason. Don't call `cancelPeripheralConnection` until you've waited at least 25 s with no progress.
 
 ---
@@ -1623,6 +2052,28 @@ If you build a background-scanning app, set `CBCentralManagerOptionRestoreIdenti
 ### 7.9 watchOS
 
 watchOS 6+ supports Core Bluetooth identically (you'll need the `bluetooth-central` background mode in your `WKExtension` plist). Connection parameter ranges are tighter on Apple Watch than iPhone — test on real hardware. Our supervision timeout of 20 s on Edge is well within watchOS limits.
+
+### 7a. Web Bluetooth gotchas
+
+The wire protocol is identical, but Web Bluetooth (Chrome / Edge) differs from Core Bluetooth in ways that will bite you — and the **Narbis dashboard itself is a Web Bluetooth app**, so these are battle-tested:
+
+- **User gesture required.** `navigator.bluetooth.requestDevice()` must be called from a click/tap handler — you **cannot** auto-connect on page load or reconnect silently. There is no passive scan; the browser shows a device chooser, one device per call.
+- **`optionalServices` is mandatory.** Any service you call `getPrimaryService()` on must be listed in a `filter` **or** in `optionalServices` at `requestDevice()` time, or the call throws `SecurityError`. Include the custom Narbis service, the PMD service, and any SIG service (`0x180d` / `0x180f` / `0x180a`) you read. (Exact filters: [§2.2](#22-central-manager).) This is the #1 footgun.
+- **No RSSI.** Web Bluetooth never exposes RSSI to JS — which is exactly why the Edge ships link RSSI up in the `0xFA` frame ([§4.4.11](#4411-link-quality-0xfa--7-b)). Drive signal-strength UI from that, not the BLE API.
+- **No MTU API.** No `maximumWriteValueLength`; `writeValue()` fragments for you. Keep writes ≤ 244 B and don't worry about it ([§2.4](#24-mtu--check-it-after-discovery-not-before)).
+- **Foreground only.** A backgrounded/hidden tab throttles timers and can stop delivering notifications. The H10 beat-clock and ACC paths re-anchor after such gaps ([§3a.2](#3a2-rr-from-the-standard-hr-service--beat-timestamp-reconstruction)); expect drop-outs when the tab isn't visible. **This contradicts [§7.8](#78-background--state-restoration), which is iOS-only — there is no Web Bluetooth background mode.**
+- **Browser support.** Chrome / Edge / Brave on desktop + Android only. **No Firefox, no Safari, no iOS browser** (iOS has no Web Bluetooth — ship a native app there).
+- **Permission caching + `device.forget()`.** The browser caches an accepted device (~30 s after disconnect) and re-matches it on the next `requestDevice()` without prompting. If a device's GATT cache goes stale (the "needs multiple Forget+Connect cycles" symptom), call `device.forget()` (Chrome 114+) to release the grant — the dashboard does this in `narbisDevice.forget()`.
+- **`writeValueWithResponse` vs `WithoutResponse`.** Use `WithoutResponse` for the high-rate paths (per-beat `0xCA`, OTA data chunks) and `WithResponse` where you need ordering / back-pressure.
+
+```js
+// Everything starts from a user gesture:
+button.addEventListener('click', async () => {
+  const device = await navigator.bluetooth.requestDevice({ filters: [/*…*/], optionalServices: [/*every service you read*/] });
+  const server = await device.gatt.connect();
+  // …getPrimaryService / getCharacteristic / startNotifications…
+});
+```
 
 ---
 
