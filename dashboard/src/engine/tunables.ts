@@ -63,6 +63,8 @@ export interface CoherenceTunables {
   // --- Mode B resonance controller ---
   dwellBreaths: number; // breaths per dwell
   dwellEstimateFraction: number; // estimate amplitude on last 60% (discard settling)
+  dwellVerifyTarget: number; // verified estimate-breaths needed to ACCEPT a dwell at full precision
+  dwellMaxEstimateBreaths: number; // cap on estimate-window breaths (incl. retests) before a forced decision
   probeStepInitBPM: number; // initial probe step
   probeStepFloorBPM: number; // resolution floor (native quintet)
   epsilonPctOfA: number; // hysteresis: max(5% of A, 1 SD of A)
@@ -71,6 +73,7 @@ export interface CoherenceTunables {
   respVerifyToleranceBPM: number; // accept a dwell only if |measured−paced| ≤ this AND confidence ≥ min
   confirmProbeBPM: number; // cross-session re-confirm half-range
   maxUnverifiedDwells: number; // abort the search after this many consecutive unverified dwells
+  initialSettleS: number; // quiet initial settling before the search starts (no cue/chime/lens fade)
 
   // --- Mode B maintenance: extremum-seeking (drift) + sudden-loss re-probe ---
   ditherAmpBPM: number; // perturbation amplitude (sub-perceptual)
@@ -158,6 +161,8 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   // Mode B resonance controller
   dwellBreaths: 6,
   dwellEstimateFraction: 0.6,
+  dwellVerifyTarget: 2, // ≥2 confirmed breaths ⇒ accept; otherwise keep retesting up to the cap below
+  dwellMaxEstimateBreaths: 6, // after this many estimate breaths, decide rather than re-running the dwell forever
   probeStepInitBPM: 0.4,
   probeStepFloorBPM: 0.2,
   epsilonPctOfA: 0.05,
@@ -166,6 +171,7 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   respVerifyToleranceBPM: 0.8, // ≈1.1 periodogram bins; 0.5 was sub-resolution (45 s window ⇒ ~0.73 br/min/bin, ~1.3 br/min Rayleigh), rejecting real cue-imperfect breathing
   confirmProbeBPM: 0.5,
   maxUnverifiedDwells: 12,
+  initialSettleS: 60.0, // 60 s quiet settling at the start of Mode B/C (sensors warm up; UI paused)
   // Mode B maintenance
   ditherAmpBPM: 0.1,
   ditherPeriodS: 180.0,
@@ -206,8 +212,8 @@ export const DEFAULT_TUNABLES: CoherenceTunables = {
   // over 30 s is ~6–8 breaths and tighter than most genuinely steady breathers hold, so many
   // sessions will transition on the cap rather than the real gate. Left as specified; revisit
   // against real warm-up traces (likely loosen to ~0.6–0.8).
-  modeCWarmupS: 120.0,
-  modeCWarmupMaxS: 240.0,
+  modeCWarmupS: 60.0,
+  modeCWarmupMaxS: 120.0,
   modeCStabilityWindowS: 30.0,
   modeCStabilityBpmSd: 0.4,
 };

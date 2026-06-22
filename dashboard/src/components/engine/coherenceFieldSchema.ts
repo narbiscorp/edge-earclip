@@ -111,6 +111,9 @@ export const COH_FIELDS: CohNumericField[] = [
   // --- Mode B resonance search ---
   f({ key: 'dwellBreaths', section: 'resonance', modes: ['modeB'], label: 'Dwell length', min: 4, max: 8, step: 1, unit: 'breaths' }),
   f({ key: 'dwellEstimateFraction', section: 'resonance', modes: ['modeB'], label: 'Estimate fraction', min: 0.5, max: 0.7, step: 0.05, help: 'Estimate on the last fraction (discard settling).' }),
+  f({ key: 'dwellVerifyTarget', section: 'resonance', modes: ['modeB'], label: 'Verified breaths to accept', min: 1, max: 5, step: 1, unit: 'breaths', help: 'Confirmed breaths needed to accept a rate. Fewer = faster but less precise.' }),
+  f({ key: 'dwellMaxEstimateBreaths', section: 'resonance', modes: ['modeB'], label: 'Max retest breaths', min: 3, max: 12, step: 1, unit: 'breaths', help: 'Cap on estimate breaths (incl. retests) before moving on — guarantees the search never freezes on one rate.' }),
+  f({ key: 'initialSettleS', section: 'resonance', modes: ['modeB'], label: 'Initial settling', min: 0, max: 180, step: 5, unit: 's', help: 'Quiet warm-up before the Mode B search starts (no cue/chime/lens). Mode C uses its own warm-up minimum instead.' }),
   f({ key: 'probeStepInitBPM', section: 'resonance', modes: ['modeB'], label: 'Initial probe step', min: 0.3, max: 0.6, step: 0.05, unit: 'BPM' }),
   f({ key: 'probeStepFloorBPM', section: 'resonance', modes: ['modeB'], label: 'Step floor', min: 0.1, max: 0.3, step: 0.05, unit: 'BPM' }),
   f({ key: 'epsilonPctOfA', section: 'resonance', modes: ['modeB'], label: 'Hysteresis ε (frac of A)', min: 0.03, max: 0.1, step: 0.01 }),
@@ -199,6 +202,9 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   // Mode B resonance search
   dwellBreaths: 'How many breaths Mode B holds each candidate rate before scoring it. Longer is more reliable but slows the search. 6 is a good balance.',
   dwellEstimateFraction: 'Fraction at the END of each dwell used for the amplitude estimate; the start is discarded as settling while the pace slews. 0.6 = last 60%.',
+  dwellVerifyTarget: 'How many breaths must be confirmed against the accelerometer before a rate is accepted. The search keeps re-testing breaths at the same rate until it reaches this many (or hits the Max retest cap), instead of throwing away the whole dwell when one breath misses. LOWER (toward 1) proceeds faster but with slightly noisier amplitude; 2 is a good balance.',
+  dwellMaxEstimateBreaths: 'Hard cap on how many breaths (including re-tests) a single rate gets before the search moves on, so it can never get stuck endlessly re-measuring one rate. If at least one breath confirmed it advances using what it has; if none did it counts an unverified dwell toward the abort budget. 6 covers the dwell plus a few retries.',
+  initialSettleS: 'A quiet warm-up at the very start of Mode B: the cue, chime, and lens stay paused while you breathe naturally and the sensors fill their windows; the resonance search begins after this. 60 s. Mode C ignores this and uses its own Warm-up minimum instead.',
   probeStepInitBPM: 'Initial step size as Mode B brackets the resonance peak (0.4 BPM). Bigger is faster but coarser.',
   probeStepFloorBPM: 'Finest step the search resolves on the grid (0.2 BPM). The peak is then refined by a parabolic fit below this.',
   epsilonPctOfA: 'Hysteresis: how much higher one rate amplitude must be (as a fraction of A) to count as better, so noise does not flip the bracket. 5%.',
@@ -227,7 +233,7 @@ export const COH_FIELD_INFO: Partial<Record<CoherenceTunableKey, string>> = {
   respNearPeakHz: 'The +/- window around the detected peak counted as the breath when scoring confidence. Wider tolerates a slightly spread peak (higher confidence); narrower is stricter.',
   respHarmonicExcludeMult: 'Confidence ignores spectral power above this multiple of the breathing rate, so the 2nd and 3rd harmonics of a non-sinusoidal breath do not drag the score down. 1.6 cuts just below the 2x harmonic.',
   // Mode C settle & find
-  modeCWarmupS: 'Minimum time in the Follow warm-up before Mode C hands off to the resonance search, even if your breathing is already steady and confirmed. Gives you time to settle in. 120 s default.',
+  modeCWarmupS: 'Minimum time in the quiet Follow warm-up (settling) before Mode C hands off to the resonance search, even if your breathing is already steady and confirmed. The cue/chime/lens stay paused during it. 60 s default.',
   modeCWarmupMaxS: 'Upper bound on the warm-up. Past this, Mode C transitions on confident breathing alone without waiting for the steadiness test, so a naturally variable breather is not trapped in warm-up. It NEVER relaxes the accelerometer-confirmation requirement.',
   modeCStabilityWindowS: 'Trailing window over which Mode C measures how steady your detected breathing rate is, and how consistently the accelerometer can see your breath. 30 s.',
   modeCStabilityBpmSd: 'How steady your breathing must be to hand off before the cap: the detected rate must vary no more than this (standard deviation, BPM) over the stability window. LOWER is stricter. 0.4 is tight, so many steady breathers still transition on the cap; raise toward 0.6 to 0.8 if it rarely passes the real gate.',

@@ -1,9 +1,18 @@
 /*
- * respirationFromAcc.ts — Mode B verification: independent respiration channel from the
+ * respirationFromAcc.ts — Mode B/C verification: independent respiration channel from the
  * H10 accelerometer. Immune to the Mayer-wave confound that corrupts RSA-peak readback
  * off-resonance. Motion-artifact sensitive → reliable seated/still; the confidence gates it.
  *
- * Faithful port of Swift `RespirationFromACC`. Single-threaded, NSLock dropped.
+ * Faithful port of Swift `RespirationFromACC`, with one correction: the rate is estimated by
+ * COMBINING the three axes' spectra, NOT from the vector magnitude √(x²+y²+z²). The magnitude
+ * frequency-DOUBLES a chest oscillation — with gravity as a large DC on one axis, the squaring
+ * nonlinearity injects a strong 2× component, so a real ~4–5 br/min breath reads ~9 br/min and
+ * fails verification (observed on real H10 data: magnitude → steady 9.34 br/min while every axis
+ * read 4–5 br/min). Each axis is linear in the breathing motion, so we keep the raw samples and
+ * sum the per-axis periodograms (a linear power combination; the periodogram linear-detrends each
+ * segment, removing the gravity DC). Robust to the dominant breathing axis changing with posture.
+ *
+ * Single-threaded, NSLock dropped.
  */
 import type { CoherenceTunables } from './tunables';
 import { cubicResample, periodogram } from './dsp';
@@ -22,14 +31,14 @@ const OCTAVE_MAX_STEPS = 2;
 
 export class RespirationFromACC {
   private readonly t: CoherenceTunables;
-  private buf: Array<{ s: number; mag: number }> = [];
+  private buf: Array<{ s: number; x: number; y: number; z: number }> = [];
 
   constructor(t: CoherenceTunables) {
     this.t = t;
   }
 
   push(x: number, y: number, z: number, nowS: number): void {
-    this.buf.push({ s: nowS, mag: Math.sqrt(x * x + y * y + z * z) });
+    this.buf.push({ s: nowS, x, y, z });
     const cutoff = nowS - this.t.respWindowS;
     while (this.buf.length > 0 && this.buf[0].s < cutoff) this.buf.shift();
   }
@@ -38,21 +47,48 @@ export class RespirationFromACC {
     this.buf = [];
   }
 
-  /** Snapshot of the buffered ACC vector-magnitude window as parallel arrays (absolute seconds /
-   * magnitude), for the cross-spectral breath–heart coherence (Mode A γ²). Same epoch as the H10
-   * beat times, so the two can be aligned on absolute time. Empty arrays when nothing is buffered. */
+  /** Index of the buffered axis with the largest variance (the dominant breathing motion). */
+  private principalAxis(): 'x' | 'y' | 'z' {
+    let mx = -1;
+    let best: 'x' | 'y' | 'z' = 'z';
+    for (const k of ['x', 'y', 'z'] as const) {
+      const vals = this.buf.map((e) => e[k]);
+      const m = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const v = vals.reduce((s, val) => s + (val - m) * (val - m), 0) / Math.max(1, vals.length);
+      if (v > mx) { mx = v; best = k; }
+    }
+    return best;
+  }
+
+  /** Snapshot of the buffered respiration signal as parallel arrays (absolute seconds / value), for
+   * the cross-spectral breath–heart coherence (Mode A γ²). Returns the DE-MEANED principal (max-
+   * variance) axis — NOT the vector magnitude, which frequency-doubles the breath (see file header).
+   * Same epoch as the H10 beat times, so the two can be aligned on absolute time. Field name kept as
+   * `mag` for the consumer. Empty arrays when nothing is buffered. */
   magnitudeWindow(): { s: number[]; mag: number[] } {
-    return { s: this.buf.map((e) => e.s), mag: this.buf.map((e) => e.mag) };
+    const ax = this.principalAxis();
+    const vals = this.buf.map((e) => e[ax]);
+    const mean = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    return { s: this.buf.map((e) => e.s), mag: vals.map((v) => v - mean) };
   }
 
   estimate(): RespEstimate | null {
     const snap = this.buf;
     if (snap.length < 16) return null;
     const xs = snap.map((e) => e.s);
-    const ys = snap.map((e) => e.mag);
-    const rs = cubicResample(xs, ys, this.t.accSampleHz);
-    if (!rs) return null;
-    const pg = periodogram(rs.v, this.t.accSampleHz);
+    // Combine the three axes' spectra instead of the vector magnitude (which frequency-doubles —
+    // see file header). Each axis resamples onto the SAME grid (cubicResample coalesces on time
+    // only), so the periodograms share one freq axis and sum bin-for-bin. The periodogram linear-
+    // detrends each segment, so the gravity DC drops out without an explicit high-pass.
+    let pg: { freqs: number[]; psd: number[] } | null = null;
+    for (const k of ['x', 'y', 'z'] as const) {
+      const rs = cubicResample(xs, snap.map((e) => e[k]), this.t.accSampleHz);
+      if (!rs) continue;
+      const axisPg = periodogram(rs.v, this.t.accSampleHz);
+      if (!axisPg) continue;
+      if (pg === null) pg = { freqs: axisPg.freqs, psd: axisPg.psd.slice() };
+      else for (let i = 0; i < pg.psd.length && i < axisPg.psd.length; i++) pg.psd[i] += axisPg.psd[i];
+    }
     if (!pg) return null;
 
     // In-band power stats. band-mean is the prominence reference; firstBand/lastBand bound
