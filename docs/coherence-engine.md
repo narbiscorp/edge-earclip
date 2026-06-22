@@ -24,13 +24,15 @@
 
 ## Revision history
 
-> TL;DR of behavior changes to the app-side engine. The dashboard package is unversioned
-> (`package.json` = `0.0.0`), so changes are referenced by date + PR; the glasses firmware version is
-> the lens/breathe-sync target the engine drives over BLE.
+> TL;DR of behavior changes to the app-side engine. The `package.json` semver is unused (`0.0.0`); the
+> running build is identified by **`__BUILD_ID__`** = `<utc-yyyymmddhhmmss>-<git-short-sha>`
+> (`vite.config.ts`), shown in the dashboard header as `relay-v5 · <build-id>`. The **Dashboard** column
+> below is that build id (its short SHA = the squash-merge commit on `main`). The glasses firmware version
+> is the lens/breathe-sync target the engine drives over BLE.
 
-| Date | Change | Dashboard | Glasses FW |
+| Date | Change | Dashboard (build id) | Glasses FW |
 |---|---|---|---|
-| 2026-06-22 | **Mode B/C resonance reliability fixes** ([#81](https://github.com/narbiscorp/edge-earclip/pull/81)). **(1) ACC respiration no longer frequency-doubles.** The breathing rate is now estimated by **summing the three accelerometer axes' periodograms** instead of the vector-magnitude `√(x²+y²+z²)` signal — the magnitude (large gravity DC + the squaring nonlinearity) injected a strong 2× component and reported ~2× the true rate, so verification failed on every dwell (on a real session it read a steady **9.34 br/min for a genuine ~4–5 br/min breath**). **(2) Per-breath retest.** A dwell now re-tests only the *missed* breaths and **accepts on partial verification** (≥1 confirmed), with a hard estimate-breath cap, so the search advances instead of re-running the whole dwell and freezing on one rate (new `dwellVerifyTarget`, `dwellMaxEstimateBreaths`; the Mayer-wave abort is preserved). **(3) 60 s quiet settling** for Mode B & C (new `initialSettleS=60`, `modeCWarmupS` 120→60, `modeCWarmupMaxS` 240→120): the cue is paused, the chime muted, and the lens held fully clear while the sensors warm up. | `0.0.0` (app-side only) | ≥ 4.15.5 (unchanged) |
+| 2026-06-22 | **Mode B/C resonance reliability fixes** ([#81](https://github.com/narbiscorp/edge-earclip/pull/81)). **(1) ACC respiration no longer frequency-doubles.** The breathing rate is now estimated by **summing the three accelerometer axes' periodograms** instead of the vector-magnitude `√(x²+y²+z²)` signal — the magnitude (large gravity DC + the squaring nonlinearity) injected a strong 2× component and reported ~2× the true rate, so verification failed on every dwell (on a real session it read a steady **9.34 br/min for a genuine ~4–5 br/min breath**). **(2) Per-breath retest.** A dwell now re-tests only the *missed* breaths and **accepts on partial verification** (≥1 confirmed), with a hard estimate-breath cap, so the search advances instead of re-running the whole dwell and freezing on one rate (new `dwellVerifyTarget`, `dwellMaxEstimateBreaths`; the Mayer-wave abort is preserved). **(3) 60 s quiet settling** for Mode B & C (new `initialSettleS=60`, `modeCWarmupS` 120→60, `modeCWarmupMaxS` 240→120): the cue is paused, the chime muted, and the lens held fully clear while the sensors warm up. | `relay-v5 · 20260622171553-887f4bc` (app-side only) | ≥ 4.15.5 (unchanged) |
 
 ---
 
