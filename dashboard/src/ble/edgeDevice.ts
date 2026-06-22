@@ -407,6 +407,16 @@ export class EdgeDevice extends EventTarget {
   async setStandaloneBreathe(): Promise<void> {
     await this.sendCtrlCommand(CTRL.BREATHE_MODE, new Uint8Array([0]));
   }
+  /** v4.15.6: standalone breathe+strobe (0xB0 arg 1 → LED_MODE_BREATHE_STROBE).
+   * Unlike setProgram(4) (the firmware's self-paced COHERENCE_BREATHE_STROBE,
+   * which ignores 0xBA and resets its cycle on entry), this shares the same
+   * 0xBA-anchored breathe cosine as plain BREATHE — so the engine's breath clock
+   * + syncBreath() phase-lock the strobe envelope. On firmware < 4.15.6 the arg
+   * byte is ignored → plain (synced) BREATHE with no strobe, still better than
+   * the old out-of-phase program 4. Pair with setStrobeFreqHz/Duty for shape. */
+  async setStandaloneBreatheStrobe(): Promise<void> {
+    await this.sendCtrlCommand(CTRL.BREATHE_MODE, new Uint8Array([1]));
+  }
   async setStandalonePulseOnBeat(): Promise<void> {
     await this.sendCtrlCommand(CTRL.PULSE_ON_BEAT, new Uint8Array([0]));
   }
@@ -570,11 +580,12 @@ export class EdgeDevice extends EventTarget {
             // Steady tint set below via 0xA5; no mode-enter opcode needed.
             break;
           case 'breatheStrobe':
-            // Firmware PPG Program 4 (LED_MODE_COHERENCE_BREATHE_STROBE): the glasses pace the breath
-            // and modulate the strobe from their own coherence (fed by injected beats). We only set
-            // the strobe shape below. Full engine-driven pacing would need a standalone breathe+strobe
-            // opcode (firmware mode 3) — see plan; not exposed yet.
-            await this.setProgram(4); // 0xB7 = 4
+            // v4.15.6: standalone breathe+strobe (0xB0 0x01 → LED_MODE_BREATHE_STROBE), which shares
+            // the 0xBA-anchored breathe cosine — so app-side pacing (0xB1/0xB2/0xA2 + syncBreath)
+            // phase-locks the strobe, instead of the self-paced PPG program 4 that ignored 0xBA and
+            // reset its cycle on entry. On firmware < 4.15.6 the arg is ignored → plain synced BREATHE
+            // (no strobe), still in phase. The breathe params are pushed in the param switch below.
+            await this.setStandaloneBreatheStrobe(); // 0xB0 0x01
             break;
           case 'breathingGuide':
           default:
@@ -592,7 +603,13 @@ export class EdgeDevice extends EventTarget {
           if (s.depthPct !== this.lastLens.depthPct) await this.setStandaloneStatic(s.depthPct);
           break;
         case 'breatheStrobe': {
-          // Program 4 paces + computes coherence on-glasses; we only shape the strobe.
+          // v4.15.6: app-paced breath+strobe — drive the breath exactly like breathingGuide
+          // (0xB1/0xB2/0xA2); the firmware's 0xBA-anchored cosine + the engine's syncBreath()
+          // phase-lock the strobe envelope. depthPct 0 (Mode B/C settling) → 0xA2 0 → fully clear,
+          // no strobe. Then shape the strobe overlay (0xAB/0xAC).
+          if (s.bpm !== this.lastLens.bpm) await this.setBreathRateBpm(s.bpm); // 0xB1 rate
+          if (s.inhalePct !== this.lastLens.inhalePct) await this.setBreathInhalePct(s.inhalePct); // 0xB2
+          if (s.depthPct !== this.lastLens.depthPct) await this.setLensLimitPct(s.depthPct); // 0xA2 depth
           const hz = s.strobeHz ?? 10;
           const duty = s.strobeDutyPct ?? 50;
           if (hz !== this.lastLens.strobeHz) await this.setStrobeFreqHz(hz); // 0xAB
