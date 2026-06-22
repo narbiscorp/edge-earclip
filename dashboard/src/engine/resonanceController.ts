@@ -139,28 +139,39 @@ export class ResonanceController {
     // Discard the settling transient (ceil so the discard outlasts the pacer slew).
     const settle = Math.ceil(this.t.dwellBreaths * (1.0 - this.t.dwellEstimateFraction));
     const verifyRate = pacedBPM ?? this.commandedBPM;
+    if (!dwellArtifactClean) this.dwellArtifactOk = false;
 
-    // Collect + verify only in the estimate window (after settling).
-    if (this.breathsThisDwell > settle) {
-      // POSITIVE verification: a breath counts only if respiration is CONFIRMED at the paced
-      // rate (ACC confidence high enough AND measured ≈ paced). Low confidence ⇒ unverifiable.
-      this.dwellEstimate += 1;
-      const measured = measuredBPM !== null && Number.isFinite(measuredBPM);
-      if (measured) this.dwellMeasured += 1; // distinguishes "no ACC at all" from "ACC disagreed"
-      const verified =
-        measured &&
-        respConfidence >= this.t.respConfidenceMin &&
-        Math.abs((measuredBPM as number) - verifyRate) <= this.t.respVerifyToleranceBPM;
-      if (verified) this.dwellVerified += 1;
+    // Still settling at a freshly-commanded rate — discard, keep pacing.
+    if (this.breathsThisDwell <= settle) return this.commandedBPM;
+
+    // Estimate window: verify THIS breath against the ACC respiration. POSITIVE verification — a
+    // breath counts only if respiration is CONFIRMED at the paced rate (confidence high enough AND
+    // measured ≈ paced). The amplitude objective is averaged over VERIFIED breaths only, so an
+    // off-rate or low-confidence breath never pollutes the hill-climb.
+    this.dwellEstimate += 1;
+    const measured = measuredBPM !== null && Number.isFinite(measuredBPM);
+    if (measured) this.dwellMeasured += 1; // distinguishes "no ACC at all" from "ACC disagreed"
+    const verified =
+      measured &&
+      respConfidence >= this.t.respConfidenceMin &&
+      Math.abs((measuredBPM as number) - verifyRate) <= this.t.respVerifyToleranceBPM;
+    if (verified) {
+      this.dwellVerified += 1;
       if (cycleAmplitude !== null && Number.isFinite(cycleAmplitude)) {
         this.dwellAmps.push(cycleAmplitude); // never let NaN into the estimate
       }
     }
-    if (!dwellArtifactClean) this.dwellArtifactOk = false;
 
-    if (this.breathsThisDwell < this.t.dwellBreaths) return this.commandedBPM;
+    // Keep RE-TESTING at the same rate until we have enough confirmed breaths, OR we hit the
+    // estimate-breath cap. This is the key behavior change: a single missed breath no longer
+    // throws away the whole dwell — we just take another breath. The cap bounds a dwell so the
+    // search can never freeze on one rate (the old all-or-nothing dwell re-ran up to 12×).
+    const decided =
+      this.dwellVerified >= this.t.dwellVerifyTarget ||
+      this.dwellEstimate >= this.t.dwellMaxEstimateBreaths;
+    if (!decided) return this.commandedBPM;
 
-    // ---- dwell complete ----
+    // ---- dwell decision ----
     const resetDwell = () => {
       this.breathsThisDwell = 0;
       this.dwellAmps = [];
@@ -185,11 +196,12 @@ export class ResonanceController {
     }
     this.unmeasuredDwells = 0;
 
-    // A dwell counts if it was artifact-clean AND a MAJORITY of its estimate-window breaths
-    // were positively verified against the ACC respiration — robust to the odd noisy breath,
-    // while still rejecting a dwell the user clearly didn't follow.
-    const verifiedEnough = this.dwellEstimate > 0 && this.dwellVerified * 2 >= this.dwellEstimate;
-    if (!this.dwellArtifactOk || !verifiedEnough || this.dwellAmps.length === 0) {
+    // Accept the dwell once AT LEAST ONE breath confirmed at the paced rate (partial OK) and it was
+    // artifact-clean — proceed even if we never reached the full target ("slightly less precise, but
+    // never stuck"). Only a dwell that NEVER confirmed (wrong rate / Mayer wave) or that was artifact-
+    // dirty re-dwells and charges the budget, so a persistently unverifiable rhythm still aborts.
+    const accept = this.dwellVerified >= 1 && this.dwellArtifactOk && this.dwellAmps.length > 0;
+    if (!accept) {
       this.unverifiedDwells += 1; // discard → re-dwell at the same rate
       if (this.unverifiedDwells >= this.t.maxUnverifiedDwells) {
         this.searchAborted = true; // stop hunting on data we can never verify

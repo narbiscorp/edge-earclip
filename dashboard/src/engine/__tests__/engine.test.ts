@@ -232,6 +232,24 @@ describe('RespirationFromACC — independent respiration channel', () => {
     expect(est!.bpm).toBeGreaterThan(4.6);
     expect(est!.bpm).toBeLessThan(5.8);
   });
+
+  it('does NOT frequency-double a breath when gravity sits on a different axis (per-axis vs magnitude)', () => {
+    // Gravity DC on x (1000), breathing as a zero-mean 0.1 Hz (6 br/min) oscillation on z. The OLD
+    // vector-magnitude path √(x²+y²+z²) ≈ 1000 + z²/2000 turns z² = (sin)² into a PURE 2× tone, so it
+    // would report ~12 br/min — the exact bug seen on real H10 data (steady 9.34 vs a ~4–5 br/min
+    // breath). The per-axis spectral combination is linear in z, so it recovers the true 6 br/min.
+    const resp = new RespirationFromACC(DEFAULT_TUNABLES);
+    const fs = DEFAULT_TUNABLES.accSampleHz;
+    const f = 0.1;
+    for (let i = 0; i < fs * 45; i++) {
+      const tS = i / fs;
+      resp.push(1000, 0, 60 * Math.sin(2 * Math.PI * f * tS), tS); // gravity on x, breath on z
+    }
+    const est = resp.estimate();
+    expect(est).not.toBeNull();
+    expect(est!.bpm).toBeGreaterThan(5.0);
+    expect(est!.bpm).toBeLessThan(7.0); // ~6, NOT the ~12 a magnitude signal would report
+  });
 });
 
 describe('ResonanceController — Mode B', () => {
@@ -296,6 +314,35 @@ describe('ResonanceController — Mode B', () => {
     expect(ctrl.searchAbortReason).toBe('unmeasured');
     expect(ctrl.unverifiedDwells).toBe(0); // never charged to the verification-failure budget
     expect(ctrl.unmeasuredDwells).toBeGreaterThanOrEqual(DEFAULT_TUNABLES.maxUnverifiedDwells);
+  });
+
+  it('advances on PARTIAL verification (one confirmed breath per dwell) instead of getting stuck', () => {
+    // Only the FIRST estimate breath of each dwell confirms; the rest read off-rate. The target is
+    // set unreachable (5 > the 4-breath cap) so every dwell decides at the cap with just one verified
+    // breath — the new "retest then proceed, slightly less precise" path. The old majority gate would
+    // have rejected each dwell and re-run it forever. The search must still hill-climb and lock.
+    const t = { ...DEFAULT_TUNABLES, dwellVerifyTarget: 5, dwellMaxEstimateBreaths: 4 };
+    const settle = Math.ceil(t.dwellBreaths * (1.0 - t.dwellEstimateFraction));
+    const ctrl = new ResonanceController(t);
+    const RF = 5.5;
+    const curve = (b: number) => 100 - 8 * (b - RF) * (b - RF);
+    let nowS = 0;
+    for (let i = 0; i < 4000 && ctrl.state !== 'maintaining' && !ctrl.searchAborted; i++) {
+      nowS += 10;
+      const b = ctrl.commandedBPM;
+      const firstEstimateBreath = ctrl.searchProgress().breath === settle; // next breath = settle+1
+      ctrl.onBreathCycle({
+        cycleAmplitude: curve(b),
+        measuredBPM: firstEstimateBreath ? b : b + 2.0, // exactly one verified breath per dwell
+        respConfidence: 1,
+        pacedBPM: b,
+        dwellArtifactClean: true,
+        nowS,
+      });
+    }
+    expect(ctrl.searchAborted).toBe(false); // never stuck / never gave up on partial verification
+    expect(ctrl.state).toBe('maintaining');
+    expect(Math.abs(ctrl.lockedRF - RF)).toBeLessThan(0.6);
   });
 });
 
@@ -554,7 +601,7 @@ function feedAccSecond(engine: CoherenceEngine, sec: number, freqHz: number): vo
 }
 
 describe('CoherenceEngine — Mode C engine integration', () => {
-  it('Mode C warm-up is byte-for-byte Mode A (identical pacer + lens state), and with no ACC it never leaves warm-up', () => {
+  it('Mode C warm-up is a quiet settling: same pacer as Mode A but the lens is held clear, and with no ACC it never leaves warm-up', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
     try {
       const tun = { ...DEFAULT_TUNABLES };
@@ -579,11 +626,15 @@ describe('CoherenceEngine — Mode C engine integration', () => {
 
       // Mode C stayed in warm-up the whole time (no confident ACC) ...
       expect(engineC.getStatus().modeCPhase).toBe('warmup');
+      expect(engineC.getStatus().settling).toBe(true); // warm-up IS the quiet settling
       expect(engineC.getStatus().modeBState).toBeNull(); // no controller → no stale resonance data
-      // ... and emitted an identical lens-state stream to Mode A — proving warm-up ≡ Mode A.
-      expect(lensC.length).toBeGreaterThan(0);
-      expect(lensC).toEqual(lensA);
+      // ... and ran the identical Follow pacer as Mode A (warm-up ≡ Mode A for pacing) ...
       expect(engineC.getStatus().pacerBpm).toBe(engineA.getStatus().pacerBpm);
+      // ... but held the lens FULLY CLEAR (depth 0) the whole settling — no fade — whereas Mode A
+      // (not settling) drives a non-zero lens depth from coherence.
+      expect(lensC.length).toBeGreaterThan(0);
+      for (const s of lensC) expect(s.depthPct).toBe(0);
+      expect(lensA.some((s) => s.depthPct > 0)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -600,6 +651,7 @@ describe('CoherenceEngine — Mode C engine integration', () => {
         modeCStabilityBpmSd: 2.0, // generous → the steady detected rate easily reads "stable"
         dwellBreaths: 2,
         dwellEstimateFraction: 0.5,
+        dwellMaxEstimateBreaths: 2, // short dwell so the unverifiable rate decides quickly
         maxUnverifiedDwells: 1, // abort after the first unverifiable dwell
         respConfidenceMin: 0.2,
       };

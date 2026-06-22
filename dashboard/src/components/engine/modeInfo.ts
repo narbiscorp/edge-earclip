@@ -75,6 +75,9 @@ export function modeBStatusText(status: EngineStatus): string {
       ? 'Paused — the H10 accelerometer never came online, so your breathing could not be read at all. Check the strap is snug and the H10 is charged, then re-select Mode B.'
       : 'Paused — your breathing could not be confirmed from the H10. Sit still, keep the strap snug, then re-select Mode B.';
   }
+  if (status.settling) {
+    return 'Settling in — breathe naturally and relax while the sensors warm up. The pacing cue starts in about a minute.';
+  }
   if (status.modeBState === 'maintaining' && status.lockedRF != null) {
     return `Found it — holding your resonance at ${status.lockedRF.toFixed(1)} br/min and tracking small drifts${
       status.boundaryLimited ? ' (this is at the edge of the search range)' : ''

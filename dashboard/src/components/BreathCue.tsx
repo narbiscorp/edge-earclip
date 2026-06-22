@@ -30,6 +30,7 @@ export default function BreathCue({ hint }: { hint?: string }) {
   const orbRef = useRef<SVGCircleElement>(null);
   const headRef = useRef<SVGLineElement>(null);
   const [phase, setPhase] = useState<'inhale' | 'exhale'>('inhale');
+  const [settling, setSettling] = useState(false);
 
   const curve = useMemo(() => {
     const pts: string[] = [];
@@ -48,8 +49,30 @@ export default function BreathCue({ hint }: { hint?: string }) {
     let lastPhase = '';
     let phase = 0; // continuous 0..1 — advanced by elapsed time so a rate change never jumps it
     let lastTs = Date.now();
+    let lastSettling = false;
     const tick = () => {
       const now = Date.now();
+      // During the Mode B/C quiet settling, park the orb at the start and show "Settling…" — no
+      // visual pacing until the search begins.
+      const isSettling = coherenceEngine.isSettling();
+      if (isSettling !== lastSettling) {
+        lastSettling = isSettling;
+        setSettling(isSettling);
+      }
+      if (isSettling) {
+        const x0 = PAD;
+        const y0 = H - PAD - breathFrac(0) * (H - 2 * PAD);
+        orbRef.current?.setAttribute('cx', x0.toFixed(1));
+        orbRef.current?.setAttribute('cy', y0.toFixed(1));
+        if (headRef.current) {
+          headRef.current.setAttribute('x1', x0.toFixed(1));
+          headRef.current.setAttribute('x2', x0.toFixed(1));
+        }
+        phase = 0;
+        lastTs = now;
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       // Lock to the engine's breath clock when it's running (single authority); else self-animate.
       const enginePos = coherenceEngine.breathCyclePos();
       let p: number;
@@ -86,9 +109,17 @@ export default function BreathCue({ hint }: { hint?: string }) {
   return (
     <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 px-4 py-3">
       <div className="flex items-baseline justify-between mb-1.5">
-        <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400">Breathe with the cue</div>
+        <div className="text-[10px] tracking-[0.18em] uppercase text-slate-400">
+          {settling ? 'Settling — breathe naturally' : 'Breathe with the cue'}
+        </div>
         <div className="text-sm tabular-nums text-slate-200">
-          {pacerBpm.toFixed(1)} <span className="text-[10px] text-slate-500">br/min</span>
+          {settling ? (
+            <span className="text-[10px] text-slate-500">paused</span>
+          ) : (
+            <>
+              {pacerBpm.toFixed(1)} <span className="text-[10px] text-slate-500">br/min</span>
+            </>
+          )}
         </div>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 76 }} preserveAspectRatio="none">
@@ -104,9 +135,12 @@ export default function BreathCue({ hint }: { hint?: string }) {
       </svg>
       <div className="flex items-baseline justify-between mt-1">
         <span
-          className={'text-base font-serif italic ' + (phase === 'inhale' ? 'text-cyan-300' : 'text-emerald-300')}
+          className={
+            'text-base font-serif italic ' +
+            (settling ? 'text-slate-400' : phase === 'inhale' ? 'text-cyan-300' : 'text-emerald-300')
+          }
         >
-          {phase === 'inhale' ? 'Inhale ↑' : 'Exhale ↓'}
+          {settling ? 'Settling…' : phase === 'inhale' ? 'Inhale ↑' : 'Exhale ↓'}
         </span>
         {hint ? <span className="text-xs italic font-serif text-slate-400">{hint}</span> : null}
       </div>

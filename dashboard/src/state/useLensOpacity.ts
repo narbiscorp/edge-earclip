@@ -21,10 +21,11 @@ export function useLensOpacity(): number {
   const lastEdgeCoh = useDashboardStore((s) => s.lastEdgeCoherence);
   const lastBeatAt = useDashboardStore((s) => s.lastBeatAt);
   const edgeConnected = useDashboardStore((s) => s.connection.edge.state === 'connected');
+  const settling = useDashboardStore((s) => !!s.engineStatus?.settling);
 
   const [opacity, setOpacity] = useState(0);
-  const refs = useRef({ program, standalone, lastEdgeCoh, lastBeatAt });
-  refs.current = { program, standalone, lastEdgeCoh, lastBeatAt };
+  const refs = useRef({ program, standalone, lastEdgeCoh, lastBeatAt, settling });
+  refs.current = { program, standalone, lastEdgeCoh, lastBeatAt, settling };
 
   useEffect(() => {
     if (!edgeConnected) {
@@ -33,10 +34,13 @@ export function useLensOpacity(): number {
     }
     let raf = 0;
     const tick = () => {
-      const { program, standalone, lastEdgeCoh, lastBeatAt } = refs.current;
+      const { program, standalone, lastEdgeCoh, lastBeatAt, settling } = refs.current;
       const now = Date.now();
       let target = 0;
-      if (standalone === 'static') {
+      if (settling) {
+        // Mode B/C quiet settling: lens held fully clear (mirrors the engine's depth-0 setpoint).
+        target = 0;
+      } else if (standalone === 'static') {
         target = 0.5;
       } else if (standalone === 'breathe') {
         const cycleMs = 60000 / 6;

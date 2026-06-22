@@ -96,6 +96,9 @@ export interface EngineStatus {
   /** Warm-up gate telemetry (false outside Mode C warm-up). ACC confidence is MANDATORY for entry. */
   modeCAccConfident: boolean;
   modeCStable: boolean;
+  /** Quiet initial settling for Mode B/C: sensors warm up while the UI cue/chime is paused and the
+   * lens is held clear. Mode B → first `initialSettleS`; Mode C → the whole Follow warm-up. */
+  settling: boolean;
 }
 
 export interface StartOptions {
@@ -164,6 +167,11 @@ export class CoherenceEngine extends EventTarget {
   private modeCAccConfident = false;
   private modeCStable = false;
 
+  // Mode B quiet-settling clock (seconds, same epoch as nowMs()/1000). Set at start; Mode B holds
+  // the pacer and does not dwell until initialSettleS has elapsed. (Mode C uses its warm-up phase
+  // as the settling, so it doesn't read this.)
+  private settleStartS = 0;
+
   // published outputs
   private _coherence = 0;
   private _cr = 0;
@@ -188,6 +196,19 @@ export class CoherenceEngine extends EventTarget {
 
   get running(): boolean {
     return this.secTimer !== null;
+  }
+
+  /** True during the quiet initial settling — Mode B's first `initialSettleS`, or Mode C's whole
+   * Follow warm-up (before the controller exists). The host pauses the cue/chime and the lens is
+   * held clear while this is true. */
+  isSettling(): boolean {
+    return this.inSettling(nowMs() / 1000);
+  }
+  private inSettling(nowS: number): boolean {
+    if (!this.running) return false;
+    if (this.mode === 'modeC') return this.modeB == null; // the warm-up phase IS the settling
+    if (this.mode === 'modeB') return nowS - this.settleStartS < this.t.initialSettleS;
+    return false;
   }
 
   /** Build/replace all sub-components against the current tunables object. */
@@ -242,14 +263,17 @@ export class CoherenceEngine extends EventTarget {
     this.gatedBeatsThisCycle = 0;
     // Mode C warm-up clock + sample windows start fresh (harmless/unused in Mode A/B).
     this.warmupStartS = this.cycleStartMs / 1000;
+    this.settleStartS = this.cycleStartMs / 1000;
     this.warmupResp = [];
     this.warmupAcc = [];
     this.modeCAccConfident = false;
     this.modeCStable = false;
-    this.latchLensParams(); // seed the per-breath lens depth + rate from the initial state
 
+    // Start the timers BEFORE the first latch/emit so `running` (hence isSettling) is already true —
+    // otherwise the initial lens state would skip the settling depth-0 hold.
     this.secTimer = setInterval(() => this.tick1Hz(), 1000);
     this.lensTimer = setInterval(() => this.lensTick(), LENS_TICK_MS);
+    this.latchLensParams(); // seed the per-breath lens depth + rate from the initial state
     this.emitLens(); // push the initial lens state (firmware renders the cycle from here on)
     this.emitSync(); // anchor the glasses breathe phase to this cycle's start
     this.emitStatus();
@@ -385,6 +409,7 @@ export class CoherenceEngine extends EventTarget {
               : 'searching',
       modeCAccConfident: this.mode === 'modeC' && this.modeB == null ? this.modeCAccConfident : false,
       modeCStable: this.mode === 'modeC' && this.modeB == null ? this.modeCStable : false,
+      settling: this.isSettling(),
     };
   }
 
@@ -471,7 +496,11 @@ export class CoherenceEngine extends EventTarget {
       handedOff = this.tryModeCHandoff(nowS);
     }
 
-    if (this.modeB && !handedOff) {
+    // Mode B quiet settling: the controller exists (seeded) but does NOT dwell yet — hold the pacer
+    // at the seed rate while the LS/ACC windows fill and the UI cue/chime/lens stay paused. The
+    // first dwell starts only after initialSettleS, so no early dwell fails on half-full sensors.
+    const settlingNow = this.inSettling(nowS);
+    if (this.modeB && !handedOff && !settlingNow) {
       const amp = this.amplitude.amplitude(
         this.ingest.window(this.t.coherenceWindowS),
         this.modeB.commandedBPM,
@@ -558,7 +587,10 @@ export class CoherenceEngine extends EventTarget {
    * what keeps the firmware's effective_duty = wave×depth monotonic — pushing a new depth/rate
    * mid-inhale is what made the lens "darken → clear a bit → darken." */
   private latchLensParams(): void {
-    this.latchedDepthPct = Math.round(this.depthFromCoherence());
+    // During the quiet settling the lens is held fully clear (no breathing/coherence fade) — the
+    // depth-0 setpoint is sent to the firmware (0xA2/0xA5) so the glasses never modulate while the
+    // user just settles in.
+    this.latchedDepthPct = this.isSettling() ? 0 : Math.round(this.depthFromCoherence());
     this.latchedBpm = Math.round(this.pacer.currentQuintet / 5.0);
   }
 

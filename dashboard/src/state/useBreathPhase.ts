@@ -44,6 +44,14 @@ export function useBreathPhase(): BreathState {
      * staying cheap. Advance by ACTUAL elapsed time so there's no drift. */
     const id = window.setInterval(() => {
       const now = Date.now();
+      // During the Mode B/C quiet settling, FREEZE the cue at the start of an inhale — no visual
+      // pacing until the search begins (also stops the chime, which keys off phase transitions).
+      if (coherenceEngine.isSettling()) {
+        phaseRef.current = 0;
+        lastTsRef.current = now;
+        setState(phaseToState(0, coherenceEngine.breathBpm));
+        return;
+      }
       // When the engine is running it is the single breath-clock authority (it also commands the
       // firmware rate), so lock the cue + chime to its cycle position. Otherwise self-animate from
       // the firmware/standalone pacer rate.
