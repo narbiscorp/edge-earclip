@@ -22,7 +22,20 @@
 
 ---
 
+## Revision history
+
+> TL;DR of behavior changes to the app-side engine. The dashboard package is unversioned
+> (`package.json` = `0.0.0`), so changes are referenced by date + PR; the glasses firmware version is
+> the lens/breathe-sync target the engine drives over BLE.
+
+| Date | Change | Dashboard | Glasses FW |
+|---|---|---|---|
+| 2026-06-22 | **Mode B/C resonance reliability fixes** ([#81](https://github.com/narbiscorp/edge-earclip/pull/81)). **(1) ACC respiration no longer frequency-doubles.** The breathing rate is now estimated by **summing the three accelerometer axes' periodograms** instead of the vector-magnitude `√(x²+y²+z²)` signal — the magnitude (large gravity DC + the squaring nonlinearity) injected a strong 2× component and reported ~2× the true rate, so verification failed on every dwell (on a real session it read a steady **9.34 br/min for a genuine ~4–5 br/min breath**). **(2) Per-breath retest.** A dwell now re-tests only the *missed* breaths and **accepts on partial verification** (≥1 confirmed), with a hard estimate-breath cap, so the search advances instead of re-running the whole dwell and freezing on one rate (new `dwellVerifyTarget`, `dwellMaxEstimateBreaths`; the Mayer-wave abort is preserved). **(3) 60 s quiet settling** for Mode B & C (new `initialSettleS=60`, `modeCWarmupS` 120→60, `modeCWarmupMaxS` 240→120): the cue is paused, the chime muted, and the lens held fully clear while the sensors warm up. | `0.0.0` (app-side only) | ≥ 4.15.5 (unchanged) |
+
+---
+
 ## Table of contents
+- [Revision history](#revision-history)
 1. [Why an app-side engine](#1-why-an-app-side-engine)
 2. [The four engines](#2-the-four-engines)
 3. [Signal flow at a glance](#3-signal-flow-at-a-glance)
@@ -297,8 +310,20 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
 
 - **`dwellBreaths`** — default **6** breaths, range 4–8. How many breaths Mode B holds each candidate rate
   before scoring it. Longer is more reliable but slows the search. 6 is a good balance.
-- **`dwellEstimateFraction`** — default **0.6**, range 0.5–0.7. Fraction at the END of each dwell used for
-  the amplitude estimate; the start is discarded as settling while the pace slews. 0.6 = last 60%.
+- **`dwellEstimateFraction`** — default **0.6**, range 0.5–0.7. Fraction at the START of each dwell that is
+  discarded as settling while the pacer slews; estimate breaths are collected after it. 0.6 ⇒ ~3 of the
+  first breaths discarded.
+- **`dwellVerifyTarget`** — default **2** breaths, range 1–5. How many breaths must be **confirmed** against
+  the accelerometer before a rate is accepted. The dwell keeps re-testing breaths at the same rate until it
+  reaches this (or hits the cap below) rather than discarding the whole dwell on one miss. Lower = faster
+  but slightly noisier amplitude.
+- **`dwellMaxEstimateBreaths`** — default **6** breaths, range 3–12. Hard cap on estimate breaths (incl.
+  re-tests) before the search **must** decide — guarantees it never freezes on one rate. If ≥1 breath
+  confirmed it advances on partial verification; if none did it charges an unverified dwell.
+- **`initialSettleS`** — default **60** s, range 0–180. **Mode B only:** a quiet warm-up at the very start
+  (cue, chime, and lens held paused/clear) while you breathe naturally and the sensors fill their windows;
+  the resonance search begins after it. Mode C uses its own warm-up minimum (`modeCWarmupS`) as its
+  settling instead.
 - **`probeStepInitBPM`** — default **0.4** BPM, range 0.3–0.6. Initial step size as Mode B brackets the
   resonance peak. Bigger is faster but coarser.
 - **`probeStepFloorBPM`** — default **0.2** BPM, range 0.1–0.3. Finest step the search resolves on the
@@ -347,7 +372,8 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
 - **`respBandHi`** — default **0.4** Hz, range 0.3–0.6. High edge of the accelerometer breathing band
   (0.4 Hz = 24 br/min). Excludes higher-frequency motion.
 - **`respWindowS`** — default **45** s, range 30–60. Trailing window the accelerometer respiration estimate
-  runs over. 45 s gives a clean peak but lags rate changes slightly.
+  runs over. 45 s gives a clean peak but lags rate changes slightly. (The estimate runs on the three axes'
+  summed periodograms, not the vector magnitude — see §14.4.)
 - **`respConfidenceMin`** — default **0.3**, range 0.3–0.6. Minimum spectral peakiness for the
   accelerometer breathing estimate to be trusted for verification. If Mode B keeps saying it cannot
   confirm your breathing even when you hold still, LOWER toward 0.3; raise if sway is being accepted.
@@ -364,10 +390,10 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
 
 ### 5.9 Mode C — Settle & Find (warm-up gate) — *Mode C*
 
-- **`modeCWarmupS`** — default **120** s, range 30–300. Minimum time in the Follow warm-up before Mode C
-  hands off to the resonance search, even if your breathing is already steady and confirmed. Gives you
-  time to settle in.
-- **`modeCWarmupMaxS`** — default **240** s, range 60–600. Upper bound on the warm-up. Past this, Mode C
+- **`modeCWarmupS`** — default **60** s, range 30–300. Minimum time in the quiet Follow warm-up (settling)
+  before Mode C hands off to the resonance search, even if your breathing is already steady and confirmed.
+  The cue/chime/lens fade are paused during it (see §15). Gives you time to settle in.
+- **`modeCWarmupMaxS`** — default **120** s, range 60–600. Upper bound on the warm-up. Past this, Mode C
   transitions on confident breathing alone without waiting for the steadiness test, so a naturally
   variable breather is not trapped in warm-up. It NEVER relaxes the accelerometer-confirmation requirement.
 - **`modeCStabilityWindowS`** — default **30** s, range 10–60. Trailing window over which Mode C measures
@@ -634,7 +660,8 @@ present, as an honest readout **alongside** the CR — it does **not** drive the
 
 How it's built, at 1 Hz:
 1. **x = heart rate** — the detrended RR series (same §7 detrend); **y = respiration** — the H10
-   accelerometer vector-magnitude window (the same channel Mode B verifies with, §14.4).
+   accelerometer's **de-meaned principal-axis** window (the same channel Mode B verifies with, §14.4; the
+   vector magnitude is deliberately avoided — it frequency-doubles the breath).
 2. Both are cubic-resampled onto a uniform 4 Hz grid and aligned on absolute time.
 3. A **Welch cross-spectrum** (~3 segments, 50% overlap) gives γ²(f) and the cross-phase. γ² is
    identically 1 for a single segment, so ≥2 segments are required — otherwise it returns "can't
@@ -673,6 +700,11 @@ HRV biofeedback (Lehrer & Vaschillo). Clinically, RF is found by pacing a person
 rates and watching which maximizes HRV. **Mode B automates exactly that** — plus an objective
 verification step a clinician would do by watching the person breathe.
 
+Mode B opens with a **60 s quiet settling** (`initialSettleS`, §5.7): the controller is seeded but does
+not dwell yet, and the cue/chime/lens fade are paused while you breathe naturally and the LS (64 s) and
+ACC (45 s) windows fill — so the first dwell isn't scored on half-warm sensors. The search begins when it
+elapses.
+
 ### 14.2 Why a dedicated objective (fast amplitude)
 The §8 coherence score uses a 64-s window, so after a rate change it stays contaminated by the *old*
 rate for up to a minute — useless for a hill-climb that moves every few breaths. Mode B therefore uses
@@ -681,15 +713,24 @@ over the last `ampWindowBreaths` (2.5) breaths. It chunks recent beats into per-
 (`breathS = 60 / commandedBPM`) and averages each chunk's `(max − min)` RR. This responds *within a
 breath* of a rate change. It is the **only** objective the hill-climb consumes.
 
-### 14.3 The dwell — settle, estimate, accept
-Mode B holds each candidate rate for a **dwell** of `dwellBreaths` (6 breaths), split into:
+### 14.3 The dwell — settle, retest, accept
+Mode B holds each candidate rate for a **dwell**, split into:
 - **Settle** — the first `ceil(dwellBreaths · (1 − dwellEstimateFraction))` breaths (≈ 2–3) are
   discarded while the pacer slews to the new rate and your breathing catches up.
-- **Estimate** — the remaining ~60% is where amplitude is collected and verification is scored.
+- **Estimate** — subsequent breaths are verified one at a time (§14.4); amplitude is collected from the
+  **verified** breaths only, so an off-rate or low-confidence breath never pollutes the hill-climb.
 
-A dwell is **accepted** only if *all* of: it was artifact-clean (no beats gated mid-dwell), it produced
-amplitude samples, **and** a **majority** of its estimate-window breaths verified (§14.4). Otherwise it
-is discarded, re-dwelled at the same rate, and `unverifiedDwells` increments.
+Rather than scoring a fixed window all-or-nothing, the dwell **accumulates verified breaths and re-tests
+the missed ones at the same rate**, deciding as soon as either:
+- `dwellVerified ≥ dwellVerifyTarget` (default 2) — enough confirmed breaths → **accept** at full
+  precision; or
+- `dwellEstimate ≥ dwellMaxEstimateBreaths` (default 6) — the retest cap is hit → decide now.
+
+On a decision: if **≥1 breath confirmed** and the dwell was artifact-clean, it is **accepted** (proceeding
+even on partial verification — slightly less precise, but the search never freezes on one rate) and
+`unverifiedDwells` resets. If **no** breath confirmed (or the dwell was artifact-dirty), it re-dwells and
+`unverifiedDwells` increments — preserving the Mayer-wave abort (§14.4). A dwell with no ACC estimate at
+all is charged to `unmeasuredDwells` instead (sensor warming up / dropout), not the verification budget.
 
 ### 14.4 Independent verification & the Mayer-wave defense
 This is what makes an *automated* search trustworthy. Per estimate-window breath:
@@ -708,12 +749,18 @@ though you're actually breathing at, say, 7/min — so an HRV-only search would 
 resonance at the wrong rate. The chest accelerometer measures *real breathing motion*, so requiring
 `|measured − paced| ≤ tolerance` proves you truly breathed where you were paced.
 
-The ACC respiration estimate (`respirationFromAcc.ts`) is itself robust: it picks the breathing peak by
-**prominence** (height relative to the in-band mean) with a **low-frequency sway floor** (`respMinHz`)
-that de-weights ~0.065 Hz postural drift, an **octave guard** that steps a harmonic-latched peak down to
-its true fundamental (so a non-sinusoidal breath isn't read at 2×), a **parabolic sub-bin** refinement
-(the raw bin is ~0.73 BPM coarse), and a **harmonic-excluded confidence** (`respHarmonicExcludeMult`)
-so a breath's own 2×/3× harmonics don't deflate the confidence score.
+The ACC respiration estimate (`respirationFromAcc.ts`) runs on the **sum of the three axes' periodograms**
+(each axis is linear in the breathing motion and the periodogram linear-detrends out the gravity DC). It
+deliberately does **not** use the vector magnitude `√(x²+y²+z²)`: with gravity as a large DC on one axis,
+the squaring nonlinearity injects a strong 2× term that **frequency-doubles** the breath — on real H10 data
+the magnitude read a steady ~9.3 br/min for a genuine ~4–5 br/min breath (every individual axis read
+4–5), which failed verification on every dwell. The per-axis combination removes that. On top of it the
+estimate is robust: it picks the breathing peak by **prominence** (height relative to the in-band mean)
+with a **low-frequency sway floor** (`respMinHz`) that de-weights ~0.065 Hz postural drift, an **octave
+guard** that steps a harmonic-latched peak down to its true fundamental, a **parabolic sub-bin** refinement
+(the raw bin is ~0.73 BPM coarse), and a **harmonic-excluded confidence** (`respHarmonicExcludeMult`) so a
+breath's own 2×/3× harmonics don't deflate the confidence score. (The same de-meaned principal axis feeds
+the Mode A breath–heart γ², §13.)
 
 Persistent failure ⇒ a **"hold still / follow the cue"** hint, and after `maxUnverifiedDwells` (12)
 consecutive unverifiable dwells the search **aborts** (`searchAborted`) and holds a steady pace rather
@@ -817,11 +864,12 @@ and seeds the search there — so Mode B starts close to the answer and on a bre
 already confirm.
 
 ### 15.2 The three phases
-1. **`warmup`** — byte-for-byte the Mode A Follow loop (§12): LS → CR → lens, LF read-back → pacer. No
-   resonance controller exists yet, so every Mode B status field reads its default (the UI never shows
-   stale resonance data). Each second the engine records two **unsmoothed** gate samples into a trailing
-   `modeCStabilityWindowS` window: the detected LF-peak rate (BPM) and whether the ACC respiration
-   confidence cleared `respConfidenceMin`.
+1. **`warmup`** — the Mode A Follow loop (§12: LS → CR, LF read-back → pacer) run as a **quiet settling**:
+   the pacer tracks exactly as Mode A, but the breath cue is paused, the chime muted, and the lens held
+   **fully clear** (depth 0) — `status.settling` is `true`. No resonance controller exists yet, so every
+   Mode B status field reads its default (the UI never shows stale resonance data). Each second the engine
+   records two **unsmoothed** gate samples into a trailing `modeCStabilityWindowS` window: the detected
+   LF-peak rate (BPM) and whether the ACC respiration confidence cleared `respConfidenceMin`.
 2. **`searching`** — once the gate passes (§15.3) the engine, in one atomic tick, creates the
    `ResonanceController` seeded at the settled rate and **hard-snaps** the pacer there; from that point
    the controller is the sole pacer source and the search runs exactly as Mode B (§14).
