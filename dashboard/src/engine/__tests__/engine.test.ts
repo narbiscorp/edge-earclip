@@ -683,3 +683,107 @@ describe('CoherenceEngine — Mode C engine integration', () => {
     }
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Mode B = "Static Pacer": fixed user/clinician rate, Mode-A coherence feedback (no follow,
+// no search). Plus the Mode A/C manual nudge (ResonanceController.reseed for Mode C).
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('ResonanceController — reseed (Mode C manual nudge)', () => {
+  it('restarts the search at the nudged rate, even from a locked maintaining state', () => {
+    const ctrl = new ResonanceController(DEFAULT_TUNABLES);
+    const RF = 5.5;
+    const curve = (b: number) => 100 - 8 * (b - RF) * (b - RF);
+    let nowS = 0;
+    for (let i = 0; i < 600 && ctrl.state !== 'maintaining'; i++) {
+      nowS += 10;
+      const b = ctrl.commandedBPM;
+      ctrl.onBreathCycle({ cycleAmplitude: curve(b), measuredBPM: b, respConfidence: 1, pacedBPM: b, dwellArtifactClean: true, nowS });
+    }
+    expect(ctrl.state).toBe('maintaining');
+
+    ctrl.reseed(7.0);
+    expect(ctrl.state).toBe('searching'); // never ignored — a fresh test starts
+    expect(ctrl.commandedBPM).toBeCloseTo(7.0, 5);
+    expect(ctrl.searchAborted).toBe(false);
+
+    ctrl.reseed(99); // clamps into the search band
+    expect(ctrl.commandedBPM).toBe(DEFAULT_TUNABLES.searchHiBPM);
+  });
+});
+
+describe('CoherenceEngine — Mode B Static Pacer', () => {
+  it('holds the fixed rate (never follows the detected rhythm) and live-retunes + clamps via setStaticPacerBpm', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const engine = new CoherenceEngine();
+      const lens: LensState[] = [];
+      engine.start({ mode: 'modeB', source: 'polarH10', tunables: { ...DEFAULT_TUNABLES }, staticPacerBpm: 5.5, onLens: (s) => lens.push(s) });
+
+      // Feed a clean ~6 br/min RSA rhythm; the Static Pacer must NOT drift toward it.
+      const beats = modulatedBeats(900, 120, 0.1, 80);
+      let bi = 0;
+      for (let sec = 0; sec < 60; sec++) {
+        while (bi < beats.length && beats[bi].beatTimeS <= sec) { engine.onRR(beats[bi].rrMs, 100, beats[bi].beatTimeS); bi++; }
+        vi.advanceTimersByTime(1000);
+      }
+      let st = engine.getStatus();
+      expect(st.staticMode).toBe(true);
+      expect(st.settling).toBe(false); // the Static Pacer never settles
+      expect(st.staticPacerBpm).toBeCloseTo(5.5, 5);
+      expect(st.pacerBpm).toBeCloseTo(5.5, 5); // held — did not follow the 6 br/min rhythm
+
+      engine.setStaticPacerBpm(7.3); // live retune
+      st = engine.getStatus();
+      expect(st.staticPacerBpm).toBeCloseTo(7.3, 5);
+      expect(st.pacerBpm).toBeCloseTo(7.3, 5);
+
+      engine.setStaticPacerBpm(99); // clamp high
+      expect(engine.getStatus().staticPacerBpm).toBe(10);
+      engine.setStaticPacerBpm(1); // clamp low
+      expect(engine.getStatus().staticPacerBpm).toBe(4);
+
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Mode C: a manual nudge restarts the resonance test at the nudged rate (never ignored)', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const tun = {
+        ...DEFAULT_TUNABLES,
+        modeCWarmupS: 1,
+        modeCWarmupMaxS: 2,
+        modeCStabilityWindowS: 4,
+        modeCStabilityBpmSd: 2.0,
+        respConfidenceMin: 0.2,
+      };
+      const engine = new CoherenceEngine();
+      engine.start({ mode: 'modeC', source: 'polarH10', tunables: tun, onLens: () => {} });
+
+      const beats = modulatedBeats(900, 120, 0.1, 210);
+      let bi = 0;
+      let preNudge: number | null = null;
+      let afterNudge: number | null = null;
+      for (let sec = 0; sec < 120 && afterNudge === null; sec++) {
+        while (bi < beats.length && beats[bi].beatTimeS <= sec) { engine.onRR(beats[bi].rrMs, 100, beats[bi].beatTimeS); bi++; }
+        feedAccSecond(engine, sec, 0.1); // ~6 br/min, confident + matched → stays searching
+        vi.advanceTimersByTime(1000);
+        const st = engine.getStatus();
+        if (st.modeCPhase === 'searching') {
+          preNudge = st.modeBCommandedBpm;
+          engine.nudgePacer(0.4); // bump up
+          afterNudge = engine.getStatus().modeBCommandedBpm;
+        }
+      }
+      expect(preNudge).not.toBeNull();
+      expect(afterNudge).not.toBeNull();
+      expect(engine.getStatus().modeCPhase).toBe('searching'); // restarted, still searching
+      expect(afterNudge as number).toBeGreaterThan((preNudge as number) + 0.2); // jumped by the nudge, not a glide
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

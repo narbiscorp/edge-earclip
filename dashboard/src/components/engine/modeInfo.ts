@@ -41,15 +41,14 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
   },
   {
     id: 'modeB',
-    title: 'Mode B',
-    sub: 'Resonance',
-    desc: 'Finds your personal resonance breathing rate.',
+    title: 'Static Pacer',
+    sub: 'fixed rate',
+    desc: 'Paces your breathing at a fixed rate you set.',
     details:
-      'Resonance-frequency training (the Lehrer / Vaschillo protocol, automated). It paces you across a range of slow breathing rates (about 4–7.5 br/min), measures how big your HRV swings are at each, and climbs toward the rate that produces the largest swings — your personal resonance frequency, where heart and breath line up. Each held rate is verified against your ACTUAL breathing, measured from the Polar H10’s accelerometer, so it cannot be fooled by the ~0.1 Hz Mayer wave. Needs a Polar H10. Once found, it locks the rate and gently maintains it. Sit still while it searches.',
+      'The same coherence biofeedback as Mode A — your heart-rate-variability coherence drives the lens (the inhale cue darkens and clears with it, or the strobe intensity tracks it) — but instead of the app following and adjusting your rate, YOU (or your clinician) set a fixed breathing rate and it holds it for the whole session. Use the rate control to choose any pace from 4.0 to 10.0 breaths per minute in 0.1 steps (default 6.0 br/min). When you are signed in with a client selected, the chosen rate is remembered for that client across sessions. Works with the earclip or a Polar H10; with an H10 the measured breath–heart coherence (γ²) is also shown alongside.',
     references: [
-      'Lehrer PM, Vaschillo E, Vaschillo B. Resonant frequency biofeedback training to increase cardiac variability. Appl Psychophysiol Biofeedback. 2000;25(3):177–191.',
-      'Vaschillo EG, Vaschillo B, Lehrer PM. Characteristics of resonance in HRV stimulated by biofeedback. Appl Psychophysiol Biofeedback. 2006;31(2):129–142.',
       'Lehrer PM, Gevirtz R. Heart rate variability biofeedback: how and why does it work? Front Psychol. 2014;5:756.',
+      'McCraty R, Childre D. Coherence: bridging personal, social, and global health. Altern Ther Health Med. 2010;16(4):10–24.',
     ],
   },
   {
@@ -70,6 +69,11 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
 /* Plain-language, real-time description of what the Mode B controller is doing right now —
  * surfaced under the Engine box so the user follows the search as it happens. */
 export function modeBStatusText(status: EngineStatus): string {
+  // Mode B is the Static Pacer: a fixed rate, Mode-A coherence feedback (no search/verify).
+  if (status.staticMode) {
+    const r = status.staticPacerBpm ?? status.pacerBpm;
+    return `Pacing at ${r.toFixed(1)} br/min — your coherence drives the lens. Adjust the rate any time with the arrows.`;
+  }
   if (status.searchAborted) {
     return status.searchAbortReason === 'unmeasured'
       ? 'Paused — the H10 accelerometer never came online, so your breathing could not be read at all. Check the strap is snug and the H10 is charged, then re-select Mode B.'

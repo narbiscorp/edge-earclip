@@ -5,6 +5,13 @@
 // `created_at` are filled by Postgres defaults, so the client never sets them
 // on insert — that's what `NewClientInput` is for.
 
+/** Per-client persisted settings (Postgres `clients.settings` jsonb). Grows over time; every field
+ * is optional so old rows (default `{}`) and future additions stay backward-compatible. */
+export interface ClientSettings {
+  /** Mode B "Static Pacer" rate (br/min) remembered for this client. */
+  static_pacer_bpm?: number;
+}
+
 export interface ClientRow {
   id: string;                     // uuid (db default)
   clinician_id: string;           // uuid (db default auth.uid())
@@ -14,6 +21,7 @@ export interface ClientRow {
   notes: string | null;
   archived: boolean;
   created_at: string;             // ISO timestamp
+  settings: ClientSettings | null; // jsonb; `{}` for rows created before a setting was saved
 }
 
 /** Fields the clinician fills when creating or editing a client. */

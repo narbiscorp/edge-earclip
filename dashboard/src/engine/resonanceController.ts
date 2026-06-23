@@ -93,6 +93,38 @@ export class ResonanceController {
     return this.lockedRF;
   }
 
+  /** Restart the search from scratch, seeded at `bpm` — the Mode C manual nudge. A fresh dwell begins
+   * immediately at the clamped rate, even from a locked `maintaining` state (it re-enters `searching`).
+   * NEVER ignored: any phase is reset so the 6-breath test re-runs at exactly the requested rate. */
+  reseed(bpm: number): void {
+    this.state = 'searching';
+    this.phase = 'probe0';
+    this.probeDir = -1;
+    this.boundaryLimited = false;
+    this.searchAborted = false;
+    this.searchAbortReason = null;
+    this.unverifiedDwells = 0;
+    this.unmeasuredDwells = 0;
+    this.samples = [];
+    this.startRate = 0;
+    this.lo = 0;
+    this.mid = 0;
+    this.hi = 0;
+    this.commandedBPM = this.clampSearch(bpm);
+    // dwell bookkeeping
+    this.breathsThisDwell = 0;
+    this.dwellAmps = [];
+    this.dwellArtifactOk = true;
+    this.dwellVerified = 0;
+    this.dwellEstimate = 0;
+    this.dwellMeasured = 0;
+    // maintenance accumulators (harmless to clear on a fresh search)
+    this.escMeanA = 0;
+    this.ampFast = 0;
+    this.ampSlow = 0;
+    this.lowSinceS = null;
+  }
+
   /** Fraction of the current dwell's estimate-window breaths positively verified against the ACC
    * respiration, or null before the estimate window has started. For the live diagnostics readout. */
   get verifiedRatio(): number | null {
