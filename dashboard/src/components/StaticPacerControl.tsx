@@ -102,13 +102,13 @@ export function PaceNudge() {
     <div className="flex items-center justify-center gap-2 text-[11px] text-slate-400">
       <span className="uppercase tracking-[0.14em] text-[10px]">Adjust pace</span>
       <button type="button" className={btn} onClick={() => coherenceEngine.nudgePacer(-STEP)} aria-label="Slower by 0.1 br/min">
-        ‹
+        ▼
       </button>
       <span className="w-16 text-center tabular-nums text-slate-300">
         {pacerBpm > 0 ? `${pacerBpm.toFixed(1)} br/min` : '—'}
       </span>
       <button type="button" className={btn} onClick={() => coherenceEngine.nudgePacer(STEP)} aria-label="Faster by 0.1 br/min">
-        ›
+        ▲
       </button>
     </div>
   );
