@@ -8,7 +8,7 @@
 
 import { supabase, SUPABASE_CONFIGURED } from '../lib/supabase';
 import { useAuthStore } from '../auth/authStore';
-import type { ClientRow, NewClientInput } from './types';
+import type { ClientRow, ClientSettings, NewClientInput } from './types';
 
 export interface ClientResult {
   data: ClientRow | null;
@@ -74,6 +74,28 @@ export async function updateClient(
 
   if (error) return { data: null, error: error.message };
   return { data: data as ClientRow };
+}
+
+/**
+ * Merge `patch` into the client's `settings` jsonb (read-modify-write, so concurrent keys aren't
+ * clobbered). Best-effort: returns an error string but callers generally fire-and-forget since the
+ * dashboard also mirrors the value to localStorage. RLS restricts the row to the owning clinician.
+ */
+export async function updateClientSettings(
+  id: string,
+  patch: Partial<ClientSettings>,
+): Promise<{ error?: string }> {
+  const blocked = notReady();
+  if (blocked) return { error: blocked };
+  const { data, error: readErr } = await supabase
+    .from('clients')
+    .select('settings')
+    .eq('id', id)
+    .single();
+  if (readErr) return { error: readErr.message };
+  const merged: ClientSettings = { ...((data?.settings as ClientSettings | null) ?? {}), ...patch };
+  const { error } = await supabase.from('clients').update({ settings: merged }).eq('id', id);
+  return error ? { error: error.message } : {};
 }
 
 /** Soft-remove: hides the client from the active picker but keeps their data. */

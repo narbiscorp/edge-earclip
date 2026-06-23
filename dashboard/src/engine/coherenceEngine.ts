@@ -96,9 +96,13 @@ export interface EngineStatus {
   /** Warm-up gate telemetry (false outside Mode C warm-up). ACC confidence is MANDATORY for entry. */
   modeCAccConfident: boolean;
   modeCStable: boolean;
-  /** Quiet initial settling for Mode B/C: sensors warm up while the UI cue/chime is paused and the
-   * lens is held clear. Mode B → first `initialSettleS`; Mode C → the whole Follow warm-up. */
+  /** Quiet initial settling for Mode C's Follow warm-up: sensors warm up while the UI cue/chime is
+   * paused and the lens is held clear. (Mode B is now the Static Pacer and has no settling.) */
   settling: boolean;
+  /** Mode B "Static Pacer": the fixed rate being paced (br/min), or null outside static mode. */
+  staticPacerBpm: number | null;
+  /** True in Mode B (Static Pacer) — a fixed user/clinician rate, Mode-A coherence feedback. */
+  staticMode: boolean;
 }
 
 export interface StartOptions {
@@ -116,6 +120,8 @@ export interface StartOptions {
   strobeDutyPct?: number;
   /** Persisted per-user resonance frequency for a warm Mode B start. */
   priorRF?: number | null;
+  /** Mode B (Static Pacer) initial rate (br/min). Defaults to 6.0; clamped to 4.0–10.0. */
+  staticPacerBpm?: number;
   /** Sink for the desired lens state. The host (edgeDevice.driveLens) coalesces it into the
    * firmware's breathe/strobe/static commands — the firmware renders the smooth cycle, so we
    * never stream per-tick PWM. */
@@ -128,6 +134,19 @@ export interface StartOptions {
 
 const LENS_TICK_MS = 83; // ~12 Hz lens-duty stream (smooth breathing, BLE-friendly)
 const BH_NULL_RESET_TICKS = 8; // ~8 s with no cross-spectral estimate ⇒ clear the smoothed breath–heart readout
+
+// Mode B = "Static Pacer": a fixed user/clinician-set breathing rate (Mode-A coherence feedback, no
+// follow). Bounds match the clinical slow-breathing band; default is the canonical 6 br/min.
+export const STATIC_PACER_MIN_BPM = 4.0;
+export const STATIC_PACER_MAX_BPM = 10.0;
+export const STATIC_PACER_DEFAULT_BPM = 6.0;
+const STATIC_PACER_STEP_BPM = 0.1;
+export function clampStaticPacerBpm(b: number): number {
+  if (!Number.isFinite(b)) return STATIC_PACER_DEFAULT_BPM;
+  // Snap to the 0.1 grid so typed values like 6.05 land cleanly, then clamp to the band.
+  const snapped = Math.round(b / STATIC_PACER_STEP_BPM) * STATIC_PACER_STEP_BPM;
+  return Math.min(STATIC_PACER_MAX_BPM, Math.max(STATIC_PACER_MIN_BPM, snapped));
+}
 
 export class CoherenceEngine extends EventTarget {
   private t: CoherenceTunables = { ...DEFAULT_TUNABLES };
@@ -167,10 +186,14 @@ export class CoherenceEngine extends EventTarget {
   private modeCAccConfident = false;
   private modeCStable = false;
 
-  // Mode B quiet-settling clock (seconds, same epoch as nowMs()/1000). Set at start; Mode B holds
-  // the pacer and does not dwell until initialSettleS has elapsed. (Mode C uses its warm-up phase
-  // as the settling, so it doesn't read this.)
-  private settleStartS = 0;
+  // Mode B = "Static Pacer": a fixed user/clinician rate with Mode-A coherence feedback (no follow,
+  // no resonance search). `staticMode` is true only in Mode B; `staticPacerBpm` is the held rate.
+  private staticMode = false;
+  private staticPacerBpm = STATIC_PACER_DEFAULT_BPM;
+
+  // Mode C manual-nudge seed override: a rate set by nudgePacer during warm-up that the handoff uses
+  // as the search's first rate instead of the windowed-mean seed. null = use the gate's seed.
+  private seedOverrideBpm: number | null = null;
 
   // published outputs
   private _coherence = 0;
@@ -198,17 +221,17 @@ export class CoherenceEngine extends EventTarget {
     return this.secTimer !== null;
   }
 
-  /** True during the quiet initial settling — Mode B's first `initialSettleS`, or Mode C's whole
-   * Follow warm-up (before the controller exists). The host pauses the cue/chime and the lens is
-   * held clear while this is true. */
+  /** True during Mode C's quiet Follow warm-up (before the controller exists): the host pauses the
+   * cue/chime and the lens is held clear. Mode B (Static Pacer) and Mode A never settle. */
   isSettling(): boolean {
-    return this.inSettling(nowMs() / 1000);
-  }
-  private inSettling(nowS: number): boolean {
     if (!this.running) return false;
-    if (this.mode === 'modeC') return this.modeB == null; // the warm-up phase IS the settling
-    if (this.mode === 'modeB') return nowS - this.settleStartS < this.t.initialSettleS;
-    return false;
+    return this.mode === 'modeC' && this.modeB == null;
+  }
+
+  /** Exact breath-cycle length (ms) for the Static Pacer — driven from the float rate so the cue +
+   * BREATHE_SYNC honor the 0.1-br/min setting even though the pacer grid is 0.2 and 0xB1 is integer. */
+  private staticCycleMs(): number {
+    return Math.round(60_000 / this.staticPacerBpm);
   }
 
   /** Build/replace all sub-components against the current tunables object. */
@@ -236,18 +259,19 @@ export class CoherenceEngine extends EventTarget {
     this.onSync = opts.onSync ?? null;
     this.rebuild();
 
-    // Mode B creates its controller up front. Mode C does NOT — it starts in the Follow warm-up
+    // Mode B is the Static Pacer: a FIXED user/clinician rate with Mode-A coherence feedback — no
+    // ResonanceController, no follow. Mode A has no controller. Mode C starts in the Follow warm-up
     // (modeB == null) and the breath-boundary gate creates the controller later, seeded at the
-    // settled rate. Mode A never has a controller.
-    if (this.mode === 'modeB' && allowsModeB(this.source)) {
-      this.modeB = new ResonanceController(this.t, opts.priorRF ?? undefined);
-      // Snap the pacer to the controller's start rate so the first dwell isn't measured mid-slew.
-      this.pacer.snapToBPM(this.modeB.commandedBPM);
-    } else {
-      this.modeB = null;
+    // settled rate. (priorRF is unused now — Mode B no longer searches.)
+    this.staticMode = this.mode === 'modeB';
+    this.modeB = null;
+    this.seedOverrideBpm = null;
+    if (this.staticMode) {
+      this.staticPacerBpm = clampStaticPacerBpm(opts.staticPacerBpm ?? this.staticPacerBpm);
+      this.pacer.snapToBPM(this.staticPacerBpm);
     }
 
-    this.cycleMs = this.pacer.latch();
+    this.cycleMs = this.staticMode ? this.staticCycleMs() : this.pacer.latch();
     this.cycleStartMs = nowMs();
     this._coherence = 0;
     this._cr = 0;
@@ -263,7 +287,6 @@ export class CoherenceEngine extends EventTarget {
     this.gatedBeatsThisCycle = 0;
     // Mode C warm-up clock + sample windows start fresh (harmless/unused in Mode A/B).
     this.warmupStartS = this.cycleStartMs / 1000;
-    this.settleStartS = this.cycleStartMs / 1000;
     this.warmupResp = [];
     this.warmupAcc = [];
     this.modeCAccConfident = false;
@@ -329,6 +352,63 @@ export class CoherenceEngine extends EventTarget {
     return this.modeB?.state === 'maintaining' ? this.modeB.lockedRF : null;
   }
 
+  /** Current Static Pacer rate (br/min) — for the host to read/persist. */
+  get staticBpm(): number {
+    return this.staticPacerBpm;
+  }
+
+  /** Live-set the Static Pacer rate (Mode B). Clamps to 4.0–10.0 on the 0.1 grid, retargets the
+   * breath clock + cue + lens immediately, and re-anchors the cycle so the new rate starts a fresh
+   * breath. When not running (or not in static mode) it just stores the value for the next start. */
+  setStaticPacerBpm(bpm: number): void {
+    this.staticPacerBpm = clampStaticPacerBpm(bpm);
+    if (!this.running || !this.staticMode) return;
+    this.pacer.snapToBPM(this.staticPacerBpm);
+    this.cycleMs = this.staticCycleMs();
+    this.cycleStartMs = nowMs(); // restart the breath cleanly at the new rate
+    this.latchLensParams();
+    this.emitLens();
+    this.emitSync();
+    this.emitStatus();
+  }
+
+  /** Manual ± pace nudge (the UI uses ±0.1 br/min). Behavior per mode:
+   *  - Mode B (Static Pacer) → change the fixed rate (the host persists it).
+   *  - Mode A → transient bias of the Follow target; the auto-follow re-asserts over the next breaths.
+   *  - Mode C → NEVER ignored. Warm-up: set where the search will begin (and reflect it on the cue
+   *    now). Searching OR maintaining: immediately restart a fresh 6-breath dwell at the nudged rate
+   *    (re-enters `searching` from a locked state). */
+  nudgePacer(deltaBpm: number): void {
+    if (!this.running) return;
+    if (this.staticMode) {
+      this.setStaticPacerBpm(this.staticPacerBpm + deltaBpm);
+      return;
+    }
+    if (this.mode === 'modeA') {
+      this.pacer.setTargetBPM(this.pacer.currentQuintet / 5.0 + deltaBpm);
+      this.emitStatus();
+      return;
+    }
+    if (this.mode === 'modeC') {
+      if (this.modeB) {
+        this.modeB.reseed(this.modeB.commandedBPM + deltaBpm); // restart the dwell at the new rate
+        this.pacer.snapToBPM(this.modeB.commandedBPM);
+      } else {
+        const next = Math.min(
+          this.t.searchHiBPM,
+          Math.max(this.t.searchLoBPM, this.pacer.currentQuintet / 5.0 + deltaBpm),
+        );
+        this.seedOverrideBpm = next; // consumed at handoff as the search's first-cycle rate
+        this.pacer.snapToBPM(next);
+      }
+      this.cycleMs = this.pacer.latch();
+      this.latchLensParams();
+      this.emitLens();
+      this.emitSync();
+      this.emitStatus();
+    }
+  }
+
   // --- input callbacks ---
 
   /** Primary H10 path. `rrsMs` straight from the BLE HR-Measurement parse (oldest-first). */
@@ -374,7 +454,8 @@ export class CoherenceEngine extends EventTarget {
       coherence: this._coherence,
       cr: this._cr,
       respHz: this._respHz,
-      pacerBpm: this.pacer.currentQuintet / 5.0,
+      // Static Pacer reports its exact float rate (0.1 precision); other modes the 0.2-grid pacer.
+      pacerBpm: this.staticMode ? this.staticPacerBpm : this.pacer.currentQuintet / 5.0,
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       breathHeartCoherence: this._breathHeartCoh,
@@ -410,6 +491,8 @@ export class CoherenceEngine extends EventTarget {
       modeCAccConfident: this.mode === 'modeC' && this.modeB == null ? this.modeCAccConfident : false,
       modeCStable: this.mode === 'modeC' && this.modeB == null ? this.modeCStable : false,
       settling: this.isSettling(),
+      staticPacerBpm: this.staticMode ? this.staticPacerBpm : null,
+      staticMode: this.staticMode,
     };
   }
 
@@ -425,7 +508,8 @@ export class CoherenceEngine extends EventTarget {
       // the controller is the sole pacer source via onBreathBoundary's setTargetBPM — guarding
       // here makes that source switch explicit instead of relying on the per-breath ring collapse.
       // (In Mode B this is a no-op: setTargetBPM overwrites the ring every breath regardless.)
-      if (this.modeB == null) this.pacer.push(r.respPeakMhz);
+      // Mode B (Static Pacer) NEVER follows — the rate is fixed — so skip the push there.
+      if (this.modeB == null && !this.staticMode) this.pacer.push(r.respPeakMhz);
       this._coherence = r.cohPercent; // single-signal CR squash — drives the lens (UNCHANGED)
       this._cr = r.cr;
       this._respHz = r.respPeakHz;
@@ -496,11 +580,9 @@ export class CoherenceEngine extends EventTarget {
       handedOff = this.tryModeCHandoff(nowS);
     }
 
-    // Mode B quiet settling: the controller exists (seeded) but does NOT dwell yet — hold the pacer
-    // at the seed rate while the LS/ACC windows fill and the UI cue/chime/lens stay paused. The
-    // first dwell starts only after initialSettleS, so no early dwell fails on half-full sensors.
-    const settlingNow = this.inSettling(nowS);
-    if (this.modeB && !handedOff && !settlingNow) {
+    // The resonance controller (Mode C after handoff) drives the dwell. Mode B is the Static Pacer
+    // and has no controller, so this block never runs there.
+    if (this.modeB && !handedOff) {
       const amp = this.amplitude.amplitude(
         this.ingest.window(this.t.coherenceWindowS),
         this.modeB.commandedBPM,
@@ -526,7 +608,8 @@ export class CoherenceEngine extends EventTarget {
         this.enterModeCWarmup(nowS);
       }
     }
-    this.cycleMs = this.pacer.latch();
+    // Static Pacer holds the fixed float rate; every other mode advances the pacer's slew limiter.
+    this.cycleMs = this.staticMode ? this.staticCycleMs() : this.pacer.latch();
     this.latchLensParams(); // re-sample depth + rate ONCE per breath, at the seam (frac ≈ 0)
     this.emitStatus();
   }
@@ -544,8 +627,11 @@ export class CoherenceEngine extends EventTarget {
     this.modeCAccConfident = g.accConfident;
     this.modeCStable = g.stable;
     if (!g.canTransition) return false;
-    this.modeB = new ResonanceController(this.t, g.seedBPM);
-    this.pacer.snapToBPM(g.seedBPM);
+    // A manual nudge during warm-up overrides where the search begins (the user's first cycle rate).
+    const seed = this.seedOverrideBpm ?? g.seedBPM;
+    this.seedOverrideBpm = null;
+    this.modeB = new ResonanceController(this.t, seed);
+    this.pacer.snapToBPM(seed);
     return true;
   }
 
@@ -557,6 +643,7 @@ export class CoherenceEngine extends EventTarget {
     this.warmupAcc = [];
     this.modeCAccConfident = false;
     this.modeCStable = false;
+    this.seedOverrideBpm = null;
   }
 
   /** Breath-clock tick: detect cycle boundaries (pacer latch / Mode B controller). The lens
@@ -591,7 +678,8 @@ export class CoherenceEngine extends EventTarget {
     // depth-0 setpoint is sent to the firmware (0xA2/0xA5) so the glasses never modulate while the
     // user just settles in.
     this.latchedDepthPct = this.isSettling() ? 0 : Math.round(this.depthFromCoherence());
-    this.latchedBpm = Math.round(this.pacer.currentQuintet / 5.0);
+    // Firmware 0xB1 is integer BPM; the exact float cycle still rides BREATHE_SYNC (staticCycleMs).
+    this.latchedBpm = Math.round(this.staticMode ? this.staticPacerBpm : this.pacer.currentQuintet / 5.0);
   }
 
   /** Push the desired lens state to the host (coalesced into firmware commands downstream). Sends the
@@ -636,7 +724,7 @@ export class CoherenceEngine extends EventTarget {
 
   /** Engine pacer rate (BPM) for the on-screen cue. */
   get breathBpm(): number {
-    return this.pacer.currentQuintet / 5.0;
+    return this.staticMode ? this.staticPacerBpm : this.pacer.currentQuintet / 5.0;
   }
 
   private emitStatus(): void {

@@ -17,6 +17,7 @@ import CoherenceChart from './CoherenceChart';
 import AccChart from './AccChart';
 import ChimeControls from './ChimeControls';
 import BreathCue from './BreathCue';
+import { StaticPacerControl, PaceNudge, useStaticPacerClientSync } from './StaticPacerControl';
 import { useLastMetrics } from '../state/useLastMetrics';
 import { useBreathPhase } from '../state/useBreathPhase';
 import { coherenceEngine } from '../engine/coherenceEngine';
@@ -117,6 +118,8 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const setEngineMode = useDashboardStore((s) => s.setEngineMode);
   const engineStatus = useDashboardStore((s) => s.engineStatus);
   const lastMetrics = useLastMetrics();
+  // Load the active client's saved Static Pacer rate (DB) so it's ready before Mode B starts.
+  useStaticPacerClientSync();
 
   /* Derived metrics. Each can be null when its data source isn't reporting.
    * effectiveHrSource falls back to H10 for the display when earclip is
@@ -256,7 +259,6 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           mode={engineMode}
           status={engineStatus}
           edgeConnected={edgeConnected}
-          polarConnected={polarConn === 'connected'}
           onPick={(m) => void setEngineMode(m)}
         />
 
@@ -272,6 +274,8 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
           <div className="space-y-3">
             <ZonePill coh={coh} zone={zone} />
             {showBreathUi && <BreathCue hint={cohHint(coh)} />}
+            {showBreathUi && engineMode === 'modeB' && <StaticPacerControl />}
+            {showBreathUi && (engineMode === 'modeA' || engineMode === 'modeC') && <PaceNudge />}
             {/* Tiny live readout under the bar: pacerBpm + respBpm. The
                 full breath/HR cards are at the bottom of the view; this
                 line keeps the hero from feeling sparse for users who
@@ -692,12 +696,11 @@ function StatChip({ label, value, unit }: { label: string; value: string; unit: 
    lens via 0xA5 duty. Shows a compact live readout when active.
    ────────────────────────────────────────────────────────────── */
 function EngineModeStrip({
-  mode, status, edgeConnected, polarConnected, onPick,
+  mode, status, edgeConnected, onPick,
 }: {
   mode: EngineMode;
   status: EngineStatus | null;
   edgeConnected: boolean;
-  polarConnected: boolean;
   onPick: (m: EngineMode) => void;
 }) {
   const active = mode !== 'firmware';
@@ -740,27 +743,14 @@ function EngineModeStrip({
       {active && !edgeConnected ? (
         <div className="mt-2 text-[11px] text-amber-300/90">Connect the glasses — the engine drives the lens over BLE.</div>
       ) : null}
-      {mode === 'modeB' && !polarConnected ? (
-        <div className="mt-2 text-[11px] text-amber-300/90">Mode B needs a Polar H10 (validated heartbeats + accelerometer for breath verification).</div>
-      ) : null}
       {active && status?.running ? (
         <div className="mt-2 rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-[11px] text-slate-300 flex flex-col gap-1">
           <div className="flex flex-wrap gap-x-4 gap-y-0.5">
             <span>coherence <span className="text-emerald-400 font-medium">{Math.round(status.coherence)}/100</span></span>
             <span>pacing <span className="text-cyan-300">{status.pacerBpm.toFixed(1)}</span> br/min</span>
           </div>
-          {mode === 'modeB' && status.modeBState ? (
-            <div
-              className={
-                status.searchAborted
-                  ? 'text-rose-400'
-                  : status.modeBState === 'maintaining'
-                    ? 'text-emerald-300'
-                    : 'text-amber-300'
-              }
-            >
-              {modeBStatusText(status)}
-            </div>
+          {mode === 'modeB' ? (
+            <div className="text-cyan-300">{modeBStatusText(status)}</div>
           ) : mode === 'modeC' ? (
             <div
               className={

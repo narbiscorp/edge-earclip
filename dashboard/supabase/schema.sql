@@ -167,3 +167,14 @@ alter table sessions
 
 create index if not exists sessions_client_started_idx
   on sessions (client_id, started_at desc);
+
+-- ─── clients.settings ──────────────────────────────────────────────────────
+--
+-- Per-client settings blob (currently the Mode B "Static Pacer" rate,
+-- e.g. {"static_pacer_bpm": 6.0}; future per-client presets reuse this column).
+-- `not null default '{}'` backfills existing rows automatically. The existing
+-- "clients update own" / "clients select own" RLS policies already cover it
+-- (RLS is row-level), so no new policy is needed.
+
+alter table clients
+  add column if not exists settings jsonb not null default '{}'::jsonb;

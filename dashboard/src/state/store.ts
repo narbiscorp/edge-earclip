@@ -50,7 +50,15 @@ import {
   NARBIS_BEAT_FLAG_ARTIFACT,
   type NarbisCoherenceParams,
 } from '../../../protocol/narbis_protocol';
-import { coherenceEngine, type EngineMode, type EngineStatus } from '../engine/coherenceEngine';
+import {
+  coherenceEngine,
+  clampStaticPacerBpm,
+  STATIC_PACER_DEFAULT_BPM,
+  type EngineMode,
+  type EngineStatus,
+} from '../engine/coherenceEngine';
+import { useClientStore } from '../clients/clientStore';
+import { updateClientSettings } from '../clients/clientApi';
 import { DEFAULT_TUNABLES, type CoherenceTunables } from '../engine/tunables';
 import { AdaptiveDRRGate } from '../engine/adaptiveDrrGate';
 import type { PolarAccEvent, PolarAccInfoDetail } from '../ble/polarH10';
@@ -220,6 +228,13 @@ export interface DashboardState {
   coherenceTunables: CoherenceTunables;
   /** Latest live engine status (CR, coh%, pacer, Mode B state), or null when the engine is off. */
   engineStatus: EngineStatus | null;
+
+  /** Mode B "Static Pacer" rate (br/min). Persisted per signed-in client (DB) with a localStorage
+   * fallback. `setStaticPacerBpm` is user-initiated (persists everywhere + live-updates the engine);
+   * `hydrateStaticPacerBpm` loads a client's saved value without writing back to the DB. */
+  staticPacerBpm: number;
+  setStaticPacerBpm: (bpm: number) => void;
+  hydrateStaticPacerBpm: (bpm: number) => void;
 
   /** Breathing-pacer chime: on/off + the voice played on each phase. Persisted. */
   chimeEnabled: boolean;
@@ -504,6 +519,22 @@ function saveChime(s: ChimeSettings): void {
 }
 const _chimeInit = loadChime();
 
+// Mode B "Static Pacer" rate. Source of truth is the active client's DB `settings.static_pacer_bpm`
+// when signed in; this localStorage value is the offline/not-signed-in fallback and the default seed.
+const STATIC_PACER_KEY = 'narbis.staticPacerBpm';
+function loadStaticPacerBpm(): number {
+  try {
+    const v = localStorage.getItem(STATIC_PACER_KEY);
+    const n = v != null && v !== '' ? Number(v) : NaN;
+    return Number.isFinite(n) ? clampStaticPacerBpm(n) : STATIC_PACER_DEFAULT_BPM;
+  } catch {
+    return STATIC_PACER_DEFAULT_BPM;
+  }
+}
+function saveStaticPacerBpm(bpm: number): void {
+  try { localStorage.setItem(STATIC_PACER_KEY, String(bpm)); } catch { /* quota / private mode */ }
+}
+
 /** Start (or restart) the ported engine for the given app-side mode. The engine ingests
  * beats from whichever HR source feeds the glasses and streams lens duty over 0xA5. */
 function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
@@ -521,6 +552,8 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
     // Mode B warm-starts from the stored RF. Mode C seeds from the warm-up settled rate instead,
     // so it gets no priorRF (its controller isn't created until the gate fires).
     priorRF: mode === 'modeB' ? loadModeBRF() : null,
+    // Mode B is the Static Pacer: start at the per-client (or fallback) remembered rate.
+    staticPacerBpm: mode === 'modeB' ? s.staticPacerBpm : undefined,
     // Engine commands the firmware's breathe/static program (it renders the smooth cycle); we no
     // longer stream per-tick PWM. driveLens coalesces, depth comes from the engine's coherence.
     onLens: (state) => {
@@ -612,6 +645,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   engineMode: loadEngineMode(),
   coherenceTunables: loadCoherenceTunables(),
   engineStatus: null,
+  staticPacerBpm: loadStaticPacerBpm(),
   chimeEnabled: _chimeInit.enabled,
   chimeInhale: _chimeInit.inhale,
   chimeExhale: _chimeInit.exhale,
@@ -808,6 +842,24 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     set({ coherenceTunables: t });
     saveCoherenceTunables(t);
     coherenceEngine.setTunables(t);
+  },
+  setStaticPacerBpm: (bpm) => {
+    const v = clampStaticPacerBpm(bpm);
+    set({ staticPacerBpm: v });
+    saveStaticPacerBpm(v); // offline/not-signed-in fallback + default seed
+    coherenceEngine.setStaticPacerBpm(v); // live retune (no-op unless Mode B is running)
+    // Write-through to the active client's DB settings so the rate is remembered per client.
+    const activeClientId = useClientStore.getState().activeClientId;
+    if (activeClientId) {
+      void updateClientSettings(activeClientId, { static_pacer_bpm: v }).then((r) => {
+        if (r.error) appendBleLog('system', 'error', `save static pacer failed: ${r.error}`);
+      });
+    }
+  },
+  hydrateStaticPacerBpm: (bpm) => {
+    const v = clampStaticPacerBpm(bpm);
+    set({ staticPacerBpm: v });
+    coherenceEngine.setStaticPacerBpm(v); // reflect the client's saved rate live if Mode B is running
   },
   setChimeEnabled: (on) => {
     set({ chimeEnabled: on });
