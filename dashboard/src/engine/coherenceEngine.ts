@@ -173,9 +173,13 @@ export class CoherenceEngine extends EventTarget {
   private secTimer: ReturnType<typeof setInterval> | null = null;
   private lensTimer: ReturnType<typeof setInterval> | null = null;
 
-  // breath-cycle clock
-  private cycleMs = 10_000; // default 6 BPM
-  private cycleStartMs = 0;
+  // breath-cycle clock — PHASE-CONTINUOUS (0..1). A rate change only alters how fast the phase
+  // advances, never teleports it. (The old `cycleStartMs` modulo clock re-derived the position from a
+  // moving anchor, so re-anchoring it on every Static-Pacer set / manual nudge made the on-screen cue
+  // jump. breathCyclePos() interpolates breathPhase by the sub-tick elapsed for 60 fps smoothness.)
+  private cycleMs = 10_000; // current cycle length (ms); default 6 BPM
+  private breathPhase = 0; // 0..1, advanced each lensTick by dt/cycleMs
+  private lastTickMs = 0; // timestamp of the last lensTick (for sub-tick interpolation)
 
   // Mode B cycle-clean tally (engine-owned, derived from its own gate)
   private gatedBeatsThisCycle = 0;
@@ -301,7 +305,8 @@ export class CoherenceEngine extends EventTarget {
     }
 
     this.cycleMs = this.staticMode ? this.staticCycleMs() : this.pacer.latch();
-    this.cycleStartMs = nowMs();
+    this.breathPhase = 0;
+    this.lastTickMs = nowMs();
     this._coherence = 0;
     this._cr = 0;
     this._respHz = 0;
@@ -315,7 +320,7 @@ export class CoherenceEngine extends EventTarget {
     this._accRespConfidence = 0;
     this.gatedBeatsThisCycle = 0;
     // Mode C warm-up clock + sample windows start fresh (harmless/unused in Mode A/B).
-    this.warmupStartS = this.cycleStartMs / 1000;
+    this.warmupStartS = this.lastTickMs / 1000;
     this.warmupResp = [];
     this.warmupAcc = [];
     this.modeCAccConfident = false;
@@ -386,15 +391,15 @@ export class CoherenceEngine extends EventTarget {
     return this.staticPacerBpm;
   }
 
-  /** Live-set the Static Pacer rate (Mode B). Clamps to 4.0–10.0 on the 0.1 grid, retargets the
-   * breath clock + cue + lens immediately, and re-anchors the cycle so the new rate starts a fresh
-   * breath. When not running (or not in static mode) it just stores the value for the next start. */
+  /** Live-set the Static Pacer rate (Mode B). Clamps to 4.0–10.0 on the 0.1 grid and retargets the
+   * breath clock + cue + lens immediately. The breath PHASE is kept continuous (no re-anchor), so the
+   * cue glides to the new rate without jumping. When not running (or not in static mode) it just
+   * stores the value for the next start. */
   setStaticPacerBpm(bpm: number): void {
     this.staticPacerBpm = clampStaticPacerBpm(bpm);
     if (!this.running || !this.staticMode) return;
     this.pacer.snapToBPM(this.staticPacerBpm);
     this.cycleMs = this.staticCycleMs();
-    this.cycleStartMs = nowMs(); // restart the breath cleanly at the new rate
     this.latchLensParams();
     this.emitLens();
     this.emitSync();
@@ -692,11 +697,15 @@ export class CoherenceEngine extends EventTarget {
    * there is no per-tick PWM stream. */
   private lensTick(): void {
     const now = nowMs();
-    if (now - this.cycleStartMs >= this.cycleMs) {
-      this.onBreathBoundary(now / 1000.0);
-      this.cycleStartMs = now;
+    const dt = Math.max(0, now - this.lastTickMs);
+    this.lastTickMs = now;
+    if (this.cycleMs <= 0) return;
+    this.breathPhase += dt / this.cycleMs; // advance the continuous phase
+    if (this.breathPhase >= 1) {
+      this.breathPhase -= Math.floor(this.breathPhase); // wrap (absorbs any multi-cycle catch-up)
+      this.onBreathBoundary(now / 1000.0); // may change cycleMs for the next breath
       this.emitLens(); // the latched rate may have changed at the boundary
-      this.emitSync(); // re-anchor the glasses to this cycle (exact length may have changed)
+      this.emitSync(); // re-sync the glasses to this cycle (exact length may have changed)
     }
   }
 
@@ -758,7 +767,9 @@ export class CoherenceEngine extends EventTarget {
    * clock (the same clock that commands the firmware rate). null when not running. */
   breathCyclePos(): number | null {
     if (!this.running || this.cycleMs <= 0) return null;
-    let p = (nowMs() - this.cycleStartMs) / this.cycleMs;
+    // Interpolate the continuous phase by the elapsed sub-tick so the cue is smooth at 60 fps even
+    // though lensTick only advances breathPhase ~12×/s.
+    let p = this.breathPhase + Math.max(0, nowMs() - this.lastTickMs) / this.cycleMs;
     p -= Math.floor(p);
     return p;
   }
