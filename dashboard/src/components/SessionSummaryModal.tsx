@@ -151,9 +151,9 @@ export default function SessionSummaryModal() {
       : null;
 
   const cohValues   = cohData.map((c) => c.coh);
-  // Paced breathing-rate overlay inputs (Mode B/C) — time-aligned 1:1 with the coherence samples.
+  // Paced breathing-rate overlay inputs (any app-side mode: A/B/C) — time-aligned 1:1 with coherence.
   const engineMode = engineModeSnap.current;
-  const showPacer = engineMode === 'modeB' || engineMode === 'modeC';
+  const showPacer = engineMode === 'modeA' || engineMode === 'modeB' || engineMode === 'modeC';
   const pacerOffsetSec = cohData.map((c) => (sessionStartTs ? (c.ts - sessionStartTs) / 1000 : 0));
   const pacerVals = cohData.map((c) => c.pacerBpm);
   const avgCoh      = mean(cohValues);
