@@ -115,11 +115,12 @@ export function buildSessionRow(input: BuildSessionRowInput): SessionRow {
   const durationMs = Math.max(0, lastBeatTs - startTs);
 
   // Paced breathing rate per coherence sample (aligned 1:1 with coherence_log_t_ms below), stashed in
-  // device_info (jsonb — no DB migration) so the report can overlay the swept rates on the IBI/coherence
-  // charts. Kept only for the resonance modes that actually sweep rates (Mode B/C).
-  const isResonance = engineMode === 'modeB' || engineMode === 'modeC';
+  // device_info (jsonb — no DB migration) so the report can overlay the paced rate on the IBI/coherence
+  // charts. Recorded for every app-side mode that paces — Mode A (Follow), Mode B (Static Pacer), and
+  // Mode C (Settle & Find) — not just the resonance sweep. Firmware/Standard has no engine pacer.
+  const isPaced = engineMode === 'modeA' || engineMode === 'modeB' || engineMode === 'modeC';
   const pacerLog =
-    isResonance && coherence.length > 0 ? coherence.map((c) => Math.round(c.pacerBpm * 10) / 10) : null;
+    isPaced && coherence.length > 0 ? coherence.map((c) => Math.round(c.pacerBpm * 10) / 10) : null;
   const deviceInfoOut: DeviceInfo | null =
     deviceInfo || engineMode != null || pacerLog
       ? {

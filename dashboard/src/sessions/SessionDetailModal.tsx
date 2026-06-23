@@ -26,16 +26,33 @@ function fmtDuration(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function StatCard({ label, value, unit, colorClass = 'text-slate-100', help }: {
+function StatCard({
+  label, value, unit, colorClass = 'text-slate-100', help,
+  label2, value2, unit2, colorClass2 = 'text-slate-100',
+}: {
   label: string; value: string; unit?: string; colorClass?: string; help?: string;
+  // Optional second metric rendered side-by-side in the same box (e.g. RMSSD + SDNN).
+  label2?: string; value2?: string; unit2?: string; colorClass2?: string;
 }) {
+  const one = (lbl: string, val: string, u: string | undefined, cc: string, big: boolean) => (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">{lbl}</div>
+      <div className="flex items-baseline gap-1">
+        <span className={`${big ? 'text-xl' : 'text-lg'} font-semibold tabular-nums ${cc}`}>{val}</span>
+        {u && <span className="text-xs text-slate-500">{u}</span>}
+      </div>
+    </div>
+  );
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3" title={help}>
-      <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">{label}</div>
-      <div className="flex items-baseline gap-1">
-        <span className={`text-xl font-semibold tabular-nums ${colorClass}`}>{value}</span>
-        {unit && <span className="text-xs text-slate-500">{unit}</span>}
-      </div>
+      {label2 != null && value2 != null ? (
+        <div className="grid grid-cols-2 gap-2">
+          {one(label, value, unit, colorClass, false)}
+          {one(label2, value2, unit2, colorClass2, false)}
+        </div>
+      ) : (
+        one(label, value, unit, colorClass, true)
+      )}
     </div>
   );
 }
@@ -73,11 +90,13 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
   const [notes, setNotes] = useState(row.notes ?? '');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // Paced breathing-rate overlay (Mode B/C) — persisted in device_info, aligned 1:1 with the coherence
-  // log. Lets the report correlate the swept breathing rates with the IBI tachogram + coherence graph.
+  // Paced breathing-rate overlay (any app-side mode: A Follow / B Static Pacer / C Settle & Find) —
+  // persisted in device_info, aligned 1:1 with the coherence log. Lets the report correlate the paced
+  // breathing rate with the IBI tachogram + coherence graph.
   const pacerLog = row.device_info?.pacer_bpm_log ?? null;
   const em = row.device_info?.engine_mode;
-  const showPacer = (em === 'modeB' || em === 'modeC') && !!pacerLog && pacerLog.length > 0;
+  const showPacer =
+    (em === 'modeA' || em === 'modeB' || em === 'modeC') && !!pacerLog && pacerLog.length > 0;
   const pacerXSec = (row.coherence_log_t_ms ?? []).map((ms) => ms / 1000);
 
   // Render IBI tachogram (timestamps reconstruct from cumulative sum).
@@ -169,8 +188,11 @@ function DetailBody({ row, onClose, onDeleted }: { row: SessionRow; onClose: () 
         <StatCard label="Avg HR"   value={fmt(row.avg_hr_bpm, 0)} unit="BPM" colorClass="text-rose-300" />
         <StatCard label="Avg IBI"  value={fmt(row.avg_ibi_ms, 0)} unit="ms" />
         <StatCard label="IBI range" value={row.ibi_min_ms != null && row.ibi_max_ms != null ? `${row.ibi_min_ms}–${row.ibi_max_ms}` : '—'} unit="ms" />
-        <StatCard label="IBI SD"   value={fmt(row.ibi_sd_ms, 0)} unit="ms" />
-        <StatCard label="RMSSD"    value={fmt(row.rmssd_ms, 0)} unit="ms" help="Root mean square of successive differences — HRV gold standard" />
+        <StatCard
+          label="RMSSD" value={fmt(row.rmssd_ms, 0)} unit="ms"
+          label2="SDNN" value2={fmt(row.ibi_sd_ms, 0)} unit2="ms"
+          help="RMSSD (beat-to-beat variability) and SDNN (overall SD of NN intervals) — the two standard time-domain HRV metrics"
+        />
         <StatCard
           label="IBI change"
           value={row.ibi_change_pct != null ? `${row.ibi_change_pct > 0 ? '+' : ''}${fmt(row.ibi_change_pct, 1)}` : '—'}
