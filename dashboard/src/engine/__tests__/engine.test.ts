@@ -847,4 +847,23 @@ describe('CoherenceEngine — Mode B Static Pacer', () => {
       vi.useRealTimers();
     }
   });
+
+  it('a rate change keeps the breath cue phase-continuous (no teleport / jumpiness)', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const engine = new CoherenceEngine();
+      engine.start({ mode: 'modeB', source: 'edgeRelay', tunables: { ...DEFAULT_TUNABLES }, staticPacerBpm: 6.0, onLens: () => {} });
+      vi.advanceTimersByTime(3000); // ~0.3 through a 10 s cycle
+      const before = engine.breathCyclePos();
+      engine.setStaticPacerBpm(9.0); // big rate change mid-breath
+      const after = engine.breathCyclePos();
+      expect(before).not.toBeNull();
+      expect(after).not.toBeNull();
+      // Old modulo clock would teleport here; the continuous phase must barely move.
+      expect(Math.abs((after as number) - (before as number))).toBeLessThan(0.02);
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
