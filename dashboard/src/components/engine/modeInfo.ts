@@ -41,8 +41,8 @@ export const ENGINE_MODE_INFO: EngineModeInfo[] = [
   },
   {
     id: 'modeB',
-    title: 'Static Pacer',
-    sub: 'fixed rate',
+    title: 'Mode B',
+    sub: 'Static Pacer',
     desc: 'Paces your breathing at a fixed rate you set.',
     details:
       'The same coherence biofeedback as Mode A — your heart-rate-variability coherence drives the lens (the inhale cue darkens and clears with it, or the strobe intensity tracks it) — but instead of the app following and adjusting your rate, YOU (or your clinician) set a fixed breathing rate and it holds it for the whole session. Use the rate control to choose any pace from 4.0 to 10.0 breaths per minute in 0.1 steps (default 6.0 br/min). When you are signed in with a client selected, the chosen rate is remembered for that client across sessions. Works with the earclip or a Polar H10; with an H10 the measured breath–heart coherence (γ²) is also shown alongside.',

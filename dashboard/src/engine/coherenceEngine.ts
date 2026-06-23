@@ -141,6 +141,9 @@ export const STATIC_PACER_MIN_BPM = 4.0;
 export const STATIC_PACER_MAX_BPM = 10.0;
 export const STATIC_PACER_DEFAULT_BPM = 6.0;
 const STATIC_PACER_STEP_BPM = 0.1;
+// How long a Mode A / Mode C-warm-up manual nudge HOLDS the chosen pace before the auto-follow
+// resumes ("pick up after a few cycles") — ~3 breaths at 6 br/min.
+const MANUAL_NUDGE_HOLD_MS = 30_000;
 export function clampStaticPacerBpm(b: number): number {
   if (!Number.isFinite(b)) return STATIC_PACER_DEFAULT_BPM;
   // Snap to the 0.1 grid so typed values like 6.05 land cleanly, then clamp to the band.
@@ -195,6 +198,12 @@ export class CoherenceEngine extends EventTarget {
   // as the search's first rate instead of the windowed-mean seed. null = use the gate's seed.
   private seedOverrideBpm: number | null = null;
 
+  // Manual nudge HOLD (Mode A / Mode C warm-up): a fixed pace the user dialled in with the ± arrows
+  // that overrides the auto-follow for MANUAL_NUDGE_HOLD_MS, then auto-clears so following resumes.
+  // Only consulted while no controller exists (modeB == null), so a Mode C search is never overridden.
+  private manualBpm: number | null = null;
+  private manualHoldUntilMs = 0;
+
   // published outputs
   private _coherence = 0;
   private _cr = 0;
@@ -228,10 +237,25 @@ export class CoherenceEngine extends EventTarget {
     return this.mode === 'modeC' && this.modeB == null;
   }
 
-  /** Exact breath-cycle length (ms) for the Static Pacer — driven from the float rate so the cue +
-   * BREATHE_SYNC honor the 0.1-br/min setting even though the pacer grid is 0.2 and 0xB1 is integer. */
+  /** Exact breath-cycle length (ms) from a float rate, so the cue + BREATHE_SYNC honor 0.1-br/min
+   * settings even though the pacer grid is 0.2 and 0xB1 is integer. Used by the Static Pacer and the
+   * manual-nudge hold. */
+  private bpmCycleMs(bpm: number): number {
+    return Math.round(60_000 / bpm);
+  }
   private staticCycleMs(): number {
-    return Math.round(60_000 / this.staticPacerBpm);
+    return this.bpmCycleMs(this.staticPacerBpm);
+  }
+
+  /** A Mode A / Mode C-warm-up manual nudge is currently holding the pace (auto-follow suspended).
+   * Only true while no controller exists, so a live Mode C search is never overridden. Auto-expires. */
+  private manualHoldActive(): boolean {
+    if (this.manualBpm == null || this.modeB != null) return false;
+    if (nowMs() >= this.manualHoldUntilMs) {
+      this.manualBpm = null;
+      return false;
+    }
+    return true;
   }
 
   /** Build/replace all sub-components against the current tunables object. */
@@ -266,6 +290,8 @@ export class CoherenceEngine extends EventTarget {
     this.staticMode = this.mode === 'modeB';
     this.modeB = null;
     this.seedOverrideBpm = null;
+    this.manualBpm = null;
+    this.manualHoldUntilMs = 0;
     if (this.staticMode) {
       this.staticPacerBpm = clampStaticPacerBpm(opts.staticPacerBpm ?? this.staticPacerBpm);
       this.pacer.snapToBPM(this.staticPacerBpm);
@@ -374,39 +400,42 @@ export class CoherenceEngine extends EventTarget {
 
   /** Manual ± pace nudge (the UI uses ±0.1 br/min). Behavior per mode:
    *  - Mode B (Static Pacer) → change the fixed rate (the host persists it).
-   *  - Mode A → transient bias of the Follow target; the auto-follow re-asserts over the next breaths.
-   *  - Mode C → NEVER ignored. Warm-up: set where the search will begin (and reflect it on the cue
-   *    now). Searching OR maintaining: immediately restart a fresh 6-breath dwell at the nudged rate
-   *    (re-enters `searching` from a locked state). */
+   *  - Mode A → HOLD the nudged pace for ~a few cycles (auto-follow suspended), then following resumes.
+   *  - Mode C, searching/locked → NEVER ignored: immediately restart a fresh dwell at the nudged rate
+   *    (re-enters `searching` from a locked state).
+   *  - Mode C, warm-up → hold the nudged pace now AND seed the search to begin there. */
   nudgePacer(deltaBpm: number): void {
     if (!this.running) return;
     if (this.staticMode) {
       this.setStaticPacerBpm(this.staticPacerBpm + deltaBpm);
       return;
     }
-    if (this.mode === 'modeA') {
-      this.pacer.setTargetBPM(this.pacer.currentQuintet / 5.0 + deltaBpm);
-      this.emitStatus();
-      return;
-    }
-    if (this.mode === 'modeC') {
-      if (this.modeB) {
-        this.modeB.reseed(this.modeB.commandedBPM + deltaBpm); // restart the dwell at the new rate
-        this.pacer.snapToBPM(this.modeB.commandedBPM);
-      } else {
-        const next = Math.min(
-          this.t.searchHiBPM,
-          Math.max(this.t.searchLoBPM, this.pacer.currentQuintet / 5.0 + deltaBpm),
-        );
-        this.seedOverrideBpm = next; // consumed at handoff as the search's first-cycle rate
-        this.pacer.snapToBPM(next);
-      }
+    // Mode C with a live controller: restart the resonance test at the nudged rate.
+    if (this.mode === 'modeC' && this.modeB) {
+      this.modeB.reseed(this.modeB.commandedBPM + deltaBpm);
+      this.pacer.snapToBPM(this.modeB.commandedBPM);
       this.cycleMs = this.pacer.latch();
       this.latchLensParams();
       this.emitLens();
       this.emitSync();
       this.emitStatus();
+      return;
     }
+    // Mode A, or Mode C warm-up: hold the nudged pace (suspending auto-follow) so it visibly sticks,
+    // then auto-follow resumes when the hold expires.
+    const base = this.manualBpm ?? this.pacer.currentQuintet / 5.0;
+    const lo = this.mode === 'modeC' ? this.t.searchLoBPM : this.t.quintetMin / 5.0;
+    const hi = this.mode === 'modeC' ? this.t.searchHiBPM : this.t.quintetMax / 5.0;
+    const next = Math.min(hi, Math.max(lo, Math.round((base + deltaBpm) / 0.1) * 0.1));
+    this.manualBpm = next;
+    this.manualHoldUntilMs = nowMs() + MANUAL_NUDGE_HOLD_MS;
+    this.pacer.snapToBPM(next); // keep the pacer aligned for when the hold ends
+    if (this.mode === 'modeC') this.seedOverrideBpm = next; // search begins here if the gate fires during the hold
+    this.cycleMs = this.bpmCycleMs(next);
+    this.latchLensParams();
+    this.emitLens();
+    this.emitSync();
+    this.emitStatus();
   }
 
   // --- input callbacks ---
@@ -454,8 +483,12 @@ export class CoherenceEngine extends EventTarget {
       coherence: this._coherence,
       cr: this._cr,
       respHz: this._respHz,
-      // Static Pacer reports its exact float rate (0.1 precision); other modes the 0.2-grid pacer.
-      pacerBpm: this.staticMode ? this.staticPacerBpm : this.pacer.currentQuintet / 5.0,
+      // Static Pacer / manual-hold report their exact float rate (0.1); else the 0.2-grid pacer.
+      pacerBpm: this.staticMode
+        ? this.staticPacerBpm
+        : this.manualHoldActive()
+          ? (this.manualBpm as number)
+          : this.pacer.currentQuintet / 5.0,
       duty: this._lastDuty,
       beats: this.ingest.window(this.t.coherenceWindowS).length,
       breathHeartCoherence: this._breathHeartCoh,
@@ -508,8 +541,8 @@ export class CoherenceEngine extends EventTarget {
       // the controller is the sole pacer source via onBreathBoundary's setTargetBPM — guarding
       // here makes that source switch explicit instead of relying on the per-breath ring collapse.
       // (In Mode B this is a no-op: setTargetBPM overwrites the ring every breath regardless.)
-      // Mode B (Static Pacer) NEVER follows — the rate is fixed — so skip the push there.
-      if (this.modeB == null && !this.staticMode) this.pacer.push(r.respPeakMhz);
+      // Mode B (Static Pacer) NEVER follows; a manual-nudge hold also suspends following briefly.
+      if (this.modeB == null && !this.staticMode && !this.manualHoldActive()) this.pacer.push(r.respPeakMhz);
       this._coherence = r.cohPercent; // single-signal CR squash — drives the lens (UNCHANGED)
       this._cr = r.cr;
       this._respHz = r.respPeakHz;
@@ -608,8 +641,13 @@ export class CoherenceEngine extends EventTarget {
         this.enterModeCWarmup(nowS);
       }
     }
-    // Static Pacer holds the fixed float rate; every other mode advances the pacer's slew limiter.
-    this.cycleMs = this.staticMode ? this.staticCycleMs() : this.pacer.latch();
+    // Static Pacer holds the fixed float rate; a manual-nudge hold holds its float rate; otherwise
+    // advance the pacer's slew limiter.
+    this.cycleMs = this.staticMode
+      ? this.staticCycleMs()
+      : this.manualHoldActive()
+        ? this.bpmCycleMs(this.manualBpm as number)
+        : this.pacer.latch();
     this.latchLensParams(); // re-sample depth + rate ONCE per breath, at the seam (frac ≈ 0)
     this.emitStatus();
   }
@@ -724,7 +762,9 @@ export class CoherenceEngine extends EventTarget {
 
   /** Engine pacer rate (BPM) for the on-screen cue. */
   get breathBpm(): number {
-    return this.staticMode ? this.staticPacerBpm : this.pacer.currentQuintet / 5.0;
+    if (this.staticMode) return this.staticPacerBpm;
+    if (this.manualHoldActive()) return this.manualBpm as number;
+    return this.pacer.currentQuintet / 5.0;
   }
 
   private emitStatus(): void {

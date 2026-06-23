@@ -786,4 +786,32 @@ describe('CoherenceEngine — Mode B Static Pacer', () => {
       vi.useRealTimers();
     }
   });
+
+  it('Mode A nudge HOLDS the pace for a while, then auto-follow resumes', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const engine = new CoherenceEngine();
+      engine.start({ mode: 'modeA', source: 'polarH10', tunables: { ...DEFAULT_TUNABLES }, onLens: () => {} });
+      const beats = modulatedBeats(900, 120, 0.1, 400); // ~6 br/min
+      let bi = 0;
+      const feed = (sec: number) => {
+        while (bi < beats.length && beats[bi].beatTimeS <= sec) { engine.onRR(beats[bi].rrMs, 100, beats[bi].beatTimeS); bi++; }
+      };
+      for (let sec = 0; sec < 70; sec++) { feed(sec); vi.advanceTimersByTime(1000); } // follow settles to ~6
+
+      const before = engine.getStatus().pacerBpm;
+      engine.nudgePacer(0.5);
+      const held = engine.getStatus().pacerBpm;
+      expect(held).toBeGreaterThan(before + 0.3); // the nudge visibly moved the pace (the bug: it didn't)
+
+      for (let sec = 70; sec < 78; sec++) { feed(sec); vi.advanceTimersByTime(1000); } // a few seconds later…
+      expect(engine.getStatus().pacerBpm).toBeCloseTo(held, 1); // …still held (auto-follow suspended)
+
+      for (let sec = 78; sec < 120; sec++) { feed(sec); vi.advanceTimersByTime(1000); } // past the 30 s hold
+      expect(engine.getStatus().pacerBpm).toBeLessThan(held - 0.1); // following resumed → drifted back toward ~6
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
