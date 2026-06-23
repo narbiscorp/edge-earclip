@@ -814,4 +814,37 @@ describe('CoherenceEngine — Mode B Static Pacer', () => {
       vi.useRealTimers();
     }
   });
+
+  it('Mode A nudge changes the pace with NO beats / no devices connected', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const engine = new CoherenceEngine();
+      engine.start({ mode: 'modeA', source: 'edgeRelay', tunables: { ...DEFAULT_TUNABLES }, onLens: () => {} });
+      vi.advanceTimersByTime(2000); // engine running, nothing connected, no beats
+      const before = engine.getStatus().pacerBpm; // default ~6.0
+      engine.nudgePacer(0.3);
+      expect(engine.getStatus().pacerBpm).toBeCloseTo(before + 0.3, 5); // works before any device
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Mode C: a nudge during settling un-freezes the cue and paces at the nudged rate', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      const engine = new CoherenceEngine();
+      engine.start({ mode: 'modeC', source: 'polarH10', tunables: { ...DEFAULT_TUNABLES }, onLens: () => {} });
+      vi.advanceTimersByTime(2000); // no beats/ACC → stuck in warm-up = settling
+      expect(engine.getStatus().settling).toBe(true);
+      const before = engine.getStatus().pacerBpm;
+      engine.nudgePacer(0.5);
+      const st = engine.getStatus();
+      expect(st.settling).toBe(false); // the nudge overrides the settling freeze (cue un-freezes)
+      expect(st.pacerBpm).toBeCloseTo(before + 0.5, 5);
+      engine.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

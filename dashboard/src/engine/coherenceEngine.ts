@@ -231,9 +231,12 @@ export class CoherenceEngine extends EventTarget {
   }
 
   /** True during Mode C's quiet Follow warm-up (before the controller exists): the host pauses the
-   * cue/chime and the lens is held clear. Mode B (Static Pacer) and Mode A never settle. */
+   * cue/chime and the lens is held clear. Mode B (Static Pacer) and Mode A never settle. A manual
+   * pace nudge OVERRIDES the settling pause — the user is actively dialling a rate, so the cue must
+   * un-freeze and pace at it (the nudged rate also seeds where the search begins). */
   isSettling(): boolean {
     if (!this.running) return false;
+    if (this.manualHoldActive()) return false;
     return this.mode === 'modeC' && this.modeB == null;
   }
 
