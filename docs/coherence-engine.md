@@ -32,6 +32,7 @@
 
 | Date | Change | Dashboard (build id) | Glasses FW |
 |---|---|---|---|
+| 2026-06-23 | **Mode B redefined → "Static Pacer"; manual pace nudge; phase-continuous breath clock** ([#85](https://github.com/narbiscorp/edge-earclip/pull/85)–[#89](https://github.com/narbiscorp/edge-earclip/pull/89)). **(1) Mode B is no longer the resonance search — it is now the *Static Pacer*:** a fixed user/clinician-set breathing rate (**4.0–10.0 br/min**, default **6.0**, 0.1-BPM steps) with the same Mode-A coherence feedback driving the lens; the chosen rate is **persisted per signed-in client**. It needs **no accelerometer** and has **no warm-up settle** — it paces immediately. **The automated Lehrer/Vaschillo resonance search now runs only under Mode C** ([§15](#15-mode-c--settle--find-resonance-search)); §14 is now the Static Pacer. **(2) Manual pace nudge (Mode A / Mode C).** A ±0.1 br/min nudge: in **Mode A** it holds the dialled pace for ~30 s (`MANUAL_NUDGE_HOLD_MS`) then resumes auto-following; in **Mode C** it holds the pace *and* seeds where the search begins (during warm-up) or re-seeds the live search. **(3) Phase-continuous breath clock.** The on-screen cue is now driven by a continuous phase accumulator (advanced each lens tick by `dt/cycleMs`) instead of a `cycleStartMs` modulo clock, so a rate change — Static-Pacer set, manual nudge, or a search step — no longer teleports the orb. | `relay-v5 · 20260623120330-6ea32db` (app-side only) | ≥ 4.15.5 (unchanged) |
 | 2026-06-22 | **Mode B/C resonance reliability fixes** ([#81](https://github.com/narbiscorp/edge-earclip/pull/81)). **(1) ACC respiration no longer frequency-doubles.** The breathing rate is now estimated by **summing the three accelerometer axes' periodograms** instead of the vector-magnitude `√(x²+y²+z²)` signal — the magnitude (large gravity DC + the squaring nonlinearity) injected a strong 2× component and reported ~2× the true rate, so verification failed on every dwell (on a real session it read a steady **9.34 br/min for a genuine ~4–5 br/min breath**). **(2) Per-breath retest.** A dwell now re-tests only the *missed* breaths and **accepts on partial verification** (≥1 confirmed), with a hard estimate-breath cap, so the search advances instead of re-running the whole dwell and freezing on one rate (new `dwellVerifyTarget`, `dwellMaxEstimateBreaths`; the Mayer-wave abort is preserved). **(3) 60 s quiet settling** for Mode B & C (new `initialSettleS=60`, `modeCWarmupS` 120→60, `modeCWarmupMaxS` 240→120): the cue is paused, the chime muted, and the lens held fully clear while the sensors warm up. | `relay-v5 · 20260622171553-887f4bc` (app-side only) | ≥ 4.15.5 (unchanged) |
 
 ---
@@ -51,8 +52,8 @@
 11. [Stage 6 — lens drive (firmware-rendered)](#11-stage-6--lens-drive-firmware-rendered)
 12. [Mode A — Follow](#12-mode-a--follow)
 13. [Breath–heart coherence (real γ²/phase) & the Mayer-wave confound](#13-breathheart-coherence-real-γphase--the-mayer-wave-confound)
-14. [Mode B — Resonance (search + verify + maintain)](#14-mode-b--resonance-search--verify--maintain)
-15. [Mode C — Settle & Find](#15-mode-c--settle--find)
+14. [Mode B — Static Pacer](#14-mode-b--static-pacer)
+15. [Mode C — Settle & Find (resonance search)](#15-mode-c--settle--find-resonance-search)
 16. [Firmware engine — Standard (on-glasses)](#16-firmware-engine--standard-on-glasses)
 17. [Tuning](#17-tuning)
 18. [Reference literature](#18-reference-literature)
@@ -82,7 +83,7 @@ The Coherence Engine moves **all signal processing into the app**:
 The engine is a main-thread singleton (`coherenceEngine`, an `EventTarget`) mirroring the
 `edgeDevice` / `polarH10` device objects. It ingests beats + accelerometer samples from the existing
 device events, self-ticks, and publishes status (coherence, CR, breath–heart γ², resp Hz, pacer BPM,
-Mode B/C state) via `CustomEvent`s. The 1 Hz Lomb–Scargle (~1–3 ms on a few hundred beats) is cheap
+Mode C resonance state + static-pacer rate) via `CustomEvent`s. The 1 Hz Lomb–Scargle (~1–3 ms on a few hundred beats) is cheap
 enough for the main thread.
 
 ---
@@ -96,32 +97,35 @@ The dashboard's engine selector is mutually exclusive — exactly one engine is 
 |---|---|---|---|---|
 | **Firmware** | **Standard (on-glasses)** | **firmware** (its own 256-pt FFT) | firmware adaptive pacer | no |
 | **Mode A** | **Follow** | app (engine) | app — *follows* your drifting resonance | no |
-| **Mode B** | **Resonance** | app (engine) | app — *searches* for your resonance frequency | **yes** |
-| **Mode C** | **Settle & Find** | app (engine) | app — Mode A warm-up → seeded Mode B search | **yes** |
+| **Mode B** | **Static Pacer** | app (engine) | app — paces a *fixed* rate **you set** (4.0–10.0 br/min) | no |
+| **Mode C** | **Settle & Find** | app (engine) | app — Mode A warm-up → seeded resonance search | **yes** |
 
 - **Firmware** is the legacy on-glasses path: the engine is off, the app forwards beats (`0xCA`) and
   the glasses compute coherence and render the lens. Full pipeline in
   [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md). See [§16](#16-firmware-engine--standard-on-glasses).
 - **Mode A (Follow)** continuously tracks the rate where your HRV is strongest and paces you toward it,
   clearing the lens as coherence rises. See [§12](#12-mode-a--follow).
-- **Mode B (Resonance)** runs the Lehrer/Vaschillo resonance assessment automatically — sweeps rates,
-  finds the HRV-amplitude peak, *verifies* it with the accelerometer, locks and tracks your resonance
-  frequency. See [§14](#14-mode-b--resonance-search--verify--maintain).
+- **Mode B (Static Pacer)** paces you at a **fixed** rate **you (or your clinician) set** (4.0–10.0
+  br/min, default 6.0), with the same coherence feedback as Mode A driving the lens — no follow, no
+  search. The rate is remembered per signed-in client. See [§14](#14-mode-b--static-pacer).
 - **Mode C (Settle & Find)** is the "just press start" mode: it runs the Mode A Follow warm-up until
   your breathing is steady **and** the accelerometer confirms it, then hands off — atomically, seeded
-  at the settled rate — into the exact Mode B search. See [§15](#15-mode-c--settle--find).
+  at the settled rate — into the automated Lehrer/Vaschillo **resonance search** (sweep rates → find the
+  HRV-amplitude peak → *verify* with the accelerometer → lock & track). See
+  [§15](#15-mode-c--settle--find-resonance-search).
 
 Modes A/B/C run the app engine and set the firmware program aside; selecting Firmware stops the engine
-and restores the firmware program. **Mode B and Mode C require a Polar H10** (validated beats *and* its
-accelerometer); Mode A works with any validated beat source (H10 or earclip).
+and restores the firmware program. **Only Mode C requires a Polar H10** (validated beats *and* its
+accelerometer, for the verified resonance search); Mode A and Mode B work with any validated beat source
+(H10 or earclip) — with an H10 they additionally show the measured breath–heart coherence (§13).
 
 ---
 
 ## 3. Signal flow at a glance
 
 ```
-   Polar H10 RR + monotonic beat timestamps                 H10 accelerometer (Mode B/C only)
-   (or earclip beats — Mode A only)                                 │ x/y/z @ 50 Hz (Polar PMD)
+   Polar H10 RR + monotonic beat timestamps                 H10 accelerometer (Mode C; opt. A/B γ²)
+   (or earclip beats — Mode A / B)                                  │ x/y/z @ 50 Hz (Polar PMD)
             │                                                        ▼
             ▼                                              ┌────────────────────────────┐
    ┌──────────────────────┐                               │ RespirationFromACC          │
@@ -143,9 +147,9 @@ accelerometer); Mode A works with any validated beat source (H10 or earclip).
              │ coh% (lens depth)         │ resp mHz
              │                           ▼
              │                  ┌────────────────────┐         ┌─────────────────────┐
-             │                  │ §10 FollowPacer     │         │ §14 ResonanceCtrl   │ (Mode B/C
+             │                  │ §10 FollowPacer     │         │ §15 ResonanceCtrl   │ (Mode C
              │                  │ slew + two-speed    │◄────────┤ hill-climb + per-   │  after gate)
-             │                  │ jump (quintets)     │ B/C     │ dwell verification  │
+             │                  │ jump (quintets)     │  C      │ dwell verification  │
              │                  └─────────┬──────────┘ drives   └─────────────────────┘
              ▼                            ▼
                        ┌────────────────────────────────────┐
@@ -170,8 +174,8 @@ warm-up gate passes, the ResonanceController (right) is created and becomes the 
 | ACC ingest | per PMD packet (batch of samples, ~50 Hz) | `onAccPacket` → `RespirationFromACC` |
 | Detrend + Lomb–Scargle + CR + pacer push + breath–heart γ² | **1 Hz** | `tick1Hz()` |
 | Lens param push (`emitLens`) | **1 Hz** + on each breath boundary | `tick1Hz` / `onBreathBoundary` |
-| Breath-clock tick (boundary detection) | ~83 ms (12 Hz) | `lensTick()` |
-| Pacer latch / Mode B controller advance / Mode C gate | each **breath-cycle boundary** (~10 s @ 6 BPM) | `onBreathBoundary()` |
+| Breath-clock tick (phase accumulator advance + boundary detection on phase wrap) | ~83 ms (12 Hz) | `lensTick()` |
+| Pacer latch / Mode C resonance-controller advance / Mode C gate | each **breath-cycle boundary** (~10 s @ 6 BPM) | `onBreathBoundary()` |
 | On-screen cue / chime | RAF / 100 ms, sampling `coherenceEngine.breathCyclePos()` | `BreathCue` / `useBreathPhase` |
 
 End-to-end latency a user feels: ≤ 1 s (next LS compute) + lens response. The lens itself is rendered
@@ -184,8 +188,11 @@ by the firmware at 100 Hz, so the *waveform* is smooth regardless of the 1 Hz pa
 Everything below is in `tunables.ts` (`DEFAULT_TUNABLES`) and the Swift `CoherenceTunables` struct, and
 is live-tunable from the dashboard's **Coherence Engine** panel — each field has a click-to-expand **ⓘ**
 with the same text reproduced here. All values are scalars; quintet = BPM × 5 (0.2-BPM resolution).
-Sections are shown for the mode(s) they apply to. **Mode C uses every Mode A and Mode B section** (it
-runs the Mode A warm-up then the Mode B search) plus its own warm-up gate. The **Firmware** engine has
+Sections are shown for the mode(s) they apply to. **Mode C uses every Mode A section *and* every
+resonance-search section** (it runs the Mode A warm-up then the resonance search) plus its own warm-up
+gate. **Mode B (Static Pacer) has no §5 tunables:** its rate is a fixed code constant
+(`STATIC_PACER_MIN_BPM` 4.0 / `STATIC_PACER_MAX_BPM` 10.0 / default 6.0, 0.1-BPM step) and the chosen
+value persists per signed-in client — see [§14](#14-mode-b--static-pacer). The **Firmware** engine has
 no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md).
 
 ### 5.1 Ingest & artifact gate — *Modes A, B, C*
@@ -194,7 +201,7 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
   before analysis. The Polar H10 reports 100, so this mainly gates noisier sources. Higher = stricter.
   Leave at 50 for H10.
 - **`ringSize`** — default **600** beats, range 256–1024. How many recent beats are held in memory. Must
-  cover the coherence window plus the Mode B dwell history (~600 is roughly 8–10 min at rest). Rarely
+  cover the coherence window plus the resonance-search dwell history (~600 is roughly 8–10 min at rest). Rarely
   needs changing.
 - **`dRRFloorMs`** — default **180** ms, range 50–400. Floor on the adaptive artifact gate: a beat is
   rejected when its interval jumps more than max(5.2 × recent variability, this floor) from the previous
@@ -303,14 +310,14 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
   persist before the pace snaps — the wall against a transient bad reading causing a jump. 1 snaps almost
   immediately; 2–3 is safer. If catch-up feels too slow, lower this.
 
-### 5.6 Mode B — Fast amplitude — *Mode B (and Mode C search)*
+### 5.6 Resonance search — Fast amplitude — *Mode C*
 
-- **`ampWindowBreaths`** — default **2.5** breaths, range 2.0–3.0. Mode B averages HRV amplitude over this
+- **`ampWindowBreaths`** — default **2.5** breaths, range 2.0–3.0. The search averages HRV amplitude over this
   many recent breaths per dwell. ~2.5 balances responsiveness against noise.
 
-### 5.7 Mode B — Resonance search — *Mode B (and Mode C search)*
+### 5.7 Resonance search — hill-climb — *Mode C*
 
-- **`dwellBreaths`** — default **6** breaths, range 4–8. How many breaths Mode B holds each candidate rate
+- **`dwellBreaths`** — default **6** breaths, range 4–8. How many breaths the search holds each candidate rate
   before scoring it. Longer is more reliable but slows the search. 6 is a good balance.
 - **`dwellEstimateFraction`** — default **0.6**, range 0.5–0.7. Fraction at the START of each dwell that is
   discarded as settling while the pacer slews; estimate breaths are collected after it. 0.6 ⇒ ~3 of the
@@ -322,18 +329,20 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
 - **`dwellMaxEstimateBreaths`** — default **6** breaths, range 3–12. Hard cap on estimate breaths (incl.
   re-tests) before the search **must** decide — guarantees it never freezes on one rate. If ≥1 breath
   confirmed it advances on partial verification; if none did it charges an unverified dwell.
-- **`initialSettleS`** — default **60** s, range 0–180. **Mode B only:** a quiet warm-up at the very start
-  (cue, chime, and lens held paused/clear) while you breathe naturally and the sensors fill their windows;
-  the resonance search begins after it. Mode C uses its own warm-up minimum (`modeCWarmupS`) as its
-  settling instead.
-- **`probeStepInitBPM`** — default **0.4** BPM, range 0.3–0.6. Initial step size as Mode B brackets the
+- **`initialSettleS`** — default **60** s, range 0–180. A quiet warm-up at the very start of a *standalone*
+  resonance search (cue, chime, and lens held paused/clear) while you breathe naturally and the sensors
+  fill their windows; the search begins after it. In the shipping 3-mode model the resonance search is
+  reached only through Mode C, which uses its own warm-up minimum (`modeCWarmupS`) as the settle instead,
+  so this knob is effectively superseded by `modeCWarmupS`. (Mode B, the Static Pacer, has **no** settle —
+  it paces immediately.)
+- **`probeStepInitBPM`** — default **0.4** BPM, range 0.3–0.6. Initial step size as the search brackets the
   resonance peak. Bigger is faster but coarser.
 - **`probeStepFloorBPM`** — default **0.2** BPM, range 0.1–0.3. Finest step the search resolves on the
   grid. The peak is then refined by a parabolic fit below this.
 - **`epsilonPctOfA`** — default **0.05**, range 0.03–0.1. Hysteresis: how much higher one rate's amplitude
   must be (as a fraction of A) to count as better, so noise does not flip the bracket. 5%.
-- **`searchLoBPM`** — default **4.0** BPM, range 3.5–4.5. Low end of the breathing-rate range Mode B
-  searches. Narrow the range if you know roughly where your resonance is.
+- **`searchLoBPM`** — default **4.0** BPM, range 3.5–4.5. Low end of the breathing-rate range the search
+  sweeps. Narrow the range if you know roughly where your resonance is.
 - **`searchHiBPM`** — default **7.5** BPM, range 7.0–8.0. High end of the search range. Most adults
   resonate around 5.5–6 br/min.
 - **`respVerifyToleranceBPM`** — default **0.8** BPM, range 0.2–1.0. How close the accelerometer breathing
@@ -342,7 +351,7 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
   good dwells keep being rejected; lower only if sway is being accepted.
 - **`confirmProbeBPM`** — default **0.5** BPM, range 0.3–0.7. On a warm start from a saved resonance
   frequency, the half-range re-checked around it before re-locking.
-- **`maxUnverifiedDwells`** — default **12**, range 4–24. Mode B aborts the search after this many dwells
+- **`maxUnverifiedDwells`** — default **12**, range 4–24. The search aborts after this many dwells
   in a row it cannot verify against the accelerometer (you are moving or not following). RAISE if it
   gives up too readily; the hold-still hint appears as this climbs.
 - **`ditherAmpBPM`** — default **0.1** BPM, range 0.05–0.15. While holding lock, the pace is nudged by this
@@ -359,12 +368,12 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
 - **`decaySlowAlpha`** — default **0.02**, range 0.01–0.05. Slow amplitude average (the reference) for the
   sudden-loss detector.
 - **`reprobeDecayPct`** — default **0.15**, range 0.1–0.2. If HRV amplitude falls at least this fraction
-  below its slow average and stays there, Mode B re-probes around the lock. 0.15 = 15%.
+  below its slow average and stays there, the search re-probes around the lock. 0.15 = 15%.
 - **`reprobeSustainS`** — default **120** s, range 60–180. How long the amplitude drop must persist before
   a re-probe.
 - **`reprobeCapS`** — default **180** s, range 120–300. Minimum time between re-probes, so it cannot thrash.
 
-### 5.8 Mode B — ACC respiration — *Mode B (and Mode C)*
+### 5.8 Resonance search — ACC respiration — *Mode C*
 
 - **`accSampleHz`** — default **50** Hz, range 25–200. Polar accelerometer sample rate. MUST match the
   rate the PMD stream is started at (50 Hz) — changing only this desyncs the timing.
@@ -375,9 +384,9 @@ no app-side tunables — see [`coherence-algorithm-reference.md`](./coherence-al
   (0.4 Hz = 24 br/min). Excludes higher-frequency motion.
 - **`respWindowS`** — default **45** s, range 30–60. Trailing window the accelerometer respiration estimate
   runs over. 45 s gives a clean peak but lags rate changes slightly. (The estimate runs on the three axes'
-  summed periodograms, not the vector magnitude — see §14.4.)
+  summed periodograms, not the vector magnitude — see §15.8.)
 - **`respConfidenceMin`** — default **0.3**, range 0.3–0.6. Minimum spectral peakiness for the
-  accelerometer breathing estimate to be trusted for verification. If Mode B keeps saying it cannot
+  accelerometer breathing estimate to be trusted for verification. If the search keeps saying it cannot
   confirm your breathing even when you hold still, LOWER toward 0.3; raise if sway is being accepted.
 - **`respMinHz`** — default **0.08** Hz, range 0.05–0.12. Accelerometer peaks below this (~4.8 br/min) are
   treated as body sway and de-weighted, so the verifier locks onto real breathing (~6) instead of
@@ -528,10 +537,16 @@ else: GLIDE  current += clamp(err, ±pacerSlewQuintet)    (±0.2 BPM/breath, gen
 ```
 
 The sustain counter is the wall against a transient false reading triggering a jump (on top of the
-`pacerAvgN` smoothing and the physiological clamp). Cycle duration = `300000 / quintet` ms. In Mode B
-and in Mode C after handoff the controller drives the pacer via `setTargetBPM` (the pacer slews
-smoothly toward the commanded rate); at Mode B entry / Mode C handoff the pacer is **snapped** to the
-start/seed rate so the first dwell isn't measured mid-slew.
+`pacerAvgN` smoothing and the physiological clamp). Cycle duration = `300000 / quintet` ms. This
+two-speed follow loop runs in **Mode A** and during the **Mode C warm-up**. In **Mode C after handoff**
+the resonance controller drives the pacer via `setTargetBPM` (the pacer slews smoothly toward the
+commanded dwell rate), and at the handoff the pacer is **snapped** to the seed rate so the first dwell
+isn't measured mid-slew. **Mode B (Static Pacer)** bypasses the follow loop entirely: it `snapToBPM`s
+to the fixed rate you set and holds it (re-snapping only when you change the rate or nudge).
+
+A **manual ±0.1 br/min nudge** (`coherenceEngine.nudgePacer`) overlays this: in Mode A it `snapToBPM`s
+to the dialled rate and holds it for `MANUAL_NUDGE_HOLD_MS` (~30 s, ≈3 breaths) before auto-following
+resumes; in Mode B it adjusts the static rate; in Mode C it seeds / re-seeds the search (see §12.3, §15).
 
 ---
 
@@ -565,7 +580,12 @@ pacer rate.)
 
 **Cue sync.** The on-screen breathing orb (`BreathCue`) and audio chime (`BreathChime` via
 `useBreathPhase`) read `coherenceEngine.breathCyclePos()` directly — the engine is the single clock
-authority — so the screen rate matches the lens. The glasses are phase-locked to that same clock: at
+authority — so the screen rate matches the lens. That clock is a **continuous phase accumulator**
+(`breathPhase`, advanced each `lensTick` by `dt / cycleMs` and interpolated by the sub-tick elapsed for
+60 fps smoothness); the cycle boundary fires when the phase **wraps**. Because phase is continuous, a
+rate change — a Static-Pacer set, a manual nudge, or a search step — only changes how fast the phase
+advances; it **never teleports the orb** (the earlier `(now − cycleStartMs) / cycleMs` modulo clock did,
+which made the cue jump whenever `cycleMs`/`cycleStartMs` changed mid-breath). The glasses are phase-locked to that same clock: at
 each cycle boundary — and on Mode A/B/C start / glasses-connect — `emitSync()` sends a **`0xBA`
 BREATHE_SYNC** (`[cycle_ms u16 LE][inhale_pct u8]`), which restarts the firmware's breathe cosine at the
 on-screen inhale boundary and renders at the exact cycle length. Re-anchoring only at the boundary
@@ -590,8 +610,9 @@ estimates where your HRV is strongest and nudges the breathing cue toward it, wh
 moment-to-moment coherence reward. It's the engine analog of a HeartMath emWave / Inner Balance
 coherence session, but with the Edge lens as the display and an *adaptive* (not fixed) pacer.
 
-If you instead want the engine to *find and lock* your single best rate, that's **Mode B** (or **Mode
-C**, which warms up in Follow first). Mode A **follows**; Mode B **searches**.
+If you instead want the engine to *find and lock* your single best rate, that's **Mode C** (which warms
+up in Follow first, then runs the verified resonance search). Mode A **follows**; Mode C **searches**;
+Mode B holds a **fixed** rate you set.
 
 ### 12.2 The closed loop, step by step
 Every second (`tick1Hz`):
@@ -623,6 +644,13 @@ naive pacer could chase its own tail. Two choices keep it stable:
   `pacerJumpThresholdBPM` away for `pacerJumpSustainBreaths` consecutive breaths) it **snaps** straight
   there, so you're not stuck crawling 0.2 BPM/breath for a minute when your real rate is 2 BPM off. The
   sustain count is the wall against one bad reading triggering a jump.
+
+### 12.3a Manual nudge (override the follow)
+If the auto-followed pace doesn't feel right, the **± nudge** (`PaceNudge`, ±0.1 br/min) lets you dial it
+yourself. In Mode A a nudge `snapToBPM`s the pacer to the chosen rate and **holds** it for
+`MANUAL_NUDGE_HOLD_MS` (~30 s, ≈3 breaths at 6 br/min); after the hold, auto-following resumes from where
+you left it. It's a gentle "no, here" — not a mode switch. (Mode B sets its fixed rate with the dedicated
+Static-Pacer control instead; in Mode C the same nudge seeds/re-seeds the search — see §15.)
 
 ### 12.4 What you see
 - **The breathing cue** (orb + Inhale/Exhale label) animates at the engine's current pace; the optional
@@ -662,7 +690,7 @@ present, as an honest readout **alongside** the CR — it does **not** drive the
 
 How it's built, at 1 Hz:
 1. **x = heart rate** — the detrended RR series (same §7 detrend); **y = respiration** — the H10
-   accelerometer's **de-meaned principal-axis** window (the same channel Mode B verifies with, §14.4; the
+   accelerometer's **de-meaned principal-axis** window (the same channel the Mode C search verifies with, §15.8; the
    vector magnitude is deliberately avoided — it frequency-doubles the breath).
 2. Both are cubic-resampled onto a uniform 4 Hz grid and aligned on absolute time.
 3. A **Welch cross-spectrum** (~3 segments, 50% overlap) gives γ²(f) and the cross-phase. γ² is
@@ -678,48 +706,143 @@ sustained gap (ACC truly gone) decays it to "needs a Polar H10."
 blood-pressure oscillation that moves heart rate *regardless of breathing*. If the followed LF rate
 sits off the ACC-measured breathing rate (by more than `respVerifyToleranceBPM`), or the smoothed γ² is
 below the significance floor (0.5), the engine raises a **confound** flag: the rhythm on the lens is
-likely *not* breathing-driven. This is the display-side analog of the verification Mode B enforces on
-the search.
+likely *not* breathing-driven. This is the display-side analog of the verification the Mode C resonance
+search enforces on each dwell (§15).
 
 ---
 
-## 14. Mode B — Resonance (search + verify + maintain)
+## 14. Mode B — Static Pacer
 
-> **In one line.** Mode B runs the **Lehrer/Vaschillo resonance-frequency assessment** automatically:
-> it paces you across a range of breathing rates, measures where your HRV amplitude peaks, *verifies*
-> with an independent accelerometer channel that you actually breathed at each rate, locks your
-> resonance frequency (RF), and then tracks it. Requires a Polar H10 (validated beats **and** its ACC).
-> Implemented in `resonanceController.ts` (+ `fastAmplitude.ts`, `respirationFromAcc.ts`) / Swift
-> `ResonanceController` (+ `FastAmplitudeTracker`, `RespirationFromACC`).
+> **In one line.** Mode B paces you at a **fixed** breathing rate **you (or your clinician) set** — it
+> does not follow you (that's Mode A) and does not search (that's Mode C). The same coherence feedback as
+> Mode A drives the lens; you just hold one rate for the whole session. Implemented as the engine's
+> `staticMode` (`coherenceEngine.ts`, constants `STATIC_PACER_*`) with the `StaticPacerControl` UI.
 
-### 14.1 The science — resonance frequency & the baroreflex
+### 14.1 What it's for
+A fixed pace is what most paced-breathing tools and clinical protocols use — 6 br/min is the classic
+default — and it's the right tool when you (or a clinician) already know the rate to train, or when you
+want a stable, predictable cue rather than an adaptive one. Mode B gives you that: pick a rate and the
+engine holds it, while your HRV coherence still drives the lens exactly as in Mode A.
+
+### 14.2 How it works
+- **Fixed rate.** Choose any pace from **4.0 to 10.0 br/min** in **0.1-BPM steps** (default **6.0**) with
+  the ▼/▲ buttons or by typing it (`STATIC_PACER_MIN_BPM` / `STATIC_PACER_MAX_BPM` /
+  `STATIC_PACER_DEFAULT_BPM`, snapped + clamped by `clampStaticPacerBpm`). The pacer is `snapToBPM`'d to
+  it and the breath clock runs at `300000 / (BPM × 5)` ms; changing the rate re-snaps live — no settle,
+  no slew.
+- **Coherence feedback, identical to Mode A.** The §6–§8 pipeline runs unchanged: the Lomb–Scargle CR →
+  `coh%` drives the lens depth (and the strobe intensity, for that lens style) with the same Difficulty
+  gamma. Mode B simply removes the follow pacer — the rate axis is yours, the lens axis is your coherence.
+- **No settle, no ACC requirement.** Unlike Mode C, Mode B has **no warm-up** — it paces from the first
+  breath — and needs **no accelerometer**: it works with the earclip or a Polar H10. With an H10 the
+  measured breath–heart coherence (γ², §13) is shown alongside, but it never drives the lens.
+- **Per-client persistence.** When you're signed in with a client selected, the chosen rate is saved for
+  that client (`static_pacer_bpm`, store write-through to Supabase) and rehydrated next session
+  (`useStaticPacerClientSync`); a `localStorage` fallback holds it when you're not signed in.
+- **Manual nudge.** The ± nudge (§10) shifts the fixed rate exactly as the buttons do.
+
+### 14.3 What you see
+The breathing cue + chime pace at your fixed rate; the coherence ring/score and (with an H10) the
+breath–heart γ² read exactly as Mode A. The status line reads *"Pacing at X br/min — your coherence
+drives the lens. Adjust the rate any time with the arrows."*
+
+### 14.4 Parameters
+Mode B has **no §5 tunables** — the rate range/default/step are fixed code constants and the chosen value
+is the per-client persisted setting. Everything that shapes the *lens* (`cohSquashK`, the Difficulty
+gammas, `detrend*`/`spectral*`) is shared with Mode A (§5.2–§5.4).
+
+---
+
+## 15. Mode C — Settle & Find (resonance search)
+
+> **In one line.** Mode C is the "just press start" resonance mode: it runs the **Mode A Follow**
+> warm-up until your breathing is steady *and* the accelerometer confirms it, then hands off — seeded at
+> the rate you settled into — into an automated **Lehrer/Vaschillo resonance-frequency search**: it paces
+> you across a range of rates, finds where your HRV amplitude peaks, *verifies* with an independent
+> accelerometer channel that you actually breathed at each rate, locks your resonance frequency (RF), and
+> tracks it. Requires a Polar H10 (validated beats **and** its ACC). Warm-up gate in `coherenceEngine.ts`
+> (`evaluateModeCGate`); search in `resonanceController.ts` (+ `fastAmplitude.ts`, `respirationFromAcc.ts`)
+> / Swift `ResonanceController` (+ `FastAmplitudeTracker`, `RespirationFromACC`).
+
+**How this section is laid out.** §15.1–§15.4 cover the Settle & Find shell (why it exists, the three
+phases, the warm-up gate, re-entry). §15.5 onward detail the resonance search the gate hands off to — the
+science, the fast-amplitude objective, the dwell/verify loop, the search state machine, maintenance, and
+a worked timeline. (Before #85 this search *was* Mode B; it is now reachable only through Mode C.)
+
+### 15.1 Why it exists
+A cold resonance search always begins at 6 BPM and hunts outward — fine, but it spends its first dwells
+far from where many people naturally settle, and it can rack up "couldn't confirm" dwells if the user
+hasn't settled yet. Mode C front-loads a calm Follow phase: it lets you settle, *measures* where you
+settled, and seeds the search there — so the search starts close to the answer and on a breath the
+accelerometer can already confirm.
+
+### 15.2 The three phases
+1. **`warmup`** — the Mode A Follow loop (§12: LS → CR, LF read-back → pacer) run as a **quiet settling**:
+   the pacer tracks exactly as Mode A, but the breath cue is paused, the chime muted, and the lens held
+   **fully clear** (depth 0) — `status.settling` is `true`. No resonance controller exists yet, so every
+   resonance status field reads its default (the UI never shows stale resonance data). Each second the
+   engine records two **unsmoothed** gate samples into a trailing `modeCStabilityWindowS` window: the
+   detected LF-peak rate (BPM) and whether the ACC respiration confidence cleared `respConfidenceMin`. A
+   **manual nudge** during warm-up overrides the settling pause — the cue un-freezes and paces the nudged
+   rate, which also seeds where the search will begin (`seedOverrideBpm`).
+2. **`searching`** — once the gate passes (§15.3) the engine, in one atomic tick, creates the
+   `ResonanceController` seeded at the settled (or nudged) rate and **hard-snaps** the pacer there; from
+   that point the controller is the sole pacer source and the search runs as detailed in §15.5–§15.15.
+3. **`maintaining`** — the controller locks and tracks the resonance, as in §15.11.
+
+### 15.3 The warm-up gate
+Evaluated once per breath over the trailing stability window:
+
+```
+accConfident = ≥ 60% of the window's ACC samples cleared respConfidenceMin   (MANDATORY)
+stable       = SD(detected-rate samples) ≤ modeCStabilityBpmSd
+seedBPM      = mean(detected-rate samples), clamped to [searchLoBPM, searchHiBPM]
+canTransition = accConfident ∧ elapsed ≥ modeCWarmupS ∧ (stable ∨ elapsed ≥ modeCWarmupMaxS)
+```
+
+Two deliberate properties:
+- **ACC confidence is mandatory and never relaxed.** With no confident accelerometer breathing, the user
+  simply stays in warm-up indefinitely — an honest wait, strictly better than handing off into a search
+  that will only rack up unverifiable dwells. The time cap relaxes *only* the stability requirement.
+- **The detected rate is the UNSMOOTHED LS read-back, not the slew-limited pacer output** — the pacer
+  reads "stable" by construction even for an erratic breather, so the gate must judge the raw estimate.
+
+`seedBPM` is the windowed mean (falling back to 6.0 only if no rate was ever detected), clamped to the
+search band, so the search begins where you actually settled (a manual nudge during warm-up overrides it
+via `seedOverrideBpm`).
+
+### 15.4 Re-entry — never stuck
+If the handed-off search later **aborts** (`searchAborted` — persistent unverifiable breathing), Mode C
+drops the controller and re-enters the Follow `warmup`, resetting the clock and gate windows. It then
+runs the honest wait again rather than sitting stuck in a failed search.
+
+### 15.5 The science — resonance frequency & the baroreflex
 The cardiovascular system has a resonance. The **baroreflex** (the blood-pressure feedback loop) has a
 delay of ~5 s, so oscillating it at ~0.1 Hz (~6 br/min) produces the largest swing in heart rate —
 maximal respiratory sinus arrhythmia (RSA). The exact peak — your **resonance frequency** — is
 individual, typically 0.075–0.12 Hz (~4.5–7 br/min), set largely by body size / blood volume.
 Breathing at *your* RF maximizes HRV amplitude and trains baroreflex gain; this is the mechanism behind
 HRV biofeedback (Lehrer & Vaschillo). Clinically, RF is found by pacing a person through candidate
-rates and watching which maximizes HRV. **Mode B automates exactly that** — plus an objective
+rates and watching which maximizes HRV. **Mode C automates exactly that** — plus an objective
 verification step a clinician would do by watching the person breathe.
 
-Mode B opens with a **60 s quiet settling** (`initialSettleS`, §5.7): the controller is seeded but does
-not dwell yet, and the cue/chime/lens fade are paused while you breathe naturally and the LS (64 s) and
-ACC (45 s) windows fill — so the first dwell isn't scored on half-warm sensors. The search begins when it
-elapses.
+The search is preceded by the Mode C warm-up (§15.1–§15.3): the cue/chime are paused and the lens held
+clear while you settle and the LS (64 s) and ACC (45 s) windows fill, so the first dwell isn't scored on
+half-warm sensors. The search begins the moment the gate hands off — seeded at the rate you settled into.
 
-### 14.2 Why a dedicated objective (fast amplitude)
+### 15.6 Why a dedicated objective (fast amplitude)
 The §8 coherence score uses a 64-s window, so after a rate change it stays contaminated by the *old*
-rate for up to a minute — useless for a hill-climb that moves every few breaths. Mode B therefore uses
+rate for up to a minute — useless for a hill-climb that moves every few breaths. The search therefore uses
 a faster objective: `FastAmplitudeTracker.amplitude()` returns the **mean per-breath peak-to-trough RR**
 over the last `ampWindowBreaths` (2.5) breaths. It chunks recent beats into per-breath windows
 (`breathS = 60 / commandedBPM`) and averages each chunk's `(max − min)` RR. This responds *within a
 breath* of a rate change. It is the **only** objective the hill-climb consumes.
 
-### 14.3 The dwell — settle, retest, accept
-Mode B holds each candidate rate for a **dwell**, split into:
+### 15.7 The dwell — settle, retest, accept
+The search holds each candidate rate for a **dwell**, split into:
 - **Settle** — the first `ceil(dwellBreaths · (1 − dwellEstimateFraction))` breaths (≈ 2–3) are
   discarded while the pacer slews to the new rate and your breathing catches up.
-- **Estimate** — subsequent breaths are verified one at a time (§14.4); amplitude is collected from the
+- **Estimate** — subsequent breaths are verified one at a time (§15.8); amplitude is collected from the
   **verified** breaths only, so an off-rate or low-confidence breath never pollutes the hill-climb.
 
 Rather than scoring a fixed window all-or-nothing, the dwell **accumulates verified breaths and re-tests
@@ -731,10 +854,10 @@ the missed ones at the same rate**, deciding as soon as either:
 On a decision: if **≥1 breath confirmed** and the dwell was artifact-clean, it is **accepted** (proceeding
 even on partial verification — slightly less precise, but the search never freezes on one rate) and
 `unverifiedDwells` resets. If **no** breath confirmed (or the dwell was artifact-dirty), it re-dwells and
-`unverifiedDwells` increments — preserving the Mayer-wave abort (§14.4). A dwell with no ACC estimate at
+`unverifiedDwells` increments — preserving the Mayer-wave abort (§15.8). A dwell with no ACC estimate at
 all is charged to `unmeasuredDwells` instead (sensor warming up / dropout), not the verification budget.
 
-### 14.4 Independent verification & the Mayer-wave defense
+### 15.8 Independent verification & the Mayer-wave defense
 This is what makes an *automated* search trustworthy. Per estimate-window breath:
 
 ```
@@ -768,18 +891,18 @@ Persistent failure ⇒ a **"hold still / follow the cue"** hint, and after `maxU
 consecutive unverifiable dwells the search **aborts** (`searchAborted`) and holds a steady pace rather
 than chase un-trustable data.
 
-### 14.5 The search state machine
+### 15.9 The search state machine
 A state machine whose `commandedBPM` is handed to the pacer to slew toward each dwell. States
 (`SearchPhase`), with the plain-language `SearchProgress.phase` the UI shows in *italics*:
 
-1. **`probe0`** *(baseline)* — dwell at the start rate (your warm-start RF, else 6 BPM); record its
+1. **`probe0`** *(baseline)* — dwell at the start rate (the warm-start RF or Mode C seed, else 6 BPM); record its
    amplitude as the baseline.
 2. **`findDir`** *(baseline)* — probe one `probeStepInitBPM` (0.4 BPM) step **down**; compare its
    amplitude to baseline to decide which direction is **uphill** (toward higher HRV amplitude).
 3. **`bracketOut`** *(climbing)* — step in the uphill direction, `probeStepInitBPM` at a time, shifting
    the window while amplitude keeps rising, until it **drops** — yielding a 3-point bracket
    `[low, peak, high]` straddling the maximum. (If it climbs into a search-band edge first, it locks
-   there — see §14.6.)
+   there — see §15.10.)
 4. **`refine`** *(refining)* — **golden-section** narrowing inside the bracket: probe the larger
    sub-interval, keep the higher-amplitude side, repeat. When the bracket can no longer tighten on the
    0.2-BPM grid (`probeStepFloorBPM`), fit a **parabola** through the three points and **lock its
@@ -788,7 +911,7 @@ A state machine whose `commandedBPM` is handed to the pacer to slew toward each 
 Hysteresis keeps noise from flipping decisions: a rate only counts as "better" if its amplitude beats
 the incumbent by `ε = max(epsilonPctOfA · A, 1 SD of the dwell's amplitudes)`.
 
-### 14.6 Boundary lock & parabolic vertex
+### 15.10 Boundary lock & parabolic vertex
 - **Boundary lock** — if the best-so-far dwell sits at a search-band edge (`searchLoBPM` /
   `searchHiBPM`) and an interior sample is lower, the true peak is at/beyond the clamp; it locks at the
   edge and flags **`boundaryLimited`** (so you know the band — not your physiology — set the answer;
@@ -796,7 +919,7 @@ the incumbent by `ε = max(epsilonPctOfA · A, 1 SD of the dwell's amplitudes)`.
 - **Parabolic vertex** — at the finest bracket the lock is the vertex of the parabola through the three
   `(rate, amplitude)` points, not the best grid point, giving sub-0.2-BPM precision on the RF.
 
-### 14.7 Maintain — drift tracking & sudden-loss re-probe
+### 15.11 Maintain — drift tracking & sudden-loss re-probe
 Once `state = maintaining`, the lock is **not** frozen — resonance drifts with posture/fatigue. Two
 mechanisms keep it:
 - **Extremum-seeking** — a sub-perceptual dither (`ditherAmpBPM` = 0.1 BPM over `ditherPeriodS` = 180 s)
@@ -810,13 +933,14 @@ mechanisms keep it:
   `reprobeSustainS` (and at most once per `reprobeCapS`), it restarts a short bracket search around the
   lock to re-acquire.
 
-### 14.8 Warm start & abort
-- **Warm start** — the converged RF is persisted per user. Next session Mode B starts the pacer *at*
+### 15.12 Warm start & abort
+- **Warm start** — the converged RF is persisted per user. Next session the search starts the pacer *at*
   that RF and runs a short re-confirm within `±confirmProbeBPM` instead of a cold hunt.
 - **Abort** — `maxUnverifiedDwells` consecutive unverifiable dwells ⇒ `searchAborted`; it stops hunting
-  and holds a steady comfortable pace. Sit still and re-enter Mode B to retry.
+  and holds a steady comfortable pace (Mode C then re-enters its warm-up, §15.4). Sit still and let it
+  re-settle to retry.
 
-### 14.9 What you see (UI states)
+### 15.13 What you see (UI states)
 - **Searching** — e.g. *"Pacing you at 6.0 br/min to read your baseline (breath 4 of 6)"*, then
   *climbing* / *refining*, with the best rate found so far and the count of rates tested.
 - **Hold-still hint** — driven by `unverifiedDwells`.
@@ -825,7 +949,7 @@ mechanisms keep it:
 - The breathing cue + chime pace you through every dwell; the **Breathing-wave (H10 accelerometer)
   chart** shows the independent respiration the verifier is reading.
 
-### 14.10 A worked timeline
+### 15.14 A worked timeline
 Seated, still, H10 connected, no saved RF:
 1. **probe0** — paced 6.0 for 6 breaths (~60 s); baseline amplitude recorded once verified.
 2. **findDir** — paced 5.6; amplitude higher ⇒ uphill is *downward* in rate.
@@ -834,80 +958,26 @@ Seated, still, H10 connected, no saved RF:
 5. **lock** — parabola vertex ≈ **4.9 BPM** → `maintaining`; RF persisted.
 6. **maintain** — dithers ±0.1 around 4.9, tracks drift; re-probes only if amplitude suddenly collapses.
 
-### 14.11 Parameters & tuning
+### 15.15 Parameters & tuning
+Mode C uses **every Mode A section and every resonance-search section** (§5.1–§5.8) plus its own warm-up
+gate (§5.9). The search levers:
 - **`searchLoBPM` / `searchHiBPM`** — the searched range (4.0–7.5). If `boundaryLimited`, widen it.
 - **`dwellBreaths` / `dwellEstimateFraction`** — reliability vs search speed.
 - **`probeStepInitBPM` / `probeStepFloorBPM`** — coarse step / final resolution.
 - **`respVerifyToleranceBPM`** — how strictly "you breathed where I paced" is enforced (raise toward 1.0
   if good dwells keep getting rejected).
 - **`respConfidenceMin`, `respMinHz`** — the ACC verifier's strictness / sway rejection — the usual
-  levers when Mode B "can't confirm".
+  levers when the search "can't confirm".
 - **`maxUnverifiedDwells`** — patience before aborting.
 - Maintenance: `ditherAmpBPM/PeriodS`, `escGainBPM/MaxStepBPM/MeanAlpha`, `decayFastAlpha/decaySlowAlpha`,
   `reprobeDecayPct/SustainS/CapS`.
 
-Mode B requires a Polar H10 (validated beats **and** the accelerometer channel).
+The warm-up gate levers (§5.9): `modeCWarmupS` (minimum settle time), `modeCWarmupMaxS` (cap that relaxes
+only stability), `modeCStabilityWindowS` (the trailing window), and `modeCStabilityBpmSd` (how steady
+counts as stable — 0.4 is tight; raise toward 0.6–0.8 if real gate passes are rare and most sessions
+transition on the cap).
 
----
-
-## 15. Mode C — Settle & Find
-
-> **In one line.** Mode C is the "just press start" resonance mode: it runs the **Mode A Follow**
-> warm-up until your breathing is steady *and* the accelerometer confirms it, then hands off — seeded at
-> the rate you settled into — to the exact **Mode B** search. No cold 6-BPM hunt, no manual mode switch.
-> Requires a Polar H10 (beats **and** ACC). The warm-up gate lives in `coherenceEngine.ts`
-> (`evaluateModeCGate`) / Swift `evaluateModeCGate`.
-
-### 15.1 Why it exists
-Mode B's cold start always begins at 6 BPM and hunts outward — fine, but it spends its first dwells far
-from where many people naturally settle, and it can rack up "couldn't confirm" dwells if the user hasn't
-settled yet. Mode C front-loads a calm Follow phase: it lets you settle, *measures* where you settled,
-and seeds the search there — so Mode B starts close to the answer and on a breath the accelerometer can
-already confirm.
-
-### 15.2 The three phases
-1. **`warmup`** — the Mode A Follow loop (§12: LS → CR, LF read-back → pacer) run as a **quiet settling**:
-   the pacer tracks exactly as Mode A, but the breath cue is paused, the chime muted, and the lens held
-   **fully clear** (depth 0) — `status.settling` is `true`. No resonance controller exists yet, so every
-   Mode B status field reads its default (the UI never shows stale resonance data). Each second the engine
-   records two **unsmoothed** gate samples into a trailing `modeCStabilityWindowS` window: the detected
-   LF-peak rate (BPM) and whether the ACC respiration confidence cleared `respConfidenceMin`.
-2. **`searching`** — once the gate passes (§15.3) the engine, in one atomic tick, creates the
-   `ResonanceController` seeded at the settled rate and **hard-snaps** the pacer there; from that point
-   the controller is the sole pacer source and the search runs exactly as Mode B (§14).
-3. **`maintaining`** — the controller locks and tracks the resonance, identical to Mode B §14.7.
-
-### 15.3 The warm-up gate
-Evaluated once per breath over the trailing stability window:
-
-```
-accConfident = ≥ 60% of the window's ACC samples cleared respConfidenceMin   (MANDATORY)
-stable       = SD(detected-rate samples) ≤ modeCStabilityBpmSd
-seedBPM      = mean(detected-rate samples), clamped to [searchLoBPM, searchHiBPM]
-canTransition = accConfident ∧ elapsed ≥ modeCWarmupS ∧ (stable ∨ elapsed ≥ modeCWarmupMaxS)
-```
-
-Two deliberate properties:
-- **ACC confidence is mandatory and never relaxed.** With no confident accelerometer breathing, the user
-  simply stays in warm-up indefinitely — an honest wait, strictly better than handing off into a search
-  that will only rack up unverifiable dwells. The time cap relaxes *only* the stability requirement.
-- **The detected rate is the UNSMOOTHED LS read-back, not the slew-limited pacer output** — the pacer
-  reads "stable" by construction even for an erratic breather, so the gate must judge the raw estimate.
-
-`seedBPM` is the windowed mean (falling back to 6.0 only if no rate was ever detected), clamped to the
-Mode B search band, so the search begins where you actually settled.
-
-### 15.4 Re-entry — never stuck
-If the handed-off search later **aborts** (`searchAborted` — persistent unverifiable breathing), Mode C
-drops the controller and re-enters the Follow `warmup`, resetting the clock and gate windows. It then
-runs the honest wait again rather than sitting stuck in a failed search. (Plain Mode B keeps its own
-abort behavior — hold a steady pace — and does *not* re-enter a warm-up.)
-
-### 15.5 Parameters & tuning
-Mode C uses **every Mode A and Mode B tunable** (§5.1–§5.8) plus its own warm-up gate (§5.9):
-`modeCWarmupS` (minimum settle time), `modeCWarmupMaxS` (cap that relaxes only stability),
-`modeCStabilityWindowS` (the trailing window), and `modeCStabilityBpmSd` (how steady counts as stable —
-0.4 is tight; raise toward 0.6–0.8 if real gate passes are rare and most sessions transition on the cap).
+Mode C requires a Polar H10 (validated beats **and** the accelerometer channel).
 
 ---
 
@@ -936,7 +1006,7 @@ Quick-start tuning order:
 1. **`cohSquashK`** — overall difficulty (primary knob).
 2. **Difficulty gamma** — the lens coherence→depth curve.
 3. **`spectralSegments`** — raise for a steadier live score if it looks jumpy.
-4. **Mode B/C `respMinHz` / `respConfidenceMin`** — if the ACC verifier struggles to confirm breathing.
+4. **Mode C `respMinHz` / `respConfidenceMin`** — if the ACC verifier struggles to confirm breathing.
 5. **Pacer `pacerJumpThresholdBPM` / `pacerJumpSustainBreaths`** — catch-up feel.
 6. **Mode C `modeCStabilityBpmSd` / `modeCWarmupS`** — how long/strict the settle phase is.
 
@@ -954,7 +1024,7 @@ Quick-start tuning order:
   dominant heart-rhythm peak to surrounding power; the basis of CR and the coh% squash.
 - **Lehrer & Vaschillo; Vaschillo, Vaschillo & Lehrer** — resonance-frequency HRV biofeedback: each
   person has a breathing rate (~0.075–0.12 Hz, ~4.5–7 br/min) that maximizes baroreflex-driven HRV.
-  Foundation of Mode B/C's search and the ~6 br/min default pace.
+  Foundation of Mode C's resonance search and the ~6 br/min default pace.
 - **Gevirtz** — HRV biofeedback and the respiration↔heart coupling that the §13 cross-spectral coherence
   measures.
 - **Lipponen & Tarvainen (2019)** — robust HRV artifact correction via successive-difference
@@ -963,7 +1033,7 @@ Quick-start tuning order:
 - **Shaffer & Ginsberg (2017)** — overview of HRV metrics and norms.
 - **Elgendi et al.** — systolic-peak detection in PPG (the earclip's beat detector).
 - **Baroreflex / Mayer waves (~0.1 Hz)** — the low-frequency blood-pressure oscillation the §13 confound
-  flag and Mode B's accelerometer channel exist to distinguish from genuine breathing.
+  flag and Mode C's accelerometer channel exist to distinguish from genuine breathing.
 
 *(Citations at author/topic level; consult the originals for exact parameters.)*
 
@@ -974,7 +1044,7 @@ Quick-start tuning order:
 - **HeartMath emWave Pro / Inner Balance** — the canonical coherence-biofeedback trainers; **Mode A**
   is the closest analog (coherence score + paced breathing).
 - **Clinical HRV biofeedback / resonance-frequency assessment (Lehrer protocol)** — therapists sweep
-  paced breathing rates and pick the one maximizing HRV; **Mode B / Mode C** automate exactly this, with
+  paced breathing rates and pick the one maximizing HRV; **Mode C** automates exactly this, with
   the accelerometer adding the verification a clinician would do by observation.
 - **Resonance-breathing apps** — Elite HRV, Breathe (Apple Watch), and similar paced-breathing tools
   share the breathing-cue idea but without the closed-loop coherence/resonance feedback.
