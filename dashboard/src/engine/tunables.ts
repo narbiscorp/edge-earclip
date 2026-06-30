@@ -101,7 +101,7 @@ export interface CoherenceTunables {
   // --- Respiration from ACC (Mode B verification) ---
   accSampleHz: number; // H10 ACC stream rate
   respBandLo: number; // 0.05 Hz = 3 BPM
-  respBandHi: number; // 0.50 Hz = 30 BPM
+  respBandHi: number; // 0.4 Hz = 24 br/min
   respWindowS: number; // trailing window for the respiration estimate
   respConfidenceMin: number; // min spectral concentration to trust the estimate
   respMinHz: number; // ACC peaks below this are de-weighted (rejects sub-breathing postural sway)

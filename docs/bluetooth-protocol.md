@@ -12,6 +12,8 @@
 
 > ### 📝 Changelog
 >
+> **2026-06-30 — Edge audit corrections (synced to glasses firmware `4.15.6-strobe-sync`).** Three Edge-side errors fixed after a line-by-line diff against the live firmware: (1) **§4.4.4 `0xF3` `led_mode` legend was wrong** — the real `led_mode_t` is `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens (there is **no** `off` value); a client decoding byte 20 against the old legend mislabeled every mode. (2) **Breathe+strobe now has an opcode** — `0xB0 0x01` (fw ≥ 4.15.6); the §4.3 opcode table and §4.8.5 are updated (previously documented as "no dedicated standalone opcode yet"). (3) **§6.2 OTA "Recommended chunk size" corrected `240 → 244 B`** (`MTU − 3` at the negotiated MTU 247), reconciling it with §2.4 / §6.8 and `NARBIS_OTA_CHUNK_SIZE = 244`. Earclip-side reference unchanged this pass.
+>
 > **2026-06-17 — coherence is app-side, period.** All coherence + breathing-pacer processing now runs **app-side** in every client (iOS *and* web) via the Mode A/B/C engine; the glasses are a **display** the app drives by commanding the firmware's breathe / static program plus the new **`0xBA` breathe-sync** opcode. New **[§4.8 "Driving the Edge lens"](#48-driving-the-edge-lens)** documents the lens-drive scheme (stream-vs-command, breathe + strobe ops), the **lens duty→opacity floor**, and the **breath-phase sync rule** — send `0xBA` / rate / depth **only at the breath-cycle boundary**, never mid-breath, because the firmware re-renders `wave × depth` every 10 ms from live params and a mid-breath change warps the waveform into a visible stutter. [§4.7](#47-integration-patterns--where-coherence-runs) reframed: app-side is standard; the `0xCA` on-glasses pipeline is legacy/Standard.
 >
 > **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (Follow / Resonance / Standard); [§4.7](#47-integration-patterns--where-coherence-runs) frames app-side (recommended) vs the legacy on-glasses path.
@@ -919,7 +921,7 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xAB` | Strobe frequency | 1–50 (Hz) | yes | |
 | `0xAC` | Strobe duty | 10–90 (%) | yes | |
 | `0xAD` | OTA Page Confirm | `0x01` commit / `0x00` resend | no | see §6 |
-| `0xB0` | Breathe LED mode | any | no | |
+| `0xB0` | Breathe LED mode | `0x00` breathe / `0x01` breathe+strobe | no | `0x00` (or no arg) = plain breathe; `0x01` = breathe+strobe, phase-locked to `0xBA`/`0xB1`/`0xB2` (fw ≥ 4.15.6). Toggling the arg preserves breathe phase. |
 | `0xB1` | Breathe BPM | 1–30 | yes | |
 | `0xB2` | Breathe inhale ratio | 10–90 (%) | yes | |
 | `0xB3` | Breathe hold-top | 0–50 (×100 ms) | yes | |
@@ -1155,7 +1157,7 @@ The Edge derives this from earclip beats it receives via the BLE relay (see [§4
 | 15 | 2 | `ble_send_errors` | u16 LE; saturates at `0xFFFF` |
 | 17 | 2 | `jitter_max_us` | u16 LE; reset every 5 s |
 | 19 | 1 | `jitter_ticks_over` | u8; reset every 5 s |
-| 20 | 1 | `led_mode` 🆕 | u8 — `LED_MODE_*` enum (0 = off, 1 = static, 2 = strobe, 3 = breathe, 4 = pulse-on-beat, 5 = coherence-lens, 6 = breathe+strobe). Mirror of the lens-driver state machine. |
+| 20 | 1 | `led_mode` 🆕 | u8 — `led_mode_t` enum: `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens. Mirror of the lens-driver state machine. (There is no "off" value — a clear lens is `static`/`breathe` at duty 0.) |
 | 21 | 1 | `led_duty` 🆕 | u8 — effective PWM duty 0–255 (0–100%). Snapshot of the actual lens output at emit time, not the requested duty. Useful for "is the lens doing what I asked?" overlays. |
 
 A spike in `ble_send_errors` means the iOS side is overwhelming the device — slow your writes. `led_mode` + `led_duty` were added in glasses fw v4.15.4 (PR #28); older firmware emits a 20-byte frame without these two bytes.
@@ -1751,7 +1753,7 @@ async function setStrobeFreqHz(chCtrl, hz) {
 
 > **Strobe needs hard edges — never smooth, slew, or ramp it.** Write the params once and let the firmware's ISR toggle. (The breathe slew limiter in §4.8.4 deliberately does not touch strobe.)
 >
-> **Breathe + strobe** (a strobe whose dark-duty is modulated by the breathing wave) exists as a firmware LED mode but has **no dedicated standalone opcode yet** — a known follow-up. For now: pure breathe (`0xB0`) **or** pure strobe (`0xA6`).
+> **Breathe + strobe** (a strobe whose dark-duty is modulated by the breathing wave) is entered with **`0xB0 0x01`** (firmware ≥ 4.15.6): the breathe arg selects the variant — `0xB0 0x00` = plain breathe, `0xB0 0x01` = breathe+strobe. It stays phase-locked to `0xBA` / `0xB1` / `0xB2` exactly like plain breathe, and toggling the arg `0↔1` preserves the breathe phase. On firmware **< 4.15.6** there is no standalone breathe+strobe opcode — fall back to pure breathe (`0xB0`) **or** pure strobe (`0xA6`).
 
 #### 4.8.6 Backward compatibility & version
 
@@ -1852,7 +1854,7 @@ Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both d
 | Constant | Value |
 |---|---|
 | Page size | 4096 B (one flash erase block) |
-| Recommended chunk size | **240 B** (safe for both — earclip can take 244 with MTU 247, Edge caps at 240) |
+| Recommended chunk size | **244 B** (`MTU − 3` at the negotiated MTU 247; the dashboard uses `NARBIS_OTA_CHUNK_SIZE = 244`). Both devices accept up to `MTU − 3 = 244` per OTA-data write. |
 | Page CRC | CRC32 little-endian (computed by device, sent in PAGE_CRC notification) |
 
 ### 6.3 Opcodes (write to `0xFF01` as `[opcode, param]`)
