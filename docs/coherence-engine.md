@@ -32,6 +32,7 @@
 
 | Date | Change | Dashboard (build id) | Glasses FW |
 |---|---|---|---|
+| 2026-07-08 | **Absolute LF/HF ms² defined to the Task-Force / Kubios standard** (§9.1). Previously the spec defined LF/HF only as *dimensionless* companions while the app logged absolute **ms²** through an undocumented path; an independent reimplementation (Lomb–Scargle verifier) confirmed LF reproduced ~1:1 but **HF was ~2× off** because un-normalizing the LS spectrum has no well-defined ms² scaling. §9.1 now **mandates** the resample→Welch-PSD→band-integrate method (cubic-spline 4 Hz, smoothness-priors detrend, Hann/50 % overlap) for the ms² clinical bands, leaving the Lomb–Scargle coherence path (CR / `coh%` / peak) unchanged. **Action for the app:** implement §9.1 and re-add `ms2ResampleHz` / `ms2WelchSegmentS` / `ms2WelchOverlapPct` to the tunable schema. | spec only — **not yet implemented** | ≥ 4.15.5 (unchanged) |
 | 2026-06-23 | **Mode B redefined → "Static Pacer"; manual pace nudge; phase-continuous breath clock** ([#85](https://github.com/narbiscorp/edge-earclip/pull/85)–[#89](https://github.com/narbiscorp/edge-earclip/pull/89)). **(1) Mode B is no longer the resonance search — it is now the *Static Pacer*:** a fixed user/clinician-set breathing rate (**4.0–10.0 br/min**, default **6.0**, 0.1-BPM steps) with the same Mode-A coherence feedback driving the lens; the chosen rate is **persisted per signed-in client**. It needs **no accelerometer** and has **no warm-up settle** — it paces immediately. **The automated Lehrer/Vaschillo resonance search now runs only under Mode C** ([§15](#15-mode-c--settle--find-resonance-search)); §14 is now the Static Pacer. **(2) Manual pace nudge (Mode A / Mode C).** A ±0.1 br/min nudge: in **Mode A** it holds the dialled pace for ~30 s (`MANUAL_NUDGE_HOLD_MS`) then resumes auto-following; in **Mode C** it holds the pace *and* seeds where the search begins (during warm-up) or re-seeds the live search. **(3) Phase-continuous breath clock.** The on-screen cue is now driven by a continuous phase accumulator (advanced each lens tick by `dt/cycleMs`) instead of a `cycleStartMs` modulo clock, so a rate change — Static-Pacer set, manual nudge, or a search step — no longer teleports the orb. | `relay-v5 · 20260623120330-6ea32db` (app-side only) | ≥ 4.15.5 (unchanged) |
 | 2026-06-22 | **Mode B/C resonance reliability fixes** ([#81](https://github.com/narbiscorp/edge-earclip/pull/81)). **(1) ACC respiration no longer frequency-doubles.** The breathing rate is now estimated by **summing the three accelerometer axes' periodograms** instead of the vector-magnitude `√(x²+y²+z²)` signal — the magnitude (large gravity DC + the squaring nonlinearity) injected a strong 2× component and reported ~2× the true rate, so verification failed on every dwell (on a real session it read a steady **9.34 br/min for a genuine ~4–5 br/min breath**). **(2) Per-breath retest.** A dwell now re-tests only the *missed* breaths and **accepts on partial verification** (≥1 confirmed), with a hard estimate-breath cap, so the search advances instead of re-running the whole dwell and freezing on one rate (new `dwellVerifyTarget`, `dwellMaxEstimateBreaths`; the Mayer-wave abort is preserved). **(3) 60 s quiet settling** for Mode B & C (new `initialSettleS=60`, `modeCWarmupS` 120→60, `modeCWarmupMaxS` 240→120): the cue is paused, the chime muted, and the lens held fully clear while the sensors warm up. | `relay-v5 · 20260622171553-887f4bc` (app-side only) | ≥ 4.15.5 (unchanged) |
 
@@ -517,8 +518,50 @@ The **pacer read-back** is a *separate* argmax over the **LF-only** band (`lfRea
 self-selected breather (e.g. 0.2 Hz) from feeding the pacer a too-high target. The result (`respPeakHz`,
 converted to mHz) is what `FollowPacer` tracks.
 
-The engine also publishes display-only companions: `LF`, `HF` (band sums), `LF/HF`, and normalized
-`LFnu`/`HFnu`.
+The engine also publishes, off the **same Lomb–Scargle coherence spectrum**, the *dimensionless*
+companions the coherence display uses: `LFnu`, `HFnu`, and `LF/HF` (variance-normalized band sums —
+scale-free, inherited from the CR spectrum at no extra cost). **These are display-only and never drive
+the lens.**
+
+### 9.1 Absolute band power (ms²) — Task Force / Kubios standard
+
+The clinical HRV readouts `lf_power` and `hf_power` are logged in **absolute ms²** and **MUST** be
+computed by the recognized **Task-Force / Kubios** frequency-domain method (a resampled, FFT-based PSD),
+**not** by un-normalizing the Lomb–Scargle periodogram. Absolute ms² requires a physically-scaled power
+spectral density; the variance-normalized LS periodogram does not define one — its LF-vs-HF scaling is
+band-dependent — so the two are deliberately **separate paths**: **Lomb–Scargle drives coherence
+(CR / `coh%` / peak read-back); a resampled Welch PSD produces the ms² clinical bands.**
+
+Pipeline, per analysis window (evaluated on the metrics tick):
+
+1. **Gated RR series** — the same artifact-gated `(beatTimeS, rrMs)` beats as the LS path (§6).
+2. **Detrend** — smoothness-priors (Tarvainen), `λ = detrendLambda` (500), as in §7.
+3. **Resample** — cubic-spline interpolate the detrended RR tachogram onto a **uniform 4 Hz grid**
+   (`ms2ResampleHz = 4.0`). This is the even sampling the Task-Force FFT method requires; 4 Hz is the
+   Kubios default and covers the HF band (≤ 0.40 Hz) with ample margin.
+4. **Welch PSD** — one-sided periodogram, **Hann window, 50 % overlap** (`ms2WelchOverlapPct = 50`),
+   segment length sized to the window (`ms2WelchSegmentS`), averaged across segments. PSD units are
+   **ms²/Hz**.
+5. **Integrate** each band as `power = Σ PSD(f)·Δf` over `[lo, hi)`, in **ms²**:
+   - **VLF** `0.0033–0.04 Hz` (optional), **LF** `0.04–0.15 Hz`, **HF** `0.15–0.40 Hz` — the Task-Force
+     bands, identical edges to `lfBand` / `hfBand`.
+6. **Report** `lf_power`, `hf_power` (ms²), `LF/HF`, and normalized `LFnu = 100·LF/(LF+HF)`,
+   `HFnu = 100·HF/(LF+HF)`.
+
+**Why this way.** It makes `lf_power` / `hf_power` **directly comparable to Kubios and other clinical
+HRV tools**, and gives one unambiguous definition. (Builds that derived ms² by un-normalizing the LS
+spectrum under-scaled **HF by ~2×**, because the LS normalization is band-dependent — a real,
+independently-verified discrepancy, not a units convention.) The coherence engine's LS spectrum, CR,
+`coh%`, and peak read-back are **unchanged**; only the absolute-ms² companions move to this standardized
+path. Re-add `ms2ResampleHz` (4.0), `ms2WelchSegmentS`, and `ms2WelchOverlapPct` (50) to the tunable
+schema — they existed in the original Swift `WelchResearchEstimator` and were dropped when the dashboard
+kept only the dimensionless bands.
+
+> **Standards.** Task Force of the ESC/NASPE (1996), *Heart rate variability: standards of measurement,
+> physiological interpretation, and clinical use* — LF/HF band definitions, ms² units, the FFT method.
+> Tarvainen et al. (2014), *Kubios HRV* — cubic-spline 4 Hz interpolation, smoothness-priors detrend,
+> Welch/AR PSD. (Lomb–Scargle remains correct and preferred for the *coherence* spectrum, per §7; the
+> resample method is used **only** for the absolute-ms² clinical readout.)
 
 ---
 
