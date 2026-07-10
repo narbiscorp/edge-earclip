@@ -12,6 +12,8 @@
 
 > ### 📝 Changelog
 >
+> **2026-07-10 — wire-level corrections from an adversarial firmware verification.** Eight fixes after line-by-line verification against glasses fw `main` and earclip fw `main`: (1) **§3.1.1/§3.5 — the custom Narbis IBI characteristic never batches**: it notifies once per beat in *both* `ble_profile` modes; `ble_batch_period_ms` / up-to-9-R-R batching applies only to the standard HRS `0x2A37` characteristic. (2) **§4.2/§7.3/§6.1/§9.1 — the Edge's `0xFF03` uses plain notify**, not "indicate internally" (`BLE_GATT_CHR_F_NOTIFY`, `ble_gatts_notify_custom()`); the "one in-flight indicate" OTA pacing rule is gone. (3) **§4.3 `0xC3` is currently unusable** — the glasses forward a v3-era **50-byte** config payload (`NARBIS_CONFIG_WIRE_SIZE = 50`), which a v4 earclip rejects (expects 74 B); write earclip config directly until the glasses relay is rebuilt against config v4. (4) **`0xFF04` (§4.5) and `0xF0` (§4.4.1) are not emitted on current glasses builds** — the on-glasses PPG front-end was removed; layouts kept for older firmware. (5) **§4.4.4 `0xF3` byte 21 `led_duty` is a 0–100 percentage**, not 0–255. (6) **§6.4 — the `0x06` PAGE_CRC frame packs the page number *and* the CRC32 big-endian** (Swift/JS unpack fixed), and status frame lengths corrected: on the Edge READY/SUCCESS/CANCELLED = 1 B and ERROR = 2 B, while the earclip zero-pads the same codes to 4 B — dispatch on the first byte (+ reserved PROGRESS `0x02` documented). Also noted: the final partial page gets no PAGE_CRC, and PAGE_RESEND rewinds the whole page. (7) New **§4.1.1 standalone programs & magnet gestures** — short-tap window is **0.15–4 s** (`HALL_SHORT_MIN_MS = 150`). (8) Additions: `0xA8` accepts an optional `[size u32 LE]` for an image-sized erase (Edge only — §4.3/§6.3), session auto-sleep semantics on `0xA4` (default 30 min from wake → deep sleep), stock builds heartbeat `0xF6 linked=0` every ~30 s (§4.4.7), and the Edge accepts a **single client** (advertising stops on connect — §4.1).
+>
 > **2026-07-08 — sync to current glasses fw main + Mode B/C rename.** Five corrections after re-auditing against glasses-firmware `main` (post-`4.15.6-strobe-sync`), earclip firmware, and the dashboard: (1) **Edge idle advertising teardown is now 2 minutes, not 5** (`BLE_IDLE_TIMEOUT_MS = 120000`), and teardown fully powers down the radio — §2.5, §4.1, §7.6, §8. (2) **Edge supervision timeout is now 32 s, not 20 s** (`supervision_timeout = 3200`, the BLE max — raised for the image-sized OTA erase window) — §1, §4.1, §6.8, §7.9. (3) **The Edge's earclip-central (relay) is compile-disabled on stock builds** — `EARCLIP_CENTRAL_ENABLED 0` eliminates the ~80 mA idle scan drain; §4.6's relay frames/opcodes are implemented but inert unless rebuilt with the flag on — §1, §4.6, §8. (4) **Mode names updated (#85–#90):** Mode B is now the **Static Pacer** (fixed 4.0–10.0 br/min, needs no accelerometer) and the resonance search runs only in **Mode C "Settle & Find"** — §3a and §4.7.1 corrected; **only Mode C requires the H10 accelerometer**. (5) **§3.6 versioning corrected:** the earclip does **not** reject config writes with `config_version < 4` — it ignores the writer's version byte and forces `4` on every accepted write; the `≥ 4` check runs when loading persisted blobs from NVS at boot.
 >
 > **2026-06-30 — Edge audit corrections (synced to glasses firmware `4.15.6-strobe-sync`).** Three Edge-side errors fixed after a line-by-line diff against the live firmware: (1) **§4.4.4 `0xF3` `led_mode` legend was wrong** — the real `led_mode_t` is `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens (there is **no** `off` value); a client decoding byte 20 against the old legend mislabeled every mode. (2) **Breathe+strobe now has an opcode** — `0xB0 0x01` (fw ≥ 4.15.6); the §4.3 opcode table and §4.8.5 are updated (previously documented as "no dedicated standalone opcode yet"). (3) **§6.2 OTA "Recommended chunk size" corrected `240 → 244 B`** (`MTU − 3` at the negotiated MTU 247), reconciling it with §2.4 / §6.8 and `NARBIS_OTA_CHUNK_SIZE = 244`. Earclip-side reference unchanged this pass.
@@ -269,9 +271,7 @@ Flag bits:
 0x08  LOW_CONFIDENCE    confidence_x100 < 50
 ```
 
-Notify cadence depends on the `ble_profile` config field:
-- **`LOW_LATENCY` (1)** — one notification per beat (~1 Hz at rest).
-- **`BATCHED` (0)** — accumulated then flushed every `ble_batch_period_ms` (default 500 ms).
+Notify cadence: **one notification per beat (~1 Hz at rest) in *both* `ble_profile` modes** — this characteristic never batches. The firmware pushes every accepted `beat_event_t` straight out with no profile check (`ble_service_narbis_push_ibi()`), and the `ble_batch_period_ms` flush interval is routed to the standard HRS `0x2A37` characteristic only (`config_manager.c` → `ble_service_hrs_set_batch_period()`). If you want batched R-R delivery, subscribe to HRS ([§3.2](#32-heart-rate-service--0x180d)); if you want per-beat delivery regardless of the configured profile, this characteristic is the one.
 
 ```swift
 struct NarbisIBI {
@@ -542,7 +542,7 @@ bit 4  R-R interval(s) present
 
 The earclip emits BPM as `u8` and includes one or more R-R intervals. R-R intervals are in **1/1024-second units**, so convert to milliseconds with `rr_ms = rr_raw * 1000 / 1024`.
 
-In `LOW_LATENCY` profile you see one notification per beat with one R-R interval. In `BATCHED` profile you see one notification every `ble_batch_period_ms` carrying up to 9 R-R intervals.
+In `LOW_LATENCY` profile you see one notification per beat with one R-R interval. In `BATCHED` profile you see one notification every `ble_batch_period_ms` carrying up to 9 R-R intervals. **This batching is specific to this standard characteristic** — the custom Narbis IBI characteristic ([§3.1.1](#311-ibi--78ef492f)) notifies once per beat in both profiles.
 
 ```swift
 struct HRMeasurement {
@@ -626,7 +626,10 @@ Two orthogonal config axes determine what the earclip emits. The old `transport_
 
 ```
 ble_profile     BATCHED (0)   | LOW_LATENCY (1)
-                Notify cadence on IBI / HRM characteristics.
+                Notify cadence on the standard HRS 0x2A37 characteristic
+                ONLY (batched R-R flush vs. per-beat). The custom Narbis
+                IBI characteristic (§3.1.1) notifies once per beat in
+                BOTH modes — it never batches.
                 NOTE: this is the global default; PEER_ROLE overrides
                 it on a per-connection basis (see §3.7).
 
@@ -679,7 +682,7 @@ The full `narbis_runtime_config_t` is **72 bytes packed** (Path C / `config_vers
 | 38 | 1 | `ibi_max_delta_pct` | 30 | 0–100 | Continuity threshold |
 | 39 | 1 | `ble_profile` | 0 (BATCHED) | 0, 1 | Global default; PEER_ROLE overrides per-connection |
 | 40 | 1 | `data_format` | 0 (IBI_ONLY) | 0, 1, 2 | See §3.5 |
-| 41 | 2 | `ble_batch_period_ms` | 500 | u16 LE | BATCHED-mode flush interval |
+| 41 | 2 | `ble_batch_period_ms` | 500 | u16 LE | BATCHED-mode flush interval — applies to the HRS `0x2A37` characteristic only; the custom IBI char never batches ([§3.1.1](#311-ibi--78ef492f)) |
 | 43 | 1 | `diagnostics_enabled` | 1 | 0 / 1 | Master gate for DIAGNOSTICS char |
 | 44 | 1 | `light_sleep_enabled` | 1 | 0 / 1 | |
 | 45 | 1 | `diagnostics_mask` | 0 | bitmask | See §3.1.8 |
@@ -891,7 +894,20 @@ The Edge advertises one custom service, **`0x00FF`**, with four characteristics 
 | Connection interval | 20–30 ms |
 | Slave latency | 1 |
 | Supervision timeout | **32 s** — the BLE-spec max (`supervision_timeout = 3200`; raised from 20 s because the OTA begin now erases an image-sized region, which can block the radio well past 19 s) |
+| Client connections | **1** — advertising stops the moment a client connects and resumes on disconnect, so a second client can never join mid-session (unlike the multi-central earclip) |
 | Pairing / encryption | none |
+
+#### 4.1.1 Standalone programs & magnet gestures
+
+The glasses work without any app. A short magnet tap (**0.15–4 s**; `HALL_SHORT_MIN_MS = 150`, lowered from 300 ms in fw 4.14.33) on the temple cycles three sensor-free programs; the lens signals the new program with N slow fade-dark pulses:
+
+| Program | Behavior |
+|---|---|
+| 1 — Breathe | 6 BPM sine, lens tint follows the waveform (boot default) |
+| 2 — Breathe + Strobe | 10 Hz strobe, dark-phase duty modulated by the breathing waveform |
+| 3 — Strobe | Plain 10 Hz strobe |
+
+Hold the magnet closed **≥ 5 s** for deep sleep. (On relay-enabled builds, 5 short taps also trigger "forget earclip" — [§4.6](#46-the-edge-as-relay-path-b).)
 
 ### 4.2 Service `0x00FF` — characteristic map
 
@@ -899,8 +915,8 @@ The Edge advertises one custom service, **`0x00FF`**, with four characteristics 
 |---|---|---|---|---|
 | Control | `0xFF01` | read + write | client → device | All commands; see §4.3 |
 | OTA Data | `0xFF02` | write + write-no-response | client → device | OTA payload chunks; see §6 |
-| Status | `0xFF03` | read + notify (uses indicate internally) | device → client | Multiplexed by leading byte: ADC stats, log, coherence, health, OTA status |
-| PPG Stream | `0xFF04` | read + notify | device → client | Batched PPG samples + beat info |
+| Status | `0xFF03` | read + notify | device → client | Multiplexed by leading byte: log, coherence, health, relay, OTA status. Plain notify (`BLE_GATT_CHR_F_NOTIFY`, emitted via `ble_gatts_notify_custom()`) — earlier revisions of this doc claimed it "used indicate internally"; it does not, and there is no per-frame ACK ([§7.3](#73-indicate-vs-notify)) |
+| PPG Stream | `0xFF04` | read + notify | device → client | Batched PPG samples + beat info — **not emitted on current builds** ([§4.5](#45-ppg-stream-characteristic-0xff04)) |
 
 Both `0xFF03` and `0xFF04` have a CCCD descriptor (`0x2902`) that you must enable with `setNotifyValue(true, for:)`.
 
@@ -913,11 +929,11 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | Opcode | Name | Arg | Persisted? | Notes |
 |---|---|---|---|---|
 | `0xA2` | Set brightness | 0–100 (%) | yes (NVS) | |
-| `0xA4` | Set session duration | 1–60 (minutes) | yes | |
+| `0xA4` | Set session duration | 1–60 (minutes) | yes | Session auto-sleep: the timer runs from wake; at expiry the glasses enter **deep sleep** (default **30 min**, persisted). Re-wake by magnet tap. |
 | `0xA5` | Static LED mode | 0–100 (duty %) | no | |
 | `0xA6` | Strobe LED mode | any | no | starts strobe ISR |
 | `0xA7` | Sleep now | any | no | enters deep sleep |
-| `0xA8` | OTA START | `0x00` | no | see §6 |
+| `0xA8` | OTA START | `0x00` or `[size:u32 LE]` | no | Optional 4-byte image size (`[0xA8][size u32 LE]`, 5 B total): the device erases only the sectors the image needs at OTA begin instead of the full slot, shortening the radio-blocking erase. Legacy `[0xA8, 0x00]` (2 B) → full-slot erase. See §6 |
 | `0xA9` | OTA FINISH | `0x00` | no | see §6 |
 | `0xAA` | OTA CANCEL | `0x00` | no | see §6 |
 | `0xAB` | Strobe frequency | 1–50 (Hz) | yes | |
@@ -937,7 +953,7 @@ The firmware **silently clamps out-of-range arguments and never sends a NACK**. 
 | `0xBF` | Factory reset | any | n/a | wipes the `narbis_prefs` NVS namespace |
 | `0xC0` | *(reserved)* | — | — | Listed in firmware's internal opcode comment table but has no dispatcher case — do not use |
 | **`0xC1`** | **Forget earclip** 🆕 | any (ignored) | no | Path B. Wipes the `narbis_pair` NVS entry, drops the central connection to the earclip, starts a fresh general scan. Visual feedback: 3 fast lens-opacity pulses. Same effect as 5 short magnet taps. |
-| **`0xC3`** | **Relay config write** 🆕 | 74 B payload | no | Path B. Bytes after the opcode are forwarded verbatim as a CONFIG_WRITE to the paired earclip via the Edge's central role. The 74-byte payload is the same `narbis_runtime_config_t` + CRC16 layout the earclip expects on its own CONFIG_WRITE characteristic ([§3.6](#36-the-runtime-config-struct)). The earclip replies via CONFIG notify, which the Edge re-emits as a `0xF4` frame ([§4.4.5](#445-relayed-earclip-config-0xf4--75-b)). |
+| **`0xC3`** | **Relay config write** 🆕 | 50 B payload (v3-era) | no | Path B — **⚠️ currently unusable.** The glasses firmware still builds against the **v3-era** config (`NARBIS_CONFIG_WIRE_SIZE = 50` in its bundled `narbis_protocol` component): it requires exactly 50 bytes after the opcode (51 B total; shorter writes are logged and dropped) and forwards those 50 bytes verbatim as a CONFIG_WRITE to the paired earclip. Current earclip firmware accepts only the **74-byte v4** payload ([§3.6](#36-the-runtime-config-struct)) and rejects the relayed 50-byte write with an invalid-size error — so this opcode cannot deliver a config to a v4 earclip until the glasses relay is rebuilt against config v4. Write earclip config directly via its own CONFIG_WRITE characteristic instead ([§5](#5-configuring-the-earclip-from-ios)). (Moot on stock builds anyway — the relay is compile-disabled, [§4.6](#46-the-edge-as-relay-path-b).) On success the earclip would reply via CONFIG notify, which the Edge re-emits as a `0xF4` frame ([§4.4.5](#445-relayed-earclip-config-0xf4--75-b)). |
 | **`0xC4`** | **Toggle raw-PPG relay** 🆕 | `0` disable / non-zero enable | no | Path B. Subscribes/unsubscribes the Edge's central from the earclip's RAW_PPG characteristic. While enabled, raw earclip samples are forwarded as `0xF5` frames on `0xFF03` ([§4.4.6](#446-relayed-earclip-raw-ppg-0xf5--variable)). Default: enabled at boot. |
 | **`0xC5`** | **Refresh earclip config** 🆕 | any (ignored) | no | Path B. Triggers a one-shot CONFIG read on the Edge's central role; the resulting earclip CONFIG notify is re-emitted to the dashboard as a `0xF4` frame ([§4.4.5](#445-relayed-earclip-config-0xf4--75-b)). Dashboard sends this automatically ~2 s after the relay goes UP if no `0xF4` arrived, and exposes it as a manual "reload from earclip" button. Restored in PR #29 after the NimBLE migration dropped the original handler. |
 | **`0xCA`** | **External-IBI injection** 🆕 | 4 B payload | no | Path B / Polar H10 path. 5 B total on the wire: `[0xCA][ibi_ms:u16 LE][confidence:u8 0–100][flags:u8 NARBIS_BEAT_FLAG_*]`. **Legacy / Standard on-glasses path only** ([§4.7.2](#472-legacy--standard-on-glasses-mode-0xca--0xb7)) — forwards an external HR source's beats into the Edge's **firmware** coherence pipeline so the on-glasses PPG programs respond identically regardless of beat source. App-side clients (the standard) compute coherence themselves and do **not** send this. Beats with `confidence < g_coh_params.conf_threshold` or `flags & ARTIFACT` are silently dropped. |
@@ -1082,7 +1098,7 @@ The current adaptive target is exposed in the [`0xF2` coherence frame](#443-cohe
 
 #### Related but documented elsewhere
 
-- **Beat-detection tuning on the earclip side** (Elgendi / NCC / Kalman / watchdog params) lives in `narbis_runtime_config_t` v4 — see [§3.6](#36-the-runtime-config-struct). Only matters when the IBI source is the earclip; an H10-only build can ignore it. Write earclip config via the earclip's own `CONFIG_WRITE` characteristic or relay it through the Edge with [`0xC3`](#43-control-characteristic-0xff01--command-opcodes).
+- **Beat-detection tuning on the earclip side** (Elgendi / NCC / Kalman / watchdog params) lives in `narbis_runtime_config_t` v4 — see [§3.6](#36-the-runtime-config-struct). Only matters when the IBI source is the earclip; an H10-only build can ignore it. Write earclip config via the earclip's own `CONFIG_WRITE` characteristic — the [`0xC3`](#43-control-characteristic-0xff01--command-opcodes) relay path is currently unusable (v3/v4 payload-size mismatch).
 - **Brightness, strobe rate / duty, breathe BPM / inhale ratio / hold times / waveform, PPG program selection** are all single-byte opcodes in the [§4.3 opcode table](#43-control-characteristic-0xff01--command-opcodes) (`0xA2`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB7`).
 
 ### 4.4 Status characteristic `0xFF03` — notification multiplexer
@@ -1091,7 +1107,7 @@ The Edge multiplexes several packet types onto the same characteristic, distingu
 
 | Type byte | Cadence | Length | Purpose |
 |---|---|---|---|
-| `0xF0` | every 500 ms | 11 B | Raw ADC stats (min / max / mean of last window) |
+| `0xF0` | **not emitted** (current builds) | 11 B | Raw ADC stats — the on-glasses PPG front-end was removed; see §4.4.1 |
 | `0xF1` | on demand | 1 + N B (N ≤ 48) | Firmware log strings (printf output) |
 | `0xF2` | every 1000 ms | 18 B | Coherence packet (HRV bands + score) |
 | `0xF3` | every 1000 ms | 22 B | Health telemetry (uptime, heap, jitter, errors, LED state) — see §4.4.4 |
@@ -1107,6 +1123,8 @@ The Edge multiplexes several packet types onto the same characteristic, distingu
 Always subscribe to `0xFF03` before sending any OTA opcode, otherwise you'll miss the READY / PAGE_CRC / ERROR responses you need to drive the protocol. The relay frames `0xF4`–`0xFA` are also delivered on this same characteristic, so a single subscription covers everything.
 
 #### 4.4.1 ADC stats (`0xF0`) — 11 B
+
+> ⚠️ **Not emitted on current glasses builds.** The on-glasses PPG front-end was removed (the glasses are earclip-only now — no ADC read, no on-glasses beat detection), and the `0xF0` emitter has no remaining call sites. The layout below is kept for older firmware that still had the internal PPG.
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -1160,13 +1178,13 @@ The Edge derives this from earclip beats it receives via the BLE relay (see [§4
 | 17 | 2 | `jitter_max_us` | u16 LE; reset every 5 s |
 | 19 | 1 | `jitter_ticks_over` | u8; reset every 5 s |
 | 20 | 1 | `led_mode` 🆕 | u8 — `led_mode_t` enum: `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens. Mirror of the lens-driver state machine. (There is no "off" value — a clear lens is `static`/`breathe` at duty 0.) |
-| 21 | 1 | `led_duty` 🆕 | u8 — effective PWM duty 0–255 (0–100%). Snapshot of the actual lens output at emit time, not the requested duty. Useful for "is the lens doing what I asked?" overlays. |
+| 21 | 1 | `led_duty` 🆕 | u8 — effective lens duty as a **percentage, 0–100** (0 = clear, 100 = fully dark; **not** 0–255 — a stale firmware comment says 0–255, but every producer path writes 0–100). Snapshot of the actual lens output at emit time, not the requested duty. Useful for "is the lens doing what I asked?" overlays. |
 
 A spike in `ble_send_errors` means the iOS side is overwhelming the device — slow your writes. `led_mode` + `led_duty` were added in glasses fw v4.15.4 (PR #28); older firmware emits a 20-byte frame without these two bytes.
 
 #### 4.4.5 Relayed earclip CONFIG (`0xF4`) — 75 B
 
-🆕 **Path B.** Forwarded verbatim from the earclip's CONFIG characteristic when its value changes (or in response to a `0xC3` write you sent).
+🆕 **Path B.** Forwarded verbatim from the earclip's CONFIG characteristic when its value changes (e.g. after a direct CONFIG_WRITE / MODE write, or a `0xC5` refresh — the `0xC3` relay write is currently unusable, [§4.3](#43-control-characteristic-0xff01--command-opcodes)).
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -1195,6 +1213,8 @@ Maximum payload: 1 + 4 + 29·8 = **237 B**. The 1-byte type prefix is the only d
 - once when an iOS client connects to the Edge (so you know the current state immediately),
 - on every earclip connect / disconnect transition,
 - every 30 s as a heartbeat.
+
+> **Stock builds emit this too.** Even with the relay compile-disabled ([§4.6](#46-the-edge-as-relay-path-b)), the ~30 s heartbeat still fires with `linked = 0` — a steady `0xF6 00` cadence on `0xFF03` is normal on stock firmware, not a sign of a lost earclip.
 
 | Offset | Size | Field | Values |
 |---|---|---|---|
@@ -1310,6 +1330,8 @@ ui.setBars(earclipRssi === 0x7F ? null : earclipRssi,
 ```
 
 ### 4.5 PPG stream characteristic `0xFF04`
+
+> ⚠️ **Not emitted on current glasses builds.** The on-glasses PPG front-end was removed — the glasses are earclip-only, nothing feeds this stream, and the emitters have zero call sites. The characteristic still exists in the GATT table (subscribing succeeds, nothing arrives). The layouts below are kept for older firmware that still had the internal PPG. For live PPG, use the earclip's RAW_PPG ([§3.1.3](#313-raw_ppg--6bacca91)) — direct or relayed as `0xF5` on a relay-enabled build.
 
 Batched samples with embedded beat detection. The firmware ships **format `0x03`** (current, since v4.14.9). An older format `0x02` exists in legacy firmware and is documented at the end for back-compat.
 
@@ -1450,7 +1472,7 @@ In addition the Edge emits its own `0xF6` relay-link-state, `0xFA` link-quality,
 | Pattern | When to use it | Trade-offs |
 |---|---|---|
 | **A. Direct (two connections)** — connect to both the earclip and the Edge separately. | You want lowest-latency raw IBI for your own HRV pipeline; you want full control of earclip config. | More CoreBluetooth state to manage; user sees two devices in the system Bluetooth picker if they ever pair. |
-| **B. Single connection via Edge** — connect only to the Edge; consume `0xF4`/`0xF5`/`0xF6`/`0xF7` from `0xFF03`. **Requires a relay-enabled build** (`EARCLIP_CENTRAL_ENABLED 1` — see the note at the top of this section). | You're building a companion app that mainly drives Edge sessions; raw earclip-side data is enough via the relay. | One fewer connection to manage. Slight extra latency on relayed frames (one BLE hop). Earclip config writes go through the Edge via `0xC3` (still landing as a CONFIG_WRITE on the earclip end). |
+| **B. Single connection via Edge** — connect only to the Edge; consume `0xF4`/`0xF5`/`0xF6`/`0xF7` from `0xFF03`. **Requires a relay-enabled build** (`EARCLIP_CENTRAL_ENABLED 1` — see the note at the top of this section). | You're building a companion app that mainly drives Edge sessions; raw earclip-side data is enough via the relay. | One fewer connection to manage. Slight extra latency on relayed frames (one BLE hop). **Earclip config writes can't currently go through the Edge** — `0xC3` forwards a v3-era 50-byte payload that a v4 earclip rejects ([§4.3](#43-control-characteristic-0xff01--command-opcodes)); use a direct earclip connection for config changes. |
 
 ```swift
 // Pattern B: read the relay state and decide whether to expect earclip data.
@@ -1490,9 +1512,12 @@ func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error:
 }
 
 // Forward an earclip config write via the Edge:
-func writeEarclipConfigViaEdge(_ payload74B: Data) {
+// ⚠️ Currently unusable — the glasses forward a v3-era 50-byte payload that a v4
+// earclip rejects (§4.3). Kept for reference; write the earclip's CONFIG_WRITE
+// characteristic directly (§5) until the glasses relay is rebuilt against config v4.
+func writeEarclipConfigViaEdge(_ payload50B: Data) {
     var msg = Data([0xC3])
-    msg.append(payload74B)             // 74 B = 72 struct + 2 CRC, same as earclip's CONFIG_WRITE (Path C / v4)
+    msg.append(payload50B)             // glasses expect 50 B (v3-era NARBIS_CONFIG_WIRE_SIZE)
     edgePeripheral.writeValue(msg, for: edgeControl, type: .withResponse)
 }
 
@@ -1519,7 +1544,7 @@ switch (bytes[0]) {                                                       // 0xF
   case 0xF7: emit('relayedDiagnostic', { bytes: bytes.slice(1) }); break; // → parseDiagnostic (§3.1.8)
 }
 // relay-control writes:
-sendCtrlCommand(chCtrl, 0xC3, payload74B);                  // forward a CONFIG_WRITE to the earclip
+// (0xC3 currently unusable — glasses forward a v3-era 50 B payload a v4 earclip rejects, §4.3)
 sendCtrlCommand(chCtrl, 0xC4, new Uint8Array([on ? 1 : 0])); // toggle raw-PPG relay
 sendCtrlCommand(chCtrl, 0xC1);                              // forget earclip pairing
 ```
@@ -1853,7 +1878,7 @@ Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both d
 | Service | `0x00FF` | — | Same UUID on both devices |
 | Control | `0xFF01` | read + write | Opcodes (this is also the Edge command char — same UUID) |
 | Data | `0xFF02` | write + write-no-response | Firmware bytes in chunks ≤ 240 B |
-| Status | `0xFF03` | read + notify (indicate on Edge) | Status frames 3–7 B |
+| Status | `0xFF03` | read + notify (plain notify on both devices — [§7.3](#73-indicate-vs-notify)) | Status frames 1–7 B |
 
 ### 6.2 Constants
 
@@ -1861,13 +1886,13 @@ Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both d
 |---|---|
 | Page size | 4096 B (one flash erase block) |
 | Recommended chunk size | **244 B** (`MTU − 3` at the negotiated MTU 247; the dashboard uses `NARBIS_OTA_CHUNK_SIZE = 244`). Both devices accept up to `MTU − 3 = 244` per OTA-data write. |
-| Page CRC | CRC32 little-endian (computed by device, sent in PAGE_CRC notification) |
+| Page CRC | Standard CRC-32 (poly `0xEDB88320` — ESP-IDF `esp_crc32_le`, same as `zlib.crc32`), computed by the device over each full 4096-B page. ⚠️ Packed **big-endian** in the PAGE_CRC notification — see §6.4 |
 
 ### 6.3 Opcodes (write to `0xFF01` as `[opcode, param]`)
 
 | Opcode | Name | Param | Meaning |
 |---|---|---|---|
-| `0xA8` | START | `0x00` | Enter OTA mode; device responds with `READY` |
+| `0xA8` | START | `0x00`, or `[size:u32 LE]` (**Edge only**) | Enter OTA mode; device responds with `READY`. On the **Edge**, the optional 4-byte image size makes OTA-begin erase an **image-sized region** instead of the full slot — send it (the erase is what blocks the radio; see the note at the end of §6.8). The **earclip** accepts only the exact 2-byte `[0xA8, 0x00]` form (its control point rejects any other write length) and erases incrementally (`esp_ota_begin(OTA_SIZE_UNKNOWN)`), so it has no long erase to shorten |
 | `0xA9` | FINISH | `0x00` | Flush, set boot partition, reboot |
 | `0xAA` | CANCEL | `0x00` | Abort transfer |
 | `0xAD` | PAGE_CONFIRM | `0x01` commit / `0x00` resend | Driven by client after verifying PAGE_CRC |
@@ -1876,13 +1901,22 @@ Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both d
 
 | First byte | Name | Length | Payload |
 |---|---|---|---|
-| `0x01` | READY | 4 B | `01 00 00 00` |
-| `0x03` | SUCCESS | 4 B | `03 00 00 00` — reboot is imminent, expect disconnect |
-| `0x04` | ERROR | 4 B | `04 <err> 00 00` |
-| `0x05` | CANCELLED | 4 B | `05 00 00 00` |
-| `0x06` | PAGE_CRC | 7 B | `06 page_hi page_lo crc32_le[4]` — client must verify and ack |
+| `0x01` | READY | **1 B** Edge / 4 B earclip | `01` (earclip pads: `01 00 00 00`) |
+| `0x02` | PROGRESS | — | Reserved; defined on both devices, emitted by neither |
+| `0x03` | SUCCESS | **1 B** Edge / 4 B earclip | `03` (earclip: `03 00 00 00`) — reboot is imminent, expect disconnect |
+| `0x04` | ERROR | **2 B** Edge / 4 B earclip | `04 <err>` (earclip: `04 <err> 00 00`) |
+| `0x05` | CANCELLED | **1 B** Edge / 4 B earclip | `05` (earclip: `05 00 00 00`) |
+| `0x06` | PAGE_CRC | 7 B | `06 page_hi page_lo crc32_be[4]` — client must verify and ack |
 | `0x07` | PAGE_OK | 3 B | `07 page_hi page_lo` — page committed to flash |
 | `0x08` | PAGE_RESEND | 3 B | `08 page_hi page_lo` — restart this page |
+
+> **Don't length-match the simple statuses.** The Edge sends them minimal (1–2 B); the earclip zero-pads the same codes to 4 B. Dispatch on the first byte and read `<err>` from byte 1 when present. (Earlier revisions of this doc showed the 4-B padded forms for both devices.)
+>
+> **Byte-order quirk — the `0x06` PAGE_CRC frame is big-endian throughout.** The page number is `page_hi` first (as in `0x07`/`0x08`), **and the CRC32 is packed most-significant byte first** (`crc >> 24` at offset 3). This is the one exception to the little-endian rule ([§9.2](#92-wire-conventions)). Earlier revisions of this doc said `crc32_le` — unpack it little-endian and every page verification fails.
+>
+> **The final partial page gets no PAGE_CRC.** Only full 4096-B pages trigger the CRC/confirm exchange; the trailing partial page is flushed by FINISH (`0xA9`) without a per-page check. Don't wait for a `0x06` after the last chunks — send `0xA9`.
+>
+> **PAGE_RESEND rewinds the whole page.** On `[0xAD, 0x00]` the device discards its entire 4096-B page buffer (offset back to 0) — resend the page from byte 0, not just the tail.
 
 ### 6.5 Error codes (byte 1 of an `0x04 ERROR` notification)
 
@@ -1974,10 +2008,11 @@ func handleOTAStatus(_ data: Data) {
     guard let type = data.first else { return }
     switch type {
     case 0x01: print("OTA READY")
-    case 0x06:  // PAGE_CRC
+    case 0x06:  // PAGE_CRC — page number AND crc32 are big-endian (§6.4)
         let pageHi = data[1], pageLo = data[2]
         let pageNumber = UInt16(pageHi) << 8 | UInt16(pageLo)
-        let crc = data.subdata(in: 3..<7).withUnsafeBytes { $0.load(as: UInt32.self) }
+        let crc = UInt32(data[3]) << 24 | UInt32(data[4]) << 16
+                | UInt32(data[5]) << 8  | UInt32(data[6])
         if crc == myComputedCRC32(forPage: pageNumber) {
             peripheral.writeValue(Data([0xAD, 0x01]), for: chControl, type: .withResponse)
         } else {
@@ -2012,6 +2047,7 @@ async function sendPageChunks(cD /* 0xFF02 */, pageData) {
 }
 // 1. cC.writeValueWithoutResponse([0xA8, 0x00])  → wait for 0x01 READY
 // 2. per 4 KB page: sendPageChunks(cD, page) → wait for 0x06 PAGE_CRC, then:
+//      frame.crc = (b[3]<<24 | b[4]<<16 | b[5]<<8 | b[6]) >>> 0;   // BIG-endian on the wire (§6.4)
 //      crc32(page) === frame.crc ? cC.write([0xAD, 0x01]) /*commit*/ : cC.write([0xAD, 0x00]) /*resend*/
 //    → 0x07 PAGE_OK (next page) | 0x08 PAGE_RESEND (retry)
 // 3. cC.write([0xA9, 0x00]) FINISH → 0x03 SUCCESS (device reboots)
@@ -2034,7 +2070,7 @@ iOS aggressively caches discovered services per peripheral identifier. Neither d
 
 ### 7.3 Indicate vs notify
 
-The Edge's `0xFF03` uses **indicate** internally (every notification is ACKed by iOS before the next is sent). Pace OTA writes accordingly: keep at most one in-flight indicate at a time. The earclip uses **notify** — back-pressure is the OS's job, but don't hammer CONFIG_WRITE faster than ~10 Hz.
+**Both devices use plain notify — nothing uses indicate.** The Edge's `0xFF03` is registered with `BLE_GATT_CHR_F_NOTIFY` and emits via `ble_gatts_notify_custom()`; there is no per-frame link-layer ACK, and no "keep one indicate in flight" pacing rule for OTA. (Earlier revisions of this doc claimed the Edge used indicate internally — that was wrong.) Back-pressure on notification-heavy paths is the OS's job on both devices; on the write side, don't hammer the earclip's CONFIG_WRITE faster than ~10 Hz.
 
 ### 7.4 CCCD subscription order matters for Edge OTA
 
@@ -2107,6 +2143,9 @@ button.addEventListener('click', async () => {
 | Health telemetry `ble_send_errors` climbing | Client overflowing the device's send queue | Slow down command writes; check for tight write loops |
 | `firmware_revision` reads as empty string | Read before discovery completed | Read inside `didDiscoverCharacteristicsFor:` callback, not on `didConnect` |
 | RAW_PPG never fires | `data_format` is `IBI_ONLY` | Write MODE to set `data_format = 1` or `2` |
+| Edge `0xFF04` / `0xF0` never arrive | The on-glasses PPG front-end was removed — neither is emitted on current builds ([§4.4.1](#441-adc-stats-0xf0--11-b), [§4.5](#45-ppg-stream-characteristic-0xff04)) | Use earclip PPG/IBI instead — direct ([§3.1](#31-custom-narbis-service--a24080b2-8857-4785-b3ba-a43b66af4f28)) or relayed on a relay-enabled build |
+| Every OTA page fails CRC verification | Client unpacks the `0x06` CRC32 little-endian | The PAGE_CRC frame packs page number **and** CRC32 big-endian ([§6.4](#64-status-notifications-read-from-0xff03)) |
+| Glasses vanish mid-session while connected | Session auto-sleep expired (default 30 min from wake, `0xA4`-persisted) → deep sleep | Set a longer duration via `0xA4` at session start; re-wake by magnet tap |
 
 ---
 
@@ -2146,11 +2185,11 @@ EDGE — Single custom service (Path B / current)
                                                opcodes 0xA2..0xE0 (sparse)
                                                🆕 0xC1/C3/C4/C5 (relay control), 0xCA/CB (H10 path), 0xE0 (coh tuning)
     OTA Data                          0xFF02   write + write-no-response
-    Status (multiplexed)              0xFF03   read + notify (indicate)
-                                               own packets 0xF0/F1/F2/F3/FA
+    Status (multiplexed)              0xFF03   read + notify (plain notify — §7.3)
+                                               own packets 0xF1/F2/F3/FA (0xF0 not emitted — §4.4.1)
                                                🆕 relay packets 0xF4..0xF9
                                                OTA codes 0x01..0x08
-    PPG Stream                        0xFF04   read + notify
+    PPG Stream                        0xFF04   read + notify (not emitted on current builds — §4.5)
 
 OTA — Shared between Edge and Earclip (same UUIDs)
   Service                             0x00FF
@@ -2161,12 +2200,12 @@ OTA — Shared between Edge and Earclip (same UUIDs)
 
 ### 9.2 Wire conventions
 
-- Endianness: **little-endian** everywhere.
+- Endianness: **little-endian** everywhere. (Single exception: the OTA `0x06`/`0x07`/`0x08` status frames pack the page number — and, in `0x06`, the CRC32 — **big-endian**. See [§6.4](#64-status-notifications-read-from-0xff03).)
 - Structs: byte-packed, no padding except where explicitly named (`reserved_*`).
 - Booleans: `u8` with values `0` or `1` — never a C `bool`.
 - Fixed-point: scaled integers (`_x10`, `_x100`, `_x1000`) — no float in any wire format.
 - CRC for config and ESP-NOW frames: **CRC-16-CCITT-FALSE** (poly `0x1021`, init `0xFFFF`, no reflect, no xor-out).
-- CRC for OTA pages: **CRC-32** little-endian.
+- CRC for OTA pages: standard **CRC-32** (poly `0xEDB88320`, = `zlib.crc32`) — but packed **big-endian** in the PAGE_CRC frame.
 
 ### 9.3 Authoritative sources
 
