@@ -123,6 +123,23 @@
       margin-bottom: .35rem;
     }
 
+    /* FCC card only — this one flashes test firmware that is not a working
+       product, so it should not read like the other tools. */
+    .dev-tag-fcc {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: #ff6b4a;
+      background: rgba(255, 107, 74, .14);
+      border: 1px solid rgba(255, 107, 74, .5);
+      padding: 2px 6px;
+      border-radius: 5px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
     .card-desc {
       font-size: .85rem;
       color: var(--muted);
@@ -260,6 +277,34 @@
     </div>
     <div class="card-footer">
       <span class="card-path">narbiscorp.github.io/edge-OTA</span>
+      <svg class="card-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+      </svg>
+    </div>
+  </a>
+
+  <!-- ── FCC OTA Updater ── -->
+  <a class="card" href="https://narbiscorp.github.io/edge-OTA/fcc/" target="_blank" rel="noopener">
+    <div class="card-icon-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4.93 4.93a10 10 0 0 0 0 14.14"/>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        <path d="M7.76 7.76a6 6 0 0 0 0 8.48"/>
+        <path d="M16.24 7.76a6 6 0 0 1 0 8.48"/>
+        <circle cx="12" cy="12" r="2"/>
+      </svg>
+    </div>
+    <div class="card-body">
+      <div class="card-title">FCC OTA Updater <span class="dev-tag-fcc">test only</span></div>
+      <div class="card-desc">
+        Flashes <strong>FCC certification test firmware</strong> to Edge glasses, listed
+        straight from the <code>edge-firmware-fcc</code> build repo. These builds contain
+        Direct Test Mode (continuous carrier on 2402/2440/2480&nbsp;MHz) — they are not a
+        working product. Re-flash production firmware afterwards.
+      </div>
+    </div>
+    <div class="card-footer">
+      <span class="card-path">narbiscorp.github.io/edge-OTA/fcc</span>
       <svg class="card-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
       </svg>
