@@ -82,6 +82,10 @@ export interface SessionState {
 }
 
 const DEFAULT_ANALYSIS_WINDOW_SEC = 64;
+/* Matches settings.ts `accRateHz`. 100 Hz doubles how often the H10 sends a
+ * frame compared with the driver's 50 Hz default, which is what makes the live
+ * accelerometer plot move continuously rather than in visible steps. */
+const DEFAULT_ACC_RATE_HZ = 100;
 
 class RespirationSession extends EventTarget {
   private worker: Worker | null = null;
@@ -175,6 +179,9 @@ class RespirationSession extends EventTarget {
     narbisDevice.addEventListener('beatReceived', this.onEarclipBeat as EventListener);
 
     this.timer = setInterval(() => this.tick(), 1000);
+    // Apply the app's preferred ACC rate before any stream opens.
+    polarH10.setPreferredAccRate(DEFAULT_ACC_RATE_HZ);
+    lowerStrap.setPreferredAccRate(DEFAULT_ACC_RATE_HZ);
   }
 
   /** Detach everything. Leaves the log intact — teardown is not a data event. */
@@ -263,6 +270,28 @@ class RespirationSession extends EventTarget {
       this.patch({ accStreaming: false });
       this.log(`ACC stream failed: ${(err as Error).message}`, 'error');
       throw err;
+    }
+  }
+
+  /** Ask both straps for a new accelerometer rate. The H10 only accepts a rate
+   * at stream start, so a live stream is stopped and restarted. */
+  async setAccRate(hz: number): Promise<void> {
+    polarH10.setPreferredAccRate(hz);
+    lowerStrap.setPreferredAccRate(hz);
+    this.log(`Accelerometer rate → ${hz} Hz`);
+    if (this.state.accStreaming) {
+      await polarH10.stopAccStream();
+      await polarH10.startAccStream().catch((err) => {
+        this.log(`ACC restart failed: ${(err as Error).message}`, 'error');
+      });
+      this.patch({ accStreaming: polarH10.isAccStreaming });
+    }
+    if (this.state.lowerAccStreaming) {
+      await lowerStrap.stopAccStream();
+      await lowerStrap.startAccStream().catch((err) => {
+        this.log(`Lower ACC restart failed: ${(err as Error).message}`, 'error');
+      });
+      this.patch({ lowerAccStreaming: lowerStrap.isAccStreaming });
     }
   }
 

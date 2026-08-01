@@ -68,8 +68,9 @@ export default function EcgChart({
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
-    refreshHz: 10,
+    refreshHz: 20,
     exportName: 'narbis-h10-ecg',
+    seq: () => sessionLog.seq + rev.current * 1_000_000,
     pull: () => {
       const now = Date.now();
       const sh = shapingRef.current;
@@ -93,7 +94,7 @@ export default function EcgChart({
           hovertemplate: 'ECG: %{y:.0f} µV<extra></extra>',
         } as Data,
       ];
-      return { traces, seq: sessionLog.seq + rev.current * 1_000_000 };
+      return { traces };
     },
   });
 

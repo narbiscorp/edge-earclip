@@ -196,9 +196,36 @@ why it hid for a long time, and fatal for ECG, where the device answers
 Some H10s also refuse ECG while the accelerometer is streaming. The app retries
 once with ACC paused and says so in the event log, restoring ACC when ECG stops.
 
+## Why the plots stay smooth
+
+`useAnalysisPlot` takes a cheap `seq()` and an expensive `pull()`, and only
+calls `pull()` when `seq()` changes.
+
+That split is the whole performance story. Building one accelerometer trace
+means extracting the window, removing a 12 s baseline and decimating — measured
+at 1.6 ms for a 5-minute window at 50 Hz, 2.6 ms at 100 Hz. Six panels (three
+axes x two straps) is ~10-15 ms. Doing that on every animation frame, and only
+then checking whether the data had changed, consumed the entire frame budget
+before Plotly drew anything: the accelerometer looked like it updated at 1 Hz
+when it was in fact redrawing constantly with no time left to do it in.
+
+Now that cost is paid only when a frame of data actually arrives. Between
+arrivals the loop does a cheap `relayout` to slide the axis, so the trace scrolls
+continuously at the panel's refresh rate.
+
+The other half is how often data arrives at all, which is a property of the
+strap: the H10 fills each notification to the MTU, so 200 Hz sends frames four
+times as often as 50 Hz. The rate selector on the accelerometer card requests
+25/50/100/200 Hz (default 100); it is about frame cadence, not about resolving
+faster breathing, since respiration is below 0.5 Hz either way.
+
+Filter windows are specified in SECONDS, not samples, so the same setting means
+the same smoothing at any rate.
+
 ## Deviations from the dual-strap spec
 
-- **Sample rate is 50 Hz, not 200 Hz.** Respiration lives below 0.5 Hz, so
+- **Default sample rate is 100 Hz, selectable 25-200 Hz.** The spec asks for
+  200 Hz; Respiration lives below 0.5 Hz, so
   50 Hz is 50x Nyquist and already far more than the analysis needs. Raising the
   driver's preferred ACC rate would also change it for the main dashboard's
   Mode B, which is a bigger blast radius than the benefit justifies.

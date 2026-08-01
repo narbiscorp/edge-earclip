@@ -10,6 +10,7 @@ import {
   FILTER_LABELS,
   RESAMPLE_OPTIONS,
   SHAPE_OPTIONS,
+  SMOOTH_OPTIONS,
   type SettingsState,
 } from './settings';
 import type { TraceShaping } from './dsp';
@@ -147,21 +148,13 @@ export function ShapingControls({
       />
 
       {usesN && (
-        <label className="field">
-          <span className="label">Window</span>
-          <input
-            className="input"
-            type="range"
-            min={3}
-            max={61}
-            step={2}
-            value={shaping.filterN}
-            onChange={(e) => patch({ filterN: Number(e.target.value) })}
-          />
-          <span className="label" style={{ minWidth: '3.2ch' }}>
-            {shaping.filterN}
-          </span>
-        </label>
+        <Select
+          label="Smoothing"
+          value={shaping.filterSec}
+          options={SMOOTH_OPTIONS}
+          onChange={(filterSec) => patch({ filterSec })}
+          info="Filter window in seconds. Time rather than samples, so it means the same amount of smoothing whether the accelerometer is streaming at 25 Hz or 200 Hz."
+        />
       )}
 
       {shaping.filter === 'savgol' && (

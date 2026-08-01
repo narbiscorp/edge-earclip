@@ -256,7 +256,7 @@ describe('shapeSeries', () => {
       ...DEFAULT_SHAPING,
       resampleHz: 1,
       filter: 'movavg',
-      filterN: 5,
+      filterSec: 5, // 5 s at the 1 Hz resample grid = a 5-sample window
       maxPoints: 50,
     });
     expect(out.x.length).toBeLessThanOrEqual(50);
@@ -264,6 +264,32 @@ describe('shapeSeries', () => {
     const mid = out.y[Math.floor(out.y.length / 2)];
     expect(mid).toBeGreaterThan(2);
     expect(mid).toBeLessThan(8);
+  });
+
+  it('converts the filter window from seconds using the actual spacing', () => {
+    // Same 5-sample smoothing expressed at two different sample rates must give
+    // the same result — the whole point of specifying the window in time.
+    const mk = (hz: number, n: number) => {
+      const x: number[] = [];
+      const y: number[] = [];
+      for (let i = 0; i < n; i++) {
+        x.push((i * 1000) / hz);
+        y.push(Math.sin((2 * Math.PI * i) / (4 * hz))); // 4 s period either way
+      }
+      return { x, y };
+    };
+    const shaping = { ...DEFAULT_SHAPING, filter: 'movavg' as const, filterSec: 1, maxPoints: 100000 };
+    const slow = shapeSeries(...(Object.values(mk(10, 200)) as [number[], number[]]), shaping);
+    const fast = shapeSeries(...(Object.values(mk(40, 800)) as [number[], number[]]), shaping);
+    // Compare at the same instant, mid-series, away from the edges.
+    const at = (r: { x: number[]; y: number[] }, tMs: number): number => {
+      let best = 0;
+      for (let i = 1; i < r.x.length; i++) {
+        if (Math.abs(r.x[i] - tMs) < Math.abs(r.x[best] - tMs)) best = i;
+      }
+      return r.y[best];
+    };
+    expect(at(fast, 10_000)).toBeCloseTo(at(slow, 10_000), 2);
   });
 
   it('leaves data untouched when nothing is configured', () => {

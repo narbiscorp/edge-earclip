@@ -234,14 +234,17 @@ export interface AccConfig {
 /** Build the ACC start command, choosing values the device actually supports (echoing its offered
  * settings). CHANNELS is intentionally omitted — ACC is implicitly 3-axis, and a malformed/short
  * channels TLV is a known cause of the H10's "invalid parameter" (status 5) rejection. */
-function buildAccStart(avail: Map<number, number[]>): { cmd: Uint8Array; cfg: AccConfig } {
+function buildAccStart(
+  avail: Map<number, number[]>,
+  preferredRateHz: number = ACC_PREF_SAMPLE_RATE_HZ,
+): { cmd: Uint8Array; cfg: AccConfig } {
   const pick = (type: number, preferred: number, best: (o: number[]) => number): number => {
     const opts = avail.get(type);
     if (!opts || opts.length === 0) return preferred; // device didn't constrain this setting
     return opts.includes(preferred) ? preferred : best(opts);
   };
-  const sampleRateHz = pick(PMD_SET_SAMPLE_RATE, ACC_PREF_SAMPLE_RATE_HZ, (o) => {
-    const le = o.filter((r) => r <= ACC_PREF_SAMPLE_RATE_HZ);
+  const sampleRateHz = pick(PMD_SET_SAMPLE_RATE, preferredRateHz, (o) => {
+    const le = o.filter((r) => r <= preferredRateHz);
     return le.length ? Math.max(...le) : Math.min(...o);
   });
   const resolutionBits = pick(PMD_SET_RESOLUTION, ACC_PREF_RESOLUTION_BITS, (o) => o[0]);
@@ -421,6 +424,12 @@ export class PolarH10 extends EventTarget {
   private accStreaming = false;
   private accFramesSeen = 0;
   private accRateHz = ACC_PREF_SAMPLE_RATE_HZ; // the rate the H10 actually granted
+  /* Rate we ASK for. Per-instance rather than a module constant so a caller that
+   * wants smoother, more frequent frames can raise it without changing it for
+   * every other consumer of this driver. The H10 offers 25/50/100/200 Hz and
+   * fills each notification to the MTU, so a higher rate also means frames
+   * arrive more often — which is what actually makes a live plot look smooth. */
+  private accPreferredRateHz = ACC_PREF_SAMPLE_RATE_HZ;
   private ecgStreaming = false;
   private ecgFramesSeen = 0;
   private ecgRateHz = ECG_PREF_SAMPLE_RATE_HZ;
@@ -445,6 +454,16 @@ export class PolarH10 extends EventTarget {
 
   get isAccStreaming(): boolean {
     return this.accStreaming;
+  }
+
+  /** Preferred accelerometer rate in Hz (25/50/100/200). Takes effect on the
+   * next startAccStream(); restart the stream to apply it to a live session. */
+  setPreferredAccRate(hz: number): void {
+    this.accPreferredRateHz = hz;
+  }
+
+  get preferredAccRate(): number {
+    return this.accPreferredRateHz;
   }
 
   get isEcgStreaming(): boolean {
@@ -561,7 +580,7 @@ export class PolarH10 extends EventTarget {
     });
 
     // 2. Start with a supported combo and confirm the device accepted it.
-    const { cmd, cfg } = buildAccStart(avail);
+    const { cmd, cfg } = buildAccStart(avail, this.accPreferredRateHz);
     this.accRateHz = cfg.sampleRateHz;
     const rdv = await this.runCtrl(async () => {
       const startResp = this.waitForCtrlResponse();

@@ -390,8 +390,13 @@ export type FilterKind = 'none' | 'movavg' | 'median' | 'savgol' | 'ewma';
 /** How a trace is conditioned before it is drawn. One of these per chart. */
 export interface TraceShaping {
   filter: FilterKind;
-  /** Window length in samples for movavg / median / savgol. */
-  filterN: number;
+  /** Filter window in SECONDS for movavg / median / savgol.
+   *
+   * Time rather than samples, because the accelerometer can stream at 25, 50,
+   * 100 or 200 Hz: a fixed sample count would mean four different amounts of
+   * smoothing depending on a setting made elsewhere. Converted to samples from
+   * the series' actual spacing. */
+  filterSec: number;
   /** Per-sample weight for the zero-phase EWMA. Lower = smoother. */
   ewmaAlpha: number;
   /** Polynomial order for Savitzky–Golay. */
@@ -410,7 +415,7 @@ export interface TraceShaping {
 
 export const DEFAULT_SHAPING: TraceShaping = {
   filter: 'none',
-  filterN: 5,
+  filterSec: 0.2,
   ewmaAlpha: 0.2,
   savgolOrder: 2,
   resampleHz: 0,
@@ -419,15 +424,29 @@ export const DEFAULT_SHAPING: TraceShaping = {
   detrendSec: 0,
 };
 
+/** Filter window in samples, from the configured seconds and the series' own
+ * spacing. Always odd and at least 3, so a centred window stays centred. */
+function filterWindowSamples(x: readonly number[], s: TraceShaping): number {
+  const n = x.length;
+  if (n < 2 || s.filterSec <= 0) return 0;
+  const span = x[n - 1] - x[0];
+  if (!(span > 0)) return 0;
+  const dtMs = span / (n - 1);
+  let win = Math.round((s.filterSec * 1000) / dtMs);
+  if (win % 2 === 0) win += 1;
+  return win < 3 ? 0 : win;
+}
+
 /** Apply the configured filter to an already-uniform series. */
-export function applyFilter(y: readonly number[], s: TraceShaping): number[] {
+export function applyFilter(y: readonly number[], s: TraceShaping, windowSamples: number): number[] {
+  if (windowSamples < 3 && s.filter !== 'ewma') return y.slice();
   switch (s.filter) {
     case 'movavg':
-      return movingAverage(y, s.filterN);
+      return movingAverage(y, windowSamples);
     case 'median':
-      return medianFilter(y, s.filterN);
+      return medianFilter(y, windowSamples);
     case 'savgol':
-      return savitzkyGolay(y, s.filterN, s.savgolOrder);
+      return savitzkyGolay(y, windowSamples, s.savgolOrder);
     case 'ewma':
       return ewmaZeroPhase(y, s.ewmaAlpha);
     case 'none':
@@ -461,6 +480,6 @@ export function shapeSeries(
   }
   if (sy.length === 0) return { x: [], y: [] };
   if (s.detrendSec > 0) sy = removeBaseline(sx, sy, s.detrendSec);
-  const filtered = applyFilter(sy, s);
+  const filtered = applyFilter(sy, s, filterWindowSamples(sx, s));
   return decimateLTTB(sx, filtered, s.maxPoints);
 }

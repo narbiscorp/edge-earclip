@@ -85,8 +85,9 @@ function MetricPanel({
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
-    refreshHz: 4,
+    refreshHz: 6,
     exportName: `narbis-${title.toLowerCase().replace(/\s+/g, '-')}`,
+    seq: () => sessionLog.seq + rev.current * 1_000_000,
     pull: () => {
       const now = Date.now();
       const win = viewRef.current;
@@ -104,7 +105,7 @@ function MetricPanel({
           hovertemplate: `${s.name}: %{y:.${s.decimals}f} ${unit}<extra></extra>`,
         } as Data;
       });
-      return { traces, seq: sessionLog.seq + rev.current * 1_000_000 };
+      return { traces };
     },
   });
 

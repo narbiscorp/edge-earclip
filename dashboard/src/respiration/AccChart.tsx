@@ -17,10 +17,11 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { Data } from 'plotly.js';
 import { sessionLog, type StrapId } from './log';
+import { respirationSession } from './session';
 import { shapeSeries, type TraceShaping } from './dsp';
 import { useAnalysisPlot } from './plot';
 import { SERIES, INK, baseLayout, axisStyle } from './theme';
-import { useSettings, DETREND_OPTIONS, GAIN_OPTIONS } from './settings';
+import { useSettings, DETREND_OPTIONS, GAIN_OPTIONS, ACC_RATE_OPTIONS } from './settings';
 import { ShapingControls, Readout, fmt, Info, Check } from './ui';
 
 type AxisKey = 'x' | 'y' | 'z' | 'mag';
@@ -97,8 +98,9 @@ function AxisPanel({
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
-    refreshHz: 8,
+    refreshHz: 30,
     exportName: `narbis-h10-acc-${strap}-${axis.key}`,
+    seq: () => sessionLog.seq + rev.current * 1_000_000,
     pull: () => {
       const now = Date.now();
       const sh = shapingRef.current;
@@ -122,7 +124,7 @@ function AxisPanel({
           hovertemplate: `${axis.name}: %{y:.1f} mG<extra></extra>`,
         } as Data,
       ];
-      return { traces, seq: sessionLog.seq + rev.current * 1_000_000 };
+      return { traces };
     },
   });
 
@@ -157,7 +159,8 @@ export default function AccChart({
   connected?: boolean;
 }): ReactNode {
   const settings = useSettings();
-  const { accShaping, patchAccShaping, acc, toggleAcc, accGain, setAccGain } = settings;
+  const { accShaping, patchAccShaping, acc, toggleAcc, accGain, setAccGain, accRateHz, setAccRateHz } =
+    settings;
 
   // Both straps deliberately share the axis selection, conditioning and gain
   // settings: the point of a second strap is comparing it against the first,
@@ -242,6 +245,27 @@ export default function AccChart({
             onChange={(e) => patchAccShaping({ detrendSec: Number(e.target.value) })}
           >
             {DETREND_OPTIONS.map((o) => (
+              <option key={o.value} value={String(o.value)}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span className="label">
+            Rate
+            <Info text="Accelerometer sample rate requested from the H10. Higher is not about resolving faster breathing — respiration is below 0.5 Hz — but about how often frames arrive: the strap fills each notification to the MTU, so 200 Hz delivers them four times as often as 50 Hz and the plot moves that much more continuously. It also costs strap battery and log space. Changing this restarts the stream." />
+          </span>
+          <select
+            className="input"
+            value={String(accRateHz)}
+            onChange={(e) => {
+              const hz = Number(e.target.value);
+              setAccRateHz(hz);
+              void respirationSession.setAccRate(hz);
+            }}
+          >
+            {ACC_RATE_OPTIONS.map((o) => (
               <option key={o.value} value={String(o.value)}>
                 {o.label}
               </option>

@@ -86,6 +86,12 @@ export default function DiaphragmChart({
   // The latest analysis, so the plot's pull() can draw the aligned traces
   // without recomputing them at frame rate.
   const resultRef = useRef<DiaphragmResult | null>(null);
+  /** Bumped each time a new analysis lands, so the plot knows to rebuild. */
+  const analysisSeq = useRef(0);
+  // Switching overlay/differential changes the traces without new data arriving.
+  useEffect(() => {
+    analysisSeq.current += 1;
+  }, [diaphragmView]);
 
   const optsRef = useRef({ chestStrap, abdoStrap, diaphragmAxis, calibChest, calibAbdo });
   optsRef.current = { chestStrap, abdoStrap, diaphragmAxis, calibChest, calibAbdo };
@@ -106,6 +112,7 @@ export default function DiaphragmChart({
         calibAbdo: o.calibAbdo,
       });
       resultRef.current = r;
+      analysisSeq.current += 1;
       setResult(r);
     };
     run();
@@ -166,11 +173,12 @@ export default function DiaphragmChart({
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
-    refreshHz: 4,
+    refreshHz: 20,
     exportName: 'narbis-diaphragm',
+    seq: () => analysisSeq.current,
     pull: () => {
       const r = resultRef.current;
-      if (!r || r.t.length === 0) return { traces: [], seq: sessionLog.seq };
+      if (!r || r.t.length === 0) return { traces: [] };
       const x = r.t.map((t) => new Date(t));
       const traces: Data[] =
         viewModeRef.current === 'differential'
@@ -205,7 +213,7 @@ export default function DiaphragmChart({
                 hovertemplate: 'abdomen: %{y:.1f} mG<extra></extra>',
               } as Data,
             ];
-      return { traces, seq: sessionLog.seq };
+      return { traces };
     },
   });
 

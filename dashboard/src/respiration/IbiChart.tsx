@@ -64,8 +64,9 @@ export default function IbiChart(): ReactNode {
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
-    refreshHz: 6,
+    refreshHz: 10,
     exportName: 'narbis-tachogram',
+    seq: () => sessionLog.seq + rev.current * 1_000_000,
     pull: () => {
       const now = Date.now();
       const win = viewRef.current;
@@ -108,7 +109,7 @@ export default function IbiChart(): ReactNode {
         }
       }
 
-      return { traces, seq: sessionLog.seq + rev.current * 1_000_000 };
+      return { traces };
     },
   });
 

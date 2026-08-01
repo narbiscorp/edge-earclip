@@ -73,6 +73,28 @@ export const GAIN_OPTIONS: ReadonlyArray<{ value: number | null; label: string }
   { value: 1200, label: '±1200 mG' },
 ];
 
+/** Accelerometer sample rates the H10 offers. Higher is not about resolving
+ * faster breathing — respiration is below 0.5 Hz — but about how OFTEN frames
+ * arrive: the strap fills each notification to the MTU, so 200 Hz delivers them
+ * four times as often as 50 Hz, and the plot moves that much more continuously. */
+export const ACC_RATE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 25, label: '25 Hz' },
+  { value: 50, label: '50 Hz' },
+  { value: 100, label: '100 Hz' },
+  { value: 200, label: '200 Hz' },
+];
+
+/** Smoothing windows, in seconds so they mean the same thing at every rate. */
+export const SMOOTH_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0, label: 'off' },
+  { value: 0.05, label: '50 ms' },
+  { value: 0.1, label: '100 ms' },
+  { value: 0.25, label: '250 ms' },
+  { value: 0.5, label: '500 ms' },
+  { value: 1, label: '1 s' },
+  { value: 2, label: '2 s' },
+];
+
 export const SHAPE_OPTIONS: ReadonlyArray<{ value: TraceShaping['shape']; label: string }> = [
   { value: 'linear', label: 'linear' },
   { value: 'spline', label: 'spline' },
@@ -133,6 +155,8 @@ export interface SettingsState {
   ecgShaping: TraceShaping;
   /** Fixed ± range for every accelerometer panel, or null for auto-gain. */
   accGain: number | null;
+  /** Requested H10 accelerometer rate, Hz. */
+  accRateHz: number;
 
   panels: PanelToggles;
   coherence: CoherenceToggles;
@@ -156,6 +180,7 @@ export interface SettingsState {
   patchAccShaping: (p: Partial<TraceShaping>) => void;
   patchEcgShaping: (p: Partial<TraceShaping>) => void;
   setAccGain: (v: number | null) => void;
+  setAccRateHz: (hz: number) => void;
   togglePanel: (k: keyof PanelToggles) => void;
   toggleCoherence: (k: keyof CoherenceToggles) => void;
   toggleAcc: (k: keyof AccToggles) => void;
@@ -185,11 +210,21 @@ export const useSettings = create<SettingsState>((set) => ({
   // 50 Hz x 3 axes over a long window is the one place decimation matters.
   // Baseline removal is ON by default: without it the breathing movement this
   // page exists to show is a sub-1% wiggle on the gravity offset.
-  accShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 2500, detrendSec: 12 },
+  accShaping: {
+    ...DEFAULT_SHAPING,
+    shape: 'linear',
+    maxPoints: 4000,
+    detrendSec: 12,
+    // A little smoothing by default: at 100 Hz the raw trace carries sensor
+    // noise and footfall that swamp a few-mG breath on screen.
+    filter: 'movavg',
+    filterSec: 0.15,
+  },
   // ECG keeps its absolute scale by default — the QRS amplitude is meaningful,
   // and the wander is obvious enough that removing it should be a choice.
   ecgShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 4000, detrendSec: 0 },
   accGain: null,
+  accRateHz: 100,
 
   panels: { hr: true, hrv: true, coherence: true, respiration: true },
   coherence: {
@@ -217,6 +252,7 @@ export const useSettings = create<SettingsState>((set) => ({
   patchAccShaping: (p) => set((s) => ({ accShaping: { ...s.accShaping, ...p } })),
   patchEcgShaping: (p) => set((s) => ({ ecgShaping: { ...s.ecgShaping, ...p } })),
   setAccGain: (accGain) => set({ accGain }),
+  setAccRateHz: (accRateHz) => set({ accRateHz }),
   togglePanel: (k) => set((s) => ({ panels: { ...s.panels, [k]: !s.panels[k] } })),
   toggleCoherence: (k) => set((s) => ({ coherence: { ...s.coherence, [k]: !s.coherence[k] } })),
   toggleAcc: (k) => set((s) => ({ acc: { ...s.acc, [k]: !s.acc[k] } })),

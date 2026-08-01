@@ -68,13 +68,24 @@ export interface PlotSnapshot {
   traces: Data[];
   /** Layout keys to merge on this frame (y-ranges, annotations, …). */
   layoutPatch?: Partial<Layout>;
-  /** Monotonic revision. When unchanged and not following, the frame is skipped. */
-  seq: number;
 }
 
 export interface UseAnalysisPlotOptions {
   key: ChartKey;
   baseLayout: Partial<Layout>;
+  /**
+   * CHEAP revision counter, read every frame. `pull()` only runs when this
+   * changes.
+   *
+   * The split matters: building a trace means extracting the window,
+   * removing the baseline and decimating — tens of thousands of samples. Doing
+   * that once per animation frame and only then discovering the data had not
+   * changed is what made the accelerometer look like it was updating at 1 Hz.
+   * It was redrawing far more often than that; it just had no frame budget left
+   * to do it in.
+   */
+  seq: () => number;
+  /** Builds the traces. Only called when `seq()` changes. */
   pull: () => PlotSnapshot;
   /** Live-follow: the x-axis tracks [now − windowSec, now]. */
   follow: () => boolean;
@@ -149,13 +160,15 @@ export function useAnalysisPlot(opts: UseAnalysisPlotOptions): React.RefObject<H
     };
 
     const initial = o.pull();
+    // Last built traces, reused on frames where only the axis moved.
+    let cachedSnap: PlotSnapshot = initial;
     const initialLayout = cloneLayout(o.baseLayout);
     const r0 = followRange();
     if (r0) {
       initialLayout.xaxis = { ...(initialLayout.xaxis ?? {}), range: r0, autorange: false };
     }
     void Plotly.newPlot(div, initial.traces, initialLayout, config);
-    lastSeq = initial.seq;
+    lastSeq = o.seq();
 
     // Plotly attaches its own EventEmitter methods to the div at newPlot time;
     // the DOM lib does not know about them. Same cast the dashboard's plot hook uses.
@@ -212,7 +225,13 @@ export function useAnalysisPlot(opts: UseAnalysisPlotOptions): React.RefObject<H
       if (now - lastFrame < period) return;
       lastFrame = now;
 
-      const snap = cur.pull();
+      // Cheap check first. Rebuilding traces is the expensive part, so it only
+      // happens when there is actually new data to draw.
+      const seq = cur.seq();
+      const dataChanged = seq !== lastSeq;
+      if (dataChanged) cachedSnap = cur.pull();
+      const snap = cachedSnap;
+
       // Pristine copy of the caller's layout for this frame — see cloneLayout.
       const base = cloneLayout(cur.baseLayout);
       const follow = followRange();
@@ -242,10 +261,9 @@ export function useAnalysisPlot(opts: UseAnalysisPlotOptions): React.RefObject<H
         layoutPatch.shapes = baseShapes as Layout['shapes'];
       }
 
-      const dataChanged = snap.seq !== lastSeq;
       const rangeChanged = rangeKey !== lastRangeKey;
       if (!dataChanged && !rangeChanged) return;
-      lastSeq = snap.seq;
+      lastSeq = seq;
       lastRangeKey = rangeKey;
 
       selfDriven = true;
