@@ -1,0 +1,239 @@
+/*
+ * csv.ts — export the session log.
+ *
+ * Three streams, three files, one ZIP that holds all of them plus a manifest.
+ * Every file carries both an absolute epoch timestamp and a session-relative
+ * seconds column: the first lets you align against another recorder, the second
+ * is what you actually want on an x-axis.
+ *
+ * Exports are always the RAW log. The display filters (moving average, spline
+ * resample, decimation) shape what is drawn and never what is written — a CSV
+ * that had been quietly smoothed would be indistinguishable from clean data.
+ */
+import JSZip from 'jszip';
+import { csvField } from '../recording/format';
+import type { MetricRow, SessionLog } from './log';
+
+function row(fields: Array<string | number | boolean | null | undefined>): string {
+  return fields.map(csvField).join(',');
+}
+
+/** Fixed-decimal, but empty rather than "NaN" for missing values — a blank cell
+ * reads as "not measured" in every tool; NaN reads as a bug. */
+function num(v: number | null | undefined, decimals?: number): string {
+  if (v == null || !Number.isFinite(v)) return '';
+  return decimals == null ? String(v) : v.toFixed(decimals);
+}
+
+function iso(t: number): string {
+  return new Date(t).toISOString();
+}
+
+const METRICS_HEADER = [
+  'timestamp_ms',
+  'iso_utc',
+  'session_s',
+  'analysis_window_s',
+  'beats_in_window',
+  'mean_hr_bpm',
+  'rmssd_ms',
+  'sdnn_ms',
+  'pnn50_frac',
+  'lf_power',
+  'hf_power',
+  'lf_hf_ratio',
+  'total_power',
+  'engine_coherence_pct',
+  'engine_cr',
+  'engine_resp_hz',
+  'engine_resp_brpm',
+  'engine_pacer_brpm',
+  'breath_heart_gamma2',
+  'breath_heart_phase_deg',
+  'acc_resp_brpm',
+  'acc_resp_confidence',
+  'heartmath_coherence',
+  'resonance_coherence',
+  'resonance_peak_hz',
+  'firmware_coherence_pct',
+  'firmware_resp_hz',
+];
+
+export function writeMetricsCSV(log: SessionLog): string {
+  const t0 = log.startedAt ?? 0;
+  const lines = [METRICS_HEADER.join(',')];
+  for (const m of log.metrics) {
+    lines.push(
+      row([
+        m.t,
+        iso(m.t),
+        num((m.t - t0) / 1000, 3),
+        m.windowSec,
+        m.beatCount,
+        num(m.meanHr, 2),
+        num(m.rmssd, 3),
+        num(m.sdnn, 3),
+        num(m.pnn50, 4),
+        num(m.lf, 6),
+        num(m.hf, 6),
+        num(m.lfHfRatio, 4),
+        num(m.totalPower, 6),
+        num(m.engineCoherence, 2),
+        num(m.engineCr, 4),
+        num(m.engineRespHz, 5),
+        num(m.engineRespHz == null ? null : m.engineRespHz * 60, 3),
+        num(m.enginePacerBpm, 2),
+        num(m.breathHeartCoherence, 4),
+        num(m.breathHeartPhaseDeg, 2),
+        num(m.accRespBpm, 3),
+        num(m.accRespConfidence, 4),
+        num(m.hmCoherence, 4),
+        num(m.resonanceCoherence, 4),
+        num(m.resonanceFreqHz, 5),
+        num(m.firmwareCoherence, 2),
+        num(m.firmwareRespHz, 5),
+      ]),
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+const BEATS_HEADER = [
+  'timestamp_ms',
+  'iso_utc',
+  'session_s',
+  'source',
+  'ibi_ms',
+  'instant_hr_bpm',
+  'artifact',
+];
+
+export function writeBeatsCSV(log: SessionLog): string {
+  const t0 = log.startedAt ?? 0;
+  const lines = [BEATS_HEADER.join(',')];
+  // One chronological file across both devices — the `source` column keeps them
+  // distinguishable without splitting the export.
+  for (const b of log.allBeatsSorted()) {
+    lines.push(
+      row([b.t, iso(b.t), num((b.t - t0) / 1000, 3), b.source, num(b.ibi, 1), num(b.bpm, 2), b.artifact]),
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+const ACC_HEADER = ['timestamp_ms', 'iso_utc', 'session_s', 'x_mg', 'y_mg', 'z_mg', 'mag_mg'];
+
+export function writeAccCSV(log: SessionLog): string {
+  const t0 = log.startedAt ?? 0;
+  const lines = [ACC_HEADER.join(',')];
+  const a = log.acc;
+  for (let i = 0; i < a.t.length; i++) {
+    const mag = Math.sqrt(a.x[i] * a.x[i] + a.y[i] * a.y[i] + a.z[i] * a.z[i]);
+    lines.push(
+      row([
+        a.t[i],
+        iso(a.t[i]),
+        num((a.t[i] - t0) / 1000, 3),
+        a.x[i],
+        a.y[i],
+        a.z[i],
+        num(mag, 2),
+      ]),
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+export interface ManifestExtras {
+  polarName: string | null;
+  earclipName: string | null;
+  analysisSource: string;
+  analysisWindowSec: number;
+  buildId: string;
+  /** True when the session came from ?demo=1. Written into the manifest so a
+   * synthetic export can never be mistaken for recorded data after the fact. */
+  demo: boolean;
+}
+
+export function writeManifestJSON(log: SessionLog, extra: ManifestExtras): string {
+  const t0 = log.startedAt;
+  const manifest = {
+    app: 'narbis-respiration-analysis',
+    schemaVersion: 1,
+    buildId: extra.buildId,
+    synthetic: extra.demo,
+    ...(extra.demo
+      ? {
+          SYNTHETIC_DATA_WARNING:
+            'This session was recorded in demo mode. Every value is generated by the browser and is NOT a measurement of any person.',
+        }
+      : {}),
+    startedAt: t0,
+    startedAtIso: t0 == null ? null : iso(t0),
+    durationSec: log.durationMs / 1000,
+    truncated: log.truncated,
+    devices: { polar: extra.polarName, earclip: extra.earclipName },
+    analysis: {
+      source: extra.analysisSource,
+      windowSec: extra.analysisWindowSec,
+      note: 'Time-domain + Lomb-Scargle metrics use windowSec. The firmware-port coherence always uses its own fixed 64 s window, and the Coherence Engine uses its own 64 s Mode A window.',
+    },
+    counts: {
+      beats: log.beatCount,
+      artifactBeats: log.artifactCount,
+      beatsBySource: { h10: log.beats.h10.t.length, earclip: log.beats.earclip.t.length },
+      accSamples: log.acc.t.length,
+      metricRows: log.metrics.length,
+    },
+    files: ['metrics_1hz.csv', 'beats.csv', 'acc_samples.csv'],
+  };
+  return JSON.stringify(manifest, null, 2);
+}
+
+/** Timestamp suffix for filenames: local time, filesystem-safe. */
+export function sessionStamp(log: SessionLog): string {
+  const d = new Date(log.startedAt ?? Date.now());
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export function downloadText(text: string, filename: string, mime = 'text/csv'): void {
+  downloadBlob(new Blob([text], { type: `${mime};charset=utf-8` }), filename);
+}
+
+export async function downloadZip(log: SessionLog, extra: ManifestExtras): Promise<void> {
+  const stamp = sessionStamp(log);
+  const folder = `respiration-${stamp}`;
+  const zip = new JSZip();
+  const root = zip.folder(folder);
+  if (!root) throw new Error('could not create archive folder');
+  root.file('manifest.json', writeManifestJSON(log, extra));
+  root.file('metrics_1hz.csv', writeMetricsCSV(log));
+  root.file('beats.csv', writeBeatsCSV(log));
+  root.file('acc_samples.csv', writeAccCSV(log));
+  const blob = await zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+  downloadBlob(blob, `${folder}.zip`);
+}
+
+/** Rough in-memory size of the log, for the UI's "you have N MB buffered" note. */
+export function estimateBytes(log: SessionLog): number {
+  // 8 bytes per stored number; the columns are: 4 beat, 4 acc, ~26 metric.
+  return log.beatCount * 8 * 4 + log.acc.t.length * 8 * 4 + log.metrics.length * 8 * 26;
+}
+
+export type { MetricRow };

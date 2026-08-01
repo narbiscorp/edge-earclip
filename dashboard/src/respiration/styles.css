@@ -1,0 +1,591 @@
+/* styles.css — Respiration Analysis.
+ *
+ * Plain CSS, no Tailwind: this page is a second Vite entry and should not
+ * inherit the dashboard's utility config. Tokens mirror the Narbis dev hub so
+ * the tool looks like it belongs beside the others. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --page: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #263449;
+  --border: #334155;
+  --axis: #475569;
+  --accent: #14b8a6;
+  --accent-dim: #0d9488;
+  --text: #f1f5f9;
+  --text-2: #cbd5e1;
+  --muted: #94a3b8;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --radius: 12px;
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--page);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Shell ─────────────────────────────────────────────────────────────── */
+
+.app {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 0 1.25rem 4rem;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 0;
+  background: linear-gradient(var(--page) 78%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-right: auto;
+}
+
+.brand svg {
+  width: 24px;
+  height: 24px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.brand h1 {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand .sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', monospace;
+}
+
+.home-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+}
+
+.home-link:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.btn {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 550;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.42rem 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #2d3d55;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #f0fdfa;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.btn.danger {
+  color: #fecaca;
+  border-color: #7f1d1d;
+  background: #3f1a1a;
+}
+
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--critical);
+  background: #4d1f1f;
+}
+
+.btn.sm {
+  font-size: 0.73rem;
+  padding: 0.28rem 0.6rem;
+}
+
+/* ── Segmented control ─────────────────────────────────────────────────── */
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #16202f;
+}
+
+.seg button {
+  font: inherit;
+  font-size: 0.73rem;
+  font-weight: 550;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 0.3rem 0.58rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.seg button:last-child {
+  border-right: 0;
+}
+
+.seg button:hover {
+  color: var(--text);
+  background: #223047;
+}
+
+.seg button[aria-pressed='true'] {
+  color: #f0fdfa;
+  background: var(--accent-dim);
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.field > .label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+select.input,
+input.input {
+  font: inherit;
+  font-size: 0.76rem;
+  color: var(--text);
+  background: #16202f;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0.28rem 0.45rem;
+}
+
+select.input:focus,
+input.input:focus {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+
+input[type='range'].input {
+  padding: 0;
+  accent-color: var(--accent);
+  width: 96px;
+}
+
+/* ── Status pills ──────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 550;
+  padding: 0.3rem 0.62rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.dot.on {
+  background: var(--good);
+  box-shadow: 0 0 0 3px rgba(12, 163, 12, 0.18);
+}
+
+.dot.wait {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(250, 178, 25, 0.18);
+}
+
+.dot.off {
+  background: #64748b;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1.1rem;
+  overflow: hidden;
+}
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-title {
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  margin-right: auto;
+}
+
+.card-title .unit {
+  font-weight: 450;
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-left: 0.4rem;
+}
+
+.card-body {
+  padding: 0.6rem 0.35rem 0.35rem;
+}
+
+.card-note {
+  padding: 0 1rem 0.75rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+/* ── Panels (small multiples) ──────────────────────────────────────────── */
+
+.panel + .panel {
+  border-top: 1px solid #263449;
+}
+
+.panel {
+  padding: 0.15rem 0 0.35rem;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.35rem 0.7rem 0.15rem;
+}
+
+.panel-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.panel-title .unit {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* Series readout: the colored dot carries identity, the text stays ink. This
+ * doubles as the legend and the direct label, so no value is printed on the
+ * trace itself. */
+.readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.readout .swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.readout .val {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.plot {
+  width: 100%;
+}
+
+/* ── Shaping controls ──────────────────────────────────────────────────── */
+
+.shaping {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.9rem;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid var(--border);
+  background: #1a2536;
+}
+
+.shaping .sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
+.hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex-basis: 100%;
+}
+
+/* ── Stat strip ────────────────────────────────────────────────────────── */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1.1rem;
+}
+
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+}
+
+.stat .k {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.stat .v {
+  font-size: 1.5rem;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin-top: 0.15rem;
+}
+
+.stat .v .u {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 0.2rem;
+  letter-spacing: 0;
+}
+
+.stat .v.dim {
+  color: #64748b;
+}
+
+/* ── Banner ────────────────────────────────────────────────────────────── */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 10px;
+  margin-bottom: 1.1rem;
+  font-size: 0.82rem;
+  border: 1px solid;
+}
+
+.banner.warn {
+  border-color: rgba(250, 178, 25, 0.4);
+  background: rgba(250, 178, 25, 0.08);
+  color: #fde68a;
+}
+
+.banner.info {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.banner svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── Event log ─────────────────────────────────────────────────────────── */
+
+.log {
+  max-height: 190px;
+  overflow-y: auto;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 0.72rem;
+  padding: 0.5rem 1rem 0.8rem;
+}
+
+.log-row {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.12rem 0;
+  color: var(--text-2);
+}
+
+.log-row .t {
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.log-row.warn {
+  color: #fde68a;
+}
+
+.log-row.error {
+  color: #fca5a5;
+}
+
+.empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* ── Table view (the WCAG-clean twin of each chart) ────────────────────── */
+
+.table-wrap {
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+
+table.data th,
+table.data td {
+  padding: 0.3rem 0.7rem;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid #263449;
+}
+
+table.data th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 600;
+  text-align: right;
+  z-index: 1;
+}
+
+table.data th:first-child,
+table.data td:first-child {
+  text-align: left;
+}
+
+table.data td {
+  color: var(--text-2);
+}
+
+/* ── Info tooltip ──────────────────────────────────────────────────────── */
+
+.info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--axis);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: help;
+  flex-shrink: 0;
+  background: transparent;
+  font-family: inherit;
+  padding: 0;
+  line-height: 1;
+}
+
+.info:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 0 0.7rem 3rem;
+  }
+  .card-head,
+  .shaping {
+    padding-left: 0.7rem;
+    padding-right: 0.7rem;
+  }
+}
