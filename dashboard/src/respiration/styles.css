@@ -512,6 +512,25 @@ input[type='range'].input {
   flex-basis: 100%;
 }
 
+.linked-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.5rem 1rem 0.7rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: #16202f;
+}
+
+.linked-note svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
 /* ── Stat strip ────────────────────────────────────────────────────────── */
 
 .stats {

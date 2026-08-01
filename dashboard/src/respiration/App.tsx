@@ -364,6 +364,7 @@ export default function App(): ReactNode {
         subtitle="main strap"
         streaming={state.accStreaming}
         connected={state.polar === 'connected'}
+        linked={state.lower !== 'disconnected' || sessionLog.accCount('lower') > 0}
       />
       {(state.lower !== 'disconnected' || sessionLog.accCount('lower') > 0) && (
         <AccChart
@@ -372,6 +373,7 @@ export default function App(): ReactNode {
           subtitle="lower strap"
           streaming={state.lowerAccStreaming}
           connected={state.lower === 'connected'}
+          linked
         />
       )}
       <EcgChart

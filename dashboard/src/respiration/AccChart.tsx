@@ -151,20 +151,25 @@ export default function AccChart({
   title,
   subtitle,
   connected = true,
+  linked = false,
 }: {
   strap?: StrapId;
   streaming: boolean;
   title?: string;
   subtitle?: string;
   connected?: boolean;
+  /** True when a second strap is present, so the shared controls are worth
+   * calling out. */
+  linked?: boolean;
 }): ReactNode {
   const settings = useSettings();
   const { accShaping, patchAccShaping, acc, toggleAcc, accGain, setAccGain, accRateHz, setAccRateHz } =
     settings;
 
-  // Both straps deliberately share the axis selection, conditioning and gain
-  // settings: the point of a second strap is comparing it against the first,
-  // which only means anything if they are shaped identically.
+  // Both straps share ONE set of axis, conditioning and gain settings, and both
+  // cards render the controls for it. The point of a second strap is comparing
+  // it against the first, which only means anything if they are shaped
+  // identically — so rather than let them drift, either card drives both.
   const enabled = AXES.filter((a) => acc[a.key]);
   const n = sessionLog.accCount(strap);
   const live = (k: AxisKey): number | null => sessionLog.lastAcc(strap, k);
@@ -214,14 +219,6 @@ export default function AccChart({
         </div>
       </div>
 
-      {strap !== 'main' ? (
-        <div className="shaping" style={{ paddingBottom: '0.6rem' }}>
-          <span className="hint" style={{ flexBasis: 'auto' }}>
-            Axes, baseline, gain and filtering follow the main strap's controls above, so the two
-            straps stay directly comparable.
-          </span>
-        </div>
-      ) : (
       <div className="shaping" style={{ paddingBottom: 0 }}>
         <span className="label">Axes</span>
         {AXES.map((a) => (
@@ -297,9 +294,33 @@ export default function AccChart({
             : 'Showing absolute mG. Gravity dominates whichever axis points down — switch Baseline on to see the breathing movement.'}
         </span>
       </div>
-      )}
 
-      {strap === 'main' && <ShapingControls shaping={accShaping} patch={patchAccShaping} />}
+      <ShapingControls shaping={accShaping} patch={patchAccShaping} />
+
+      {linked && (
+        <div className="linked-note">
+          <LinkIcon />
+          Shared with the {strap === 'main' ? 'lower' : 'main'} strap — every control on this card
+          moves both, so the two are always shaped identically and stay comparable.
+        </div>
+      )}
     </section>
+  );
+}
+
+function LinkIcon(): ReactNode {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
   );
 }
