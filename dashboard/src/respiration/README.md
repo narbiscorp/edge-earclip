@@ -60,6 +60,15 @@ the strap is facing. Set a fixed +/- range instead when you need the channels to
 be comparable to each other. Both are display transforms; the readout beside each
 label is always the true absolute value and the CSV always holds raw samples.
 
+**Polar H10 accelerometer, lower strap** — an optional second H10 worn further
+down the torso, logged and plotted for its accelerometer only.
+
+Its heart-rate notifications are ignored: mixing a second RR source into the HRV
+analysis would corrupt it silently. Both straps share the axis selection,
+baseline, gain and filter settings, because the point of the second one is
+comparing it against the first and that only means anything if they are shaped
+identically. Exports as `acc_lower_samples.csv`.
+
 **ECG** — the raw Polar H10 lead, 130 Hz, signed microvolts, unfiltered.
 
 Off by default: it is 130 Hz of data that respiration work does not need and it
@@ -110,6 +119,7 @@ them.
 | `metrics_1hz.csv` | 1 Hz analysis row (27 columns) |
 | `beats.csv` | heartbeat, both devices, chronological, rejected ones flagged |
 | `acc_samples.csv` | accelerometer sample, with magnitude |
+| `acc_lower_samples.csv` | lower-strap accelerometer sample (only when worn) |
 | `ecg_samples.csv` | ECG sample in microvolts (only when ECG was streamed) |
 | `manifest.json` | session — devices, counts, settings, build id |
 
@@ -132,6 +142,25 @@ the exports all run exactly as they do with hardware.
 It is seeded, so two runs look the same. A banner is shown, and the export
 manifest is stamped `synthetic: true` — synthetic data must never be mistaken
 for a measurement of a person.
+
+## Polar PMD notes
+
+ECG and the accelerometer share one PMD service, control point and data
+characteristic. Frames are told apart by the measurement type in byte 0; the
+subscription is set up once and released only when the last stream stops; and
+control-point exchanges are serialised, because there is a single response slot
+and two possible callers.
+
+The settings response is
+`[0xF0][opcode][measType][status][moreFrames][ TLVs... ]` — the TLVs start at
+offset **5**. Parsing from 4 swallows the more-frames byte, yields an empty
+rate list, and every start command then silently falls back to its preferred
+values. That is survivable for ACC (50 Hz / +-8 g / 16-bit is valid) which is
+why it hid for a long time, and fatal for ECG, where the device answers
+`INVALID_PARAMETER`. `src/ble/__tests__/pmd.test.ts` pins the layout.
+
+Some H10s also refuse ECG while the accelerometer is streaming. The app retries
+once with ACC paused and says so in the event log, restoring ACC when ECG stops.
 
 ## Notes
 

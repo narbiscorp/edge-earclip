@@ -93,6 +93,7 @@ export default function App(): ReactNode {
     () => ({
       polarName: state.polarName,
       earclipName: state.earclipName,
+      lowerName: state.lowerName,
       analysisSource: state.analysisSource,
       analysisWindowSec: state.analysisWindowSec,
       buildId: __BUILD_ID__,
@@ -150,6 +151,24 @@ export default function App(): ReactNode {
         ) : (
           <button className="btn primary" onClick={() => void respirationSession.connectPolar().catch(() => {})}>
             Connect Polar H10
+          </button>
+        )}
+
+        <StatusPill
+          label={state.lowerName ?? 'Lower strap'}
+          status={state.lower}
+          detail={state.lowerAccStreaming ? 'ACC streaming' : undefined}
+        />
+        {state.lower === 'connected' ? (
+          <button className="btn" onClick={() => void respirationSession.disconnectLower()}>
+            Disconnect lower
+          </button>
+        ) : (
+          <button
+            className="btn"
+            onClick={() => void respirationSession.connectLower().catch(() => {})}
+          >
+            Connect lower strap
           </button>
         )}
 
@@ -223,7 +242,10 @@ export default function App(): ReactNode {
           info="Measured from the H10 accelerometer when available, otherwise inferred from the tachogram."
         />
         <Stat k="Beats" v={String(sessionLog.beatCount)} />
-        <Stat k="ACC samples" v={String(sessionLog.acc.t.length)} />
+        <Stat k="ACC samples" v={String(sessionLog.accCount('main'))} />
+        {(state.lower !== 'disconnected' || sessionLog.accCount('lower') > 0) && (
+          <Stat k="ACC lower" v={String(sessionLog.accCount('lower'))} />
+        )}
         <Stat k="ECG samples" v={String(sessionLog.ecg.t.length)} />
       </div>
 
@@ -277,7 +299,22 @@ export default function App(): ReactNode {
 
       <CardiacChart latest={latest} />
       <IbiChart />
-      <AccChart streaming={state.accStreaming} />
+      <AccChart
+        strap="main"
+        title="Polar H10 accelerometer"
+        subtitle="main strap"
+        streaming={state.accStreaming}
+        connected={state.polar === 'connected'}
+      />
+      {(state.lower !== 'disconnected' || sessionLog.accCount('lower') > 0) && (
+        <AccChart
+          strap="lower"
+          title="Polar H10 accelerometer"
+          subtitle="lower strap"
+          streaming={state.lowerAccStreaming}
+          connected={state.lower === 'connected'}
+        />
+      )}
       <EcgChart
         streaming={state.ecgStreaming}
         busy={ecgBusy}
@@ -328,11 +365,26 @@ export default function App(): ReactNode {
           </button>
           <button
             className="btn"
-            disabled={sessionLog.acc.t.length === 0}
-            onClick={() => downloadText(writeAccCSV(sessionLog), `respiration-${stamp}-acc.csv`)}
+            disabled={sessionLog.accCount('main') === 0}
+            onClick={() =>
+              downloadText(writeAccCSV(sessionLog, 'main'), `respiration-${stamp}-acc.csv`)
+            }
           >
             acc_samples.csv
           </button>
+          {sessionLog.accCount('lower') > 0 && (
+            <button
+              className="btn"
+              onClick={() =>
+                downloadText(
+                  writeAccCSV(sessionLog, 'lower'),
+                  `respiration-${stamp}-acc-lower.csv`,
+                )
+              }
+            >
+              acc_lower_samples.csv
+            </button>
+          )}
           <button
             className="btn"
             disabled={sessionLog.ecg.t.length === 0}

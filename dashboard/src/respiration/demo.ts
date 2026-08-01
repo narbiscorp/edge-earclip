@@ -14,6 +14,7 @@
  * and must never be presented as a measurement.
  */
 import { polarH10 } from '../ble/polarH10';
+import { lowerStrap } from './session';
 import type { PolarAccEvent, PolarBeatEvent, PolarEcgEvent } from '../ble/polarH10';
 
 const ACC_RATE_HZ = 50;
@@ -195,12 +196,48 @@ export function startDemo(): DemoHandle {
     });
   }, ECG_FRAME_MS);
 
+  /* Synthetic lower strap. Its breathing component lags the main strap's and is larger — that
+   * is what thoracoabdominal motion actually looks like, and it makes the two-strap comparison
+   * show something rather than two copies of one signal. Dispatched on the separate lowerStrap
+   * instance, so it travels the same path a real second H10 would. */
+  const dispatchLower = <T,>(type: string, detail: T): void => {
+    lowerStrap.dispatchEvent(new CustomEvent<T>(type, { detail }));
+  };
+  dispatchLower('connected', { name: 'Polar H10 lower (demo)' });
+
+  let lowCursor = t0;
+  const lowerTimer = setInterval(() => {
+    const now = Date.now();
+    const samples: Array<{ x: number; y: number; z: number }> = [];
+    const step = 1000 / ACC_RATE_HZ;
+    while (lowCursor + step <= now) {
+      lowCursor += step;
+      const sec = (lowCursor - t0) / 1000;
+      // ~35 degrees of phase lag behind the thoracic signal, and roughly double the excursion.
+      const breath = Math.sin(2 * Math.PI * breathHz * sec - 0.6);
+      const cardiac = Math.sin(2 * Math.PI * (BASE_HR_BPM / 60) * sec);
+      samples.push({
+        x: Math.round(64 + 51 * breath + 2 * cardiac + (rng() - 0.5) * 6),
+        y: Math.round(-889 + 34 * breath + 2 * cardiac + (rng() - 0.5) * 7),
+        z: Math.round(402 + 19 * breath + 1.5 * cardiac + (rng() - 0.5) * 6),
+      });
+    }
+    if (samples.length === 0) return;
+    dispatchLower<PolarAccEvent>('accReceived', {
+      samples,
+      lastSampleMs: lowCursor,
+      sampleRateHz: ACC_RATE_HZ,
+    });
+  }, ACC_FRAME_MS);
+
   return {
     stop: () => {
       clearInterval(beatTimer);
       clearInterval(accTimer);
       clearInterval(ecgTimer);
+      clearInterval(lowerTimer);
       dispatch('disconnected', { reason: 'user' });
+      dispatchLower('disconnected', { reason: 'user' });
     },
   };
 }

@@ -12,7 +12,7 @@
  */
 import JSZip from 'jszip';
 import { csvField } from '../recording/format';
-import type { MetricRow, SessionLog } from './log';
+import type { MetricRow, SessionLog, StrapId } from './log';
 
 function row(fields: Array<string | number | boolean | null | undefined>): string {
   return fields.map(csvField).join(',');
@@ -123,10 +123,10 @@ export function writeBeatsCSV(log: SessionLog): string {
 
 const ACC_HEADER = ['timestamp_ms', 'iso_utc', 'session_s', 'x_mg', 'y_mg', 'z_mg', 'mag_mg'];
 
-export function writeAccCSV(log: SessionLog): string {
+export function writeAccCSV(log: SessionLog, strap: StrapId = 'main'): string {
   const t0 = log.startedAt ?? 0;
   const lines = [ACC_HEADER.join(',')];
-  const a = log.acc;
+  const a = log.acc[strap];
   for (let i = 0; i < a.t.length; i++) {
     const mag = Math.sqrt(a.x[i] * a.x[i] + a.y[i] * a.y[i] + a.z[i] * a.z[i]);
     lines.push(
@@ -161,6 +161,7 @@ export function writeEcgCSV(log: SessionLog): string {
 export interface ManifestExtras {
   polarName: string | null;
   earclipName: string | null;
+  lowerName: string | null;
   analysisSource: string;
   analysisWindowSec: number;
   buildId: string;
@@ -186,7 +187,11 @@ export function writeManifestJSON(log: SessionLog, extra: ManifestExtras): strin
     startedAtIso: t0 == null ? null : iso(t0),
     durationSec: log.durationMs / 1000,
     truncated: log.truncated,
-    devices: { polar: extra.polarName, earclip: extra.earclipName },
+    devices: {
+      polar: extra.polarName,
+      polarLower: extra.lowerName,
+      earclip: extra.earclipName,
+    },
     analysis: {
       source: extra.analysisSource,
       windowSec: extra.analysisWindowSec,
@@ -196,11 +201,13 @@ export function writeManifestJSON(log: SessionLog, extra: ManifestExtras): strin
       beats: log.beatCount,
       artifactBeats: log.artifactCount,
       beatsBySource: { h10: log.beats.h10.t.length, earclip: log.beats.earclip.t.length },
-      accSamples: log.acc.t.length,
+      accSamples: log.accCount('main'),
+      accLowerSamples: log.accCount('lower'),
       ecgSamples: log.ecg.t.length,
       metricRows: log.metrics.length,
     },
     files: ['metrics_1hz.csv', 'beats.csv', 'acc_samples.csv']
+      .concat(log.accCount('lower') > 0 ? ['acc_lower_samples.csv'] : [])
       .concat(log.ecg.t.length > 0 ? ['ecg_samples.csv'] : []),
   };
   return JSON.stringify(manifest, null, 2);
@@ -237,7 +244,11 @@ export async function downloadZip(log: SessionLog, extra: ManifestExtras): Promi
   root.file('manifest.json', writeManifestJSON(log, extra));
   root.file('metrics_1hz.csv', writeMetricsCSV(log));
   root.file('beats.csv', writeBeatsCSV(log));
-  root.file('acc_samples.csv', writeAccCSV(log));
+  root.file('acc_samples.csv', writeAccCSV(log, 'main'));
+  // Second strap, when one was worn.
+  if (log.accCount('lower') > 0) {
+    root.file('acc_lower_samples.csv', writeAccCSV(log, 'lower'));
+  }
   // Only include ECG when it was actually streamed — an empty 130 Hz file is noise.
   if (log.ecg.t.length > 0) root.file('ecg_samples.csv', writeEcgCSV(log));
   const blob = await zip.generateAsync({
@@ -253,7 +264,7 @@ export function estimateBytes(log: SessionLog): number {
   // 8 bytes per stored number; the columns are: 4 beat, 4 acc, ~26 metric.
   return (
     log.beatCount * 8 * 4 +
-    log.acc.t.length * 8 * 4 +
+    (log.accCount('main') + log.accCount('lower')) * 8 * 4 +
     log.ecg.t.length * 8 * 2 +
     log.metrics.length * 8 * 26
   );

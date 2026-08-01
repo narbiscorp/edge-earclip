@@ -18,6 +18,7 @@
 import MetricsWorker from '../workers/metricsWorker?worker';
 import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import {
+  PolarH10,
   polarH10,
   type PolarBeatEvent,
   type PolarAccEvent,
@@ -34,6 +35,13 @@ import {
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
 } from '../ble/parsers';
 import { sessionLog, type BeatSource, type MetricRow } from './log';
+
+/* Second Polar H10, worn lower on the torso. A separate instance of the same driver rather than
+ * a second connection on the singleton: Web Bluetooth hands out one GATT session per device, and
+ * the driver holds per-device state (beat clock, PMD handles, stream flags) that cannot be shared.
+ * Its heart-rate notifications are ignored — this strap exists for its accelerometer, and mixing a
+ * second RR source into the HRV analysis would silently corrupt it. */
+export const lowerStrap = new PolarH10();
 
 const ARTIFACT_FLAGS =
   NARBIS_BEAT_FLAG_ARTIFACT | NARBIS_BEAT_FLAG_LOW_SQI | NARBIS_BEAT_FLAG_LOW_CONFIDENCE;
@@ -57,6 +65,10 @@ export interface SessionState {
   earclip: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   polarName: string | null;
   earclipName: string | null;
+  /** Second H10, accelerometer only. */
+  lower: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  lowerName: string | null;
+  lowerAccStreaming: boolean;
   accStreaming: boolean;
   /** Raw ECG stream (Polar H10 PMD type 0x00, 130 Hz). */
   ecgStreaming: boolean;
@@ -90,11 +102,18 @@ class RespirationSession extends EventTarget {
    * samples, and read it at 1 Hz. Identical math, published unconditionally. */
   private resp = new RespirationFromACC({ ...DEFAULT_TUNABLES });
 
+  /** True when ECG could only start after stopping the accelerometer, so ACC can be
+   * restored when ECG stops. */
+  private ecgDisplacedAcc = false;
+
   private state: SessionState = {
     polar: 'disconnected',
     earclip: 'disconnected',
     polarName: null,
     earclipName: null,
+    lower: 'disconnected',
+    lowerName: null,
+    lowerAccStreaming: false,
     accStreaming: false,
     ecgStreaming: false,
     engineRunning: false,
@@ -146,6 +165,11 @@ class RespirationSession extends EventTarget {
     polarH10.addEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.addEventListener('accInfo', this.onPolarAccInfo as EventListener);
 
+    lowerStrap.addEventListener('connected', this.onLowerConnected as EventListener);
+    lowerStrap.addEventListener('disconnected', this.onLowerDisconnected as EventListener);
+    lowerStrap.addEventListener('accReceived', this.onLowerAcc as EventListener);
+    lowerStrap.addEventListener('accInfo', this.onLowerAccInfo as EventListener);
+
     narbisDevice.addEventListener('connected', this.onEarclipConnected as EventListener);
     narbisDevice.addEventListener('disconnected', this.onEarclipDisconnected as EventListener);
     narbisDevice.addEventListener('beatReceived', this.onEarclipBeat as EventListener);
@@ -170,6 +194,10 @@ class RespirationSession extends EventTarget {
     polarH10.removeEventListener('accReceived', this.onPolarAcc as EventListener);
     polarH10.removeEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.removeEventListener('accInfo', this.onPolarAccInfo as EventListener);
+    lowerStrap.removeEventListener('connected', this.onLowerConnected as EventListener);
+    lowerStrap.removeEventListener('disconnected', this.onLowerDisconnected as EventListener);
+    lowerStrap.removeEventListener('accReceived', this.onLowerAcc as EventListener);
+    lowerStrap.removeEventListener('accInfo', this.onLowerAccInfo as EventListener);
     narbisDevice.removeEventListener('connected', this.onEarclipConnected as EventListener);
     narbisDevice.removeEventListener('disconnected', this.onEarclipDisconnected as EventListener);
     narbisDevice.removeEventListener('beatReceived', this.onEarclipBeat as EventListener);
@@ -244,14 +272,52 @@ class RespirationSession extends EventTarget {
   }
 
   /** Raw ECG. Off by default: it is 130 Hz of data nobody needs for respiration work, and it
-   * costs H10 battery. Turn it on when you actually want to look at the waveform. */
+   * costs H10 battery. Turn it on when you actually want to look at the waveform.
+   *
+   * Some H10s refuse to start ECG while the accelerometer is streaming — the control point
+   * answers INVALID_PARAMETER rather than anything that names the real constraint. Since pressing
+   * the button is an unambiguous request for ECG, retry once with ACC paused rather than just
+   * failing, and say plainly that the accelerometer was stopped and why. It comes back when ECG
+   * does. */
   async startEcg(): Promise<void> {
     try {
       await polarH10.startEcgStream();
       this.patch({ ecgStreaming: polarH10.isEcgStreaming });
+      return;
     } catch (err) {
+      if (!this.state.accStreaming) {
+        this.patch({ ecgStreaming: false });
+        this.log(`ECG stream failed: ${(err as Error).message}`, 'error');
+        throw err;
+      }
+      this.log(
+        'ECG was refused while the accelerometer was streaming — pausing ACC and retrying',
+        'warn',
+      );
+    }
+
+    try {
+      await polarH10.stopAccStream();
+      this.patch({ accStreaming: false });
+      await polarH10.startEcgStream();
+      this.ecgDisplacedAcc = true;
+      this.patch({ ecgStreaming: polarH10.isEcgStreaming });
+      this.log(
+        'ECG started, but this H10 will not run the accelerometer at the same time — ACC is off ' +
+          'and the breathing-from-ACC readings will be blank until you stop ECG.',
+        'warn',
+      );
+    } catch (err) {
+      // The retry failed too, so the accelerometer was stopped for nothing — put it back.
       this.patch({ ecgStreaming: false });
       this.log(`ECG stream failed: ${(err as Error).message}`, 'error');
+      try {
+        await polarH10.startAccStream();
+        this.patch({ accStreaming: polarH10.isAccStreaming });
+        this.log('accelerometer restarted', 'info');
+      } catch {
+        this.log('could not restart the accelerometer — reconnect the H10', 'error');
+      }
       throw err;
     }
   }
@@ -259,7 +325,64 @@ class RespirationSession extends EventTarget {
   async stopEcg(): Promise<void> {
     await polarH10.stopEcgStream();
     this.patch({ ecgStreaming: false });
+    if (!this.ecgDisplacedAcc) return;
+    this.ecgDisplacedAcc = false;
+    try {
+      await polarH10.startAccStream();
+      this.patch({ accStreaming: polarH10.isAccStreaming });
+      this.log('accelerometer restarted now that ECG has stopped', 'info');
+    } catch (err) {
+      this.log(`could not restart the accelerometer: ${(err as Error).message}`, 'error');
+    }
   }
+
+  // ── lower strap (accelerometer only) ────────────────────────────────────
+
+  async connectLower(): Promise<void> {
+    this.patch({ lower: 'connecting' });
+    try {
+      await lowerStrap.connect();
+    } catch (err) {
+      this.patch({ lower: 'disconnected' });
+      this.log(`Lower strap connect failed: ${(err as Error).message}`, 'error');
+      throw err;
+    }
+  }
+
+  async disconnectLower(): Promise<void> {
+    await lowerStrap.disconnect();
+  }
+
+  private onLowerConnected = (ev: CustomEvent<{ name: string }>): void => {
+    this.patch({ lower: 'connected', lowerName: ev.detail.name });
+    this.log(`Lower strap connected: ${ev.detail.name}`);
+    void lowerStrap
+      .startAccStream()
+      .then(() => this.patch({ lowerAccStreaming: lowerStrap.isAccStreaming }))
+      .catch((err) => this.log(`Lower strap ACC failed: ${(err as Error).message}`, 'error'));
+  };
+
+  private onLowerDisconnected = (ev: CustomEvent<{ reason: string }>): void => {
+    const reconnecting = ev.detail.reason === 'gatt';
+    this.patch({
+      lower: reconnecting ? 'reconnecting' : 'disconnected',
+      lowerAccStreaming: false,
+      lowerName: reconnecting ? this.state.lowerName : null,
+    });
+    this.log(`Lower strap disconnected (${ev.detail.reason})`, reconnecting ? 'warn' : 'info');
+  };
+
+  private onLowerAccInfo = (ev: CustomEvent<PolarAccInfoDetail>): void => {
+    this.log(`Lower ACC: ${ev.detail.message}`, ev.detail.level);
+  };
+
+  private onLowerAcc = (ev: CustomEvent<PolarAccEvent>): void => {
+    const { samples, lastSampleMs, sampleRateHz } = ev.detail;
+    // Logged and plotted only. It never reaches the Coherence Engine or the HRV window — this
+    // strap is a second view of chest movement, not a second opinion about the heart.
+    sessionLog.addAccBlock('lower', samples, lastSampleMs, sampleRateHz);
+    if (!this.state.lowerAccStreaming) this.patch({ lowerAccStreaming: true });
+  };
 
   // ── engine ───────────────────────────────────────────────────────────────
 
@@ -336,7 +459,7 @@ class RespirationSession extends EventTarget {
 
   private onPolarAcc = (ev: CustomEvent<PolarAccEvent>): void => {
     const { samples, lastSampleMs, sampleRateHz } = ev.detail;
-    sessionLog.addAccBlock(samples, lastSampleMs, sampleRateHz);
+    sessionLog.addAccBlock('main', samples, lastSampleMs, sampleRateHz);
     if (coherenceEngine.running) coherenceEngine.onAccPacket(samples, lastSampleMs / 1000);
     // Same per-sample stamping the engine uses: the newest sample lands at the
     // frame timestamp and the rest are spaced backwards from it.

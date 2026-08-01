@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { Data } from 'plotly.js';
-import { sessionLog } from './log';
+import { sessionLog, type StrapId } from './log';
 import { shapeSeries, type TraceShaping } from './dsp';
 import { useAnalysisPlot } from './plot';
 import { SERIES, INK, baseLayout, axisStyle } from './theme';
@@ -33,6 +33,7 @@ const AXES: ReadonlyArray<{ key: AxisKey; name: string; color: string; hint: str
 ];
 
 interface AxisPanelProps {
+  strap: StrapId;
   axis: (typeof AXES)[number];
   shaping: TraceShaping;
   height: number;
@@ -43,6 +44,7 @@ interface AxisPanelProps {
 }
 
 function AxisPanel({
+  strap,
   axis,
   shaping,
   height,
@@ -91,16 +93,16 @@ function AxisPanel({
   );
 
   const divRef = useAnalysisPlot({
-    key: `acc:${axis.key}`,
+    key: `acc:${strap}:${axis.key}`,
     baseLayout: layout,
     follow: () => followRef.current,
     windowSec: () => viewRef.current,
     refreshHz: 8,
-    exportName: `narbis-h10-acc-${axis.key}`,
+    exportName: `narbis-h10-acc-${strap}-${axis.key}`,
     pull: () => {
       const now = Date.now();
       const sh = shapingRef.current;
-      const w = sessionLog.accWindow(viewRef.current, now, axis.key);
+      const w = sessionLog.accWindow(strap, viewRef.current, now, axis.key);
       const shaped = shapeSeries(w.x, w.y, sh);
       let lo = Infinity;
       let hi = -Infinity;
@@ -141,23 +143,28 @@ function AxisPanel({
   );
 }
 
-export default function AccChart({ streaming }: { streaming: boolean }): ReactNode {
+export default function AccChart({
+  strap = 'main',
+  streaming,
+  title,
+  subtitle,
+  connected = true,
+}: {
+  strap?: StrapId;
+  streaming: boolean;
+  title?: string;
+  subtitle?: string;
+  connected?: boolean;
+}): ReactNode {
   const settings = useSettings();
   const { accShaping, patchAccShaping, acc, toggleAcc, accGain, setAccGain } = settings;
 
+  // Both straps deliberately share the axis selection, conditioning and gain
+  // settings: the point of a second strap is comparing it against the first,
+  // which only means anything if they are shaped identically.
   const enabled = AXES.filter((a) => acc[a.key]);
-  const n = sessionLog.acc.t.length;
-  const last = n > 0 ? n - 1 : -1;
-  const live = (k: AxisKey): number | null => {
-    if (last < 0) return null;
-    if (k === 'mag') {
-      const x = sessionLog.acc.x[last];
-      const y = sessionLog.acc.y[last];
-      const z = sessionLog.acc.z[last];
-      return Math.sqrt(x * x + y * y + z * z);
-    }
-    return sessionLog.acc[k][last];
-  };
+  const n = sessionLog.accCount(strap);
+  const live = (k: AxisKey): number | null => sessionLog.lastAcc(strap, k);
 
   // Panel height shrinks as more channels are shown, so four axes still fit on
   // screen together without the card becoming a scroll trap.
@@ -167,7 +174,8 @@ export default function AccChart({ streaming }: { streaming: boolean }): ReactNo
     <section className="card">
       <div className="card-head">
         <h2 className="card-title">
-          Polar H10 accelerometer
+          {title ?? 'Polar H10 accelerometer'}
+          {subtitle && <span className="unit">{subtitle}</span>}
           <Info text="All three axes from the H10's Polar Measurement Data service, in raw milli-g, plus the vector magnitude. This is the only direct measurement of the chest wall moving — everything else on this page infers breathing from the heart." />
         </h2>
         {enabled.map((a) => (
@@ -183,6 +191,7 @@ export default function AccChart({ streaming }: { streaming: boolean }): ReactNo
             enabled.map((a, i) => (
               <AxisPanel
                 key={a.key}
+                strap={strap}
                 axis={a}
                 shaping={accShaping}
                 height={height}
@@ -194,12 +203,22 @@ export default function AccChart({ streaming }: { streaming: boolean }): ReactNo
           )}
           {!streaming && n === 0 && (
             <div className="plot-overlay">
-              No accelerometer data yet. Connect a Polar H10 — the stream starts automatically.
+              {connected
+                ? 'Waiting for accelerometer frames…'
+                : `No data yet. Connect the ${strap === 'lower' ? 'lower strap' : 'main strap'} — the accelerometer starts automatically.`}
             </div>
           )}
         </div>
       </div>
 
+      {strap !== 'main' ? (
+        <div className="shaping" style={{ paddingBottom: '0.6rem' }}>
+          <span className="hint" style={{ flexBasis: 'auto' }}>
+            Axes, baseline, gain and filtering follow the main strap's controls above, so the two
+            straps stay directly comparable.
+          </span>
+        </div>
+      ) : (
       <div className="shaping" style={{ paddingBottom: 0 }}>
         <span className="label">Axes</span>
         {AXES.map((a) => (
@@ -254,8 +273,9 @@ export default function AccChart({ streaming }: { streaming: boolean }): ReactNo
             : 'Showing absolute mG. Gravity dominates whichever axis points down — switch Baseline on to see the breathing movement.'}
         </span>
       </div>
+      )}
 
-      <ShapingControls shaping={accShaping} patch={patchAccShaping} />
+      {strap === 'main' && <ShapingControls shaping={accShaping} patch={patchAccShaping} />}
     </section>
   );
 }

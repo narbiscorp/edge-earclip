@@ -103,6 +103,7 @@ describe('SessionLog accelerometer', () => {
   it('spaces a block backwards from the newest sample', () => {
     const log = new SessionLog();
     log.addAccBlock(
+      'main',
       [
         { x: 1, y: 2, z: 3 },
         { x: 4, y: 5, z: 6 },
@@ -111,21 +112,55 @@ describe('SessionLog accelerometer', () => {
       T0,
       50, // 20 ms spacing
     );
-    expect(log.acc.t).toEqual([T0 - 40, T0 - 20, T0]);
-    expect(log.acc.x).toEqual([1, 4, 7]);
+    expect(log.acc.main.t).toEqual([T0 - 40, T0 - 20, T0]);
+    expect(log.acc.main.x).toEqual([1, 4, 7]);
   });
 
   it('computes the vector magnitude for the mag axis', () => {
     const log = new SessionLog();
-    log.addAccBlock([{ x: 3, y: 4, z: 0 }], T0, 50);
-    const w = log.accWindow(10, T0 + 100, 'mag');
+    log.addAccBlock('main', [{ x: 3, y: 4, z: 0 }], T0, 50);
+    const w = log.accWindow('main', 10, T0 + 100, 'mag');
     expect(w.y[0]).toBeCloseTo(5, 9);
   });
 
   it('ignores an empty block', () => {
     const log = new SessionLog();
-    log.addAccBlock([], T0, 50);
-    expect(log.acc.t).toHaveLength(0);
+    log.addAccBlock('main', [], T0, 50);
+    expect(log.acc.main.t).toHaveLength(0);
+    expect(log.isEmpty).toBe(true);
+  });
+
+  it('keeps the two straps in separate columns', () => {
+    const log = new SessionLog();
+    log.addAccBlock('main', [{ x: 1, y: 2, z: 3 }], T0, 50);
+    log.addAccBlock('lower', [{ x: 90, y: 91, z: 92 }], T0, 50);
+    log.addAccBlock('lower', [{ x: 93, y: 94, z: 95 }], T0 + 20, 50);
+
+    expect(log.accCount('main')).toBe(1);
+    expect(log.accCount('lower')).toBe(2);
+    expect(log.accWindow('main', 10, T0 + 100, 'x').y).toEqual([1]);
+    expect(log.accWindow('lower', 10, T0 + 100, 'x').y).toEqual([90, 93]);
+    // The newest sample of each strap is read independently.
+    expect(log.lastAcc('main', 'x')).toBe(1);
+    expect(log.lastAcc('lower', 'x')).toBe(93);
+    expect(log.lastAcc('lower', 'mag')).toBeCloseTo(Math.sqrt(93 * 93 + 94 * 94 + 95 * 95), 6);
+  });
+
+  it('reports empty for a strap that was never worn', () => {
+    const log = new SessionLog();
+    log.addAccBlock('main', [{ x: 1, y: 2, z: 3 }], T0, 50);
+    expect(log.accCount('lower')).toBe(0);
+    expect(log.lastAcc('lower', 'x')).toBeNull();
+    expect(log.accWindow('lower', 10, T0 + 100, 'x').y).toEqual([]);
+  });
+
+  it('clears both straps', () => {
+    const log = new SessionLog();
+    log.addAccBlock('main', [{ x: 1, y: 2, z: 3 }], T0, 50);
+    log.addAccBlock('lower', [{ x: 4, y: 5, z: 6 }], T0, 50);
+    log.clear();
+    expect(log.accCount('main')).toBe(0);
+    expect(log.accCount('lower')).toBe(0);
     expect(log.isEmpty).toBe(true);
   });
 
@@ -133,17 +168,17 @@ describe('SessionLog accelerometer', () => {
     const log = new SessionLog();
     const n = 5000;
     const block = Array.from({ length: n }, (_, i) => ({ x: i, y: 0, z: 0 }));
-    log.addAccBlock(block, T0 + n * 20, 50);
+    log.addAccBlock('main', block, T0 + n * 20, 50);
 
-    const capped = log.accWindow(3600, T0 + n * 20 + 1000, 'x', 500);
+    const capped = log.accWindow('main', 3600, T0 + n * 20 + 1000, 'x', 500);
     expect(capped.x.length).toBeLessThanOrEqual(501);
     // The newest sample must still be the last drawn point, or a live trace
     // would stop short of the right edge.
-    expect(capped.x[capped.x.length - 1]).toBe(log.acc.t[n - 1]);
+    expect(capped.x[capped.x.length - 1]).toBe(log.acc.main.t[n - 1]);
     // Nothing was actually discarded.
-    expect(log.acc.t).toHaveLength(n);
+    expect(log.acc.main.t).toHaveLength(n);
 
-    const full = log.accWindow(3600, T0 + n * 20 + 1000, 'x', 100_000);
+    const full = log.accWindow('main', 3600, T0 + n * 20 + 1000, 'x', 100_000);
     expect(full.x).toHaveLength(n);
   });
 });
@@ -172,14 +207,14 @@ describe('clear', () => {
   it('resets every column and the start time', () => {
     const log = new SessionLog();
     log.addBeat(T0, 900, 66, 'h10', false);
-    log.addAccBlock([{ x: 1, y: 1, z: 1 }], T0, 50);
+    log.addAccBlock('main', [{ x: 1, y: 1, z: 1 }], T0, 50);
     log.addMetric(emptyRow(T0));
     expect(log.isEmpty).toBe(false);
     log.clear();
     expect(log.isEmpty).toBe(true);
     expect(log.startedAt).toBeNull();
     expect(log.beatCount).toBe(0);
-    expect(log.acc.t).toHaveLength(0);
+    expect(log.acc.main.t).toHaveLength(0);
     expect(log.metrics).toHaveLength(0);
   });
 });
@@ -191,6 +226,7 @@ describe('CSV export', () => {
     log.addBeat(T0 + 900, 120, 500, 'h10', true);
     log.addBeat(T0 + 1800, 910, 65.9, 'earclip', false);
     log.addAccBlock(
+      'main',
       [
         { x: -38, y: 112, z: 978 },
         { x: -35, y: 115, z: 981 },
@@ -256,6 +292,7 @@ describe('CSV export', () => {
     const base = {
       polarName: 'Polar H10 (demo)',
       earclipName: null,
+      lowerName: null,
       analysisSource: 'h10',
       analysisWindowSec: 64,
       buildId: 'test',

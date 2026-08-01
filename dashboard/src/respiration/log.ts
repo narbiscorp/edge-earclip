@@ -15,6 +15,14 @@
 
 export type BeatSource = 'h10' | 'earclip';
 
+/** Which chest strap an accelerometer sample came from. 'main' is the strap that also drives
+ * the HRV analysis; 'lower' is a second H10 worn further down the torso, logged for its
+ * accelerometer only — comparing the two is how thoracic and abdominal movement are told
+ * apart. */
+export type StrapId = 'main' | 'lower';
+
+export const STRAPS: readonly StrapId[] = ['main', 'lower'];
+
 /** Caps chosen so a long session (~4 h) fits comfortably; hitting one sets
  * `truncated` and is surfaced in the UI instead of being absorbed. */
 const MAX_ACC_SAMPLES = 800_000;
@@ -95,6 +103,10 @@ interface AccColumns {
   z: number[];
 }
 
+function emptyAcc(): AccColumns {
+  return { t: [], x: [], y: [], z: [] };
+}
+
 /** Raw ECG, one column of signed microvolts at 130 Hz. */
 interface EcgColumns {
   t: number[];
@@ -123,7 +135,7 @@ export class SessionLog extends EventTarget {
     h10: emptyBeats(),
     earclip: emptyBeats(),
   };
-  readonly acc: AccColumns = { t: [], x: [], y: [], z: [] };
+  readonly acc: Record<StrapId, AccColumns> = { main: emptyAcc(), lower: emptyAcc() };
   readonly ecg: EcgColumns = { t: [], uv: [] };
   readonly metrics: MetricRow[] = [];
 
@@ -150,6 +162,11 @@ export class SessionLog extends EventTarget {
     return this.beats.h10.t.length + this.beats.earclip.t.length;
   }
 
+  /** Accelerometer samples logged for one strap. */
+  accCount(strap: StrapId): number {
+    return this.acc[strap].t.length;
+  }
+
   /** Beats flagged by the plausibility gate or the earclip's own artifact bits. */
   get artifactCount(): number {
     let n = 0;
@@ -162,7 +179,8 @@ export class SessionLog extends EventTarget {
   get isEmpty(): boolean {
     return (
       this.beatCount === 0 &&
-      this.acc.t.length === 0 &&
+      this.accCount('main') === 0 &&
+      this.accCount('lower') === 0 &&
       this.ecg.t.length === 0 &&
       this.metrics.length === 0
     );
@@ -175,11 +193,21 @@ export class SessionLog extends EventTarget {
     const last = Math.max(
       tail(this.beats.h10.t),
       tail(this.beats.earclip.t),
-      tail(this.acc.t),
+      tail(this.acc.main.t),
+      tail(this.acc.lower.t),
       tail(this.ecg.t),
       this.metrics.length ? this.metrics[this.metrics.length - 1].t : 0,
     );
     return Math.max(0, last - this._startedAt);
+  }
+
+  /** Newest accelerometer sample for a strap, for the live readouts. */
+  lastAcc(strap: StrapId, axis: 'x' | 'y' | 'z' | 'mag'): number | null {
+    const c = this.acc[strap];
+    const i = c.t.length - 1;
+    if (i < 0) return null;
+    if (axis !== 'mag') return c[axis][i];
+    return Math.sqrt(c.x[i] * c.x[i] + c.y[i] * c.y[i] + c.z[i] * c.z[i]);
   }
 
   /** Newest non-artifact IBI from a source, for the live readouts. */
@@ -213,23 +241,25 @@ export class SessionLog extends EventTarget {
    * NEWEST sample (the H10 gives us a device-clock frame timestamp, so we space
    * the rest of the block backwards from it rather than using BLE arrival). */
   addAccBlock(
+    strap: StrapId,
     samples: ReadonlyArray<{ x: number; y: number; z: number }>,
     lastSampleMs: number,
     sampleRateHz: number,
   ): void {
     const n = samples.length;
     if (n === 0) return;
-    if (this.acc.t.length + n > MAX_ACC_SAMPLES) {
+    const c = this.acc[strap];
+    if (c.t.length + n > MAX_ACC_SAMPLES) {
       this.markTruncated();
       return;
     }
     const dt = 1000 / Math.max(1, sampleRateHz);
     for (let i = 0; i < n; i++) {
       const t = lastSampleMs - (n - 1 - i) * dt;
-      this.acc.t.push(t);
-      this.acc.x.push(samples[i].x);
-      this.acc.y.push(samples[i].y);
-      this.acc.z.push(samples[i].z);
+      c.t.push(t);
+      c.x.push(samples[i].x);
+      c.y.push(samples[i].y);
+      c.z.push(samples[i].z);
     }
     this.touch(lastSampleMs);
   }
@@ -295,10 +325,13 @@ export class SessionLog extends EventTarget {
       c.bpm.length = 0;
       c.artifact.length = 0;
     }
-    this.acc.t.length = 0;
-    this.acc.x.length = 0;
-    this.acc.y.length = 0;
-    this.acc.z.length = 0;
+    for (const st of STRAPS) {
+      const c = this.acc[st];
+      c.t.length = 0;
+      c.x.length = 0;
+      c.y.length = 0;
+      c.z.length = 0;
+    }
     this.ecg.t.length = 0;
     this.ecg.uv.length = 0;
     this.metrics.length = 0;
@@ -387,32 +420,34 @@ export class SessionLog extends EventTarget {
    * DRAWING only; the log and the CSV export always see every sample.
    */
   accWindow(
+    strap: StrapId,
     windowSec: number,
     nowMs: number,
     axis: 'x' | 'y' | 'z' | 'mag',
     maxRaw = 60_000,
   ): WindowedXY {
+    const c = this.acc[strap];
     const from = nowMs - windowSec * 1000;
-    const start = lowerBound(this.acc.t, from);
-    const len = this.acc.t.length;
+    const start = lowerBound(c.t, from);
+    const len = c.t.length;
     const count = Math.max(0, len - start);
     const stride = count > maxRaw ? Math.ceil(count / maxRaw) : 1;
     const x: number[] = [];
     const y: number[] = [];
     const at = (i: number): number => {
-      if (axis !== 'mag') return this.acc[axis][i];
-      const ax = this.acc.x[i];
-      const ay = this.acc.y[i];
-      const az = this.acc.z[i];
+      if (axis !== 'mag') return c[axis][i];
+      const ax = c.x[i];
+      const ay = c.y[i];
+      const az = c.z[i];
       return Math.sqrt(ax * ax + ay * ay + az * az);
     };
     for (let i = start; i < len; i += stride) {
-      x.push(this.acc.t[i]);
+      x.push(c.t[i]);
       y.push(at(i));
     }
     // Always end on the newest sample so a live trace reaches the right edge.
-    if (stride > 1 && len > start && x[x.length - 1] !== this.acc.t[len - 1]) {
-      x.push(this.acc.t[len - 1]);
+    if (stride > 1 && len > start && x[x.length - 1] !== c.t[len - 1]) {
+      x.push(c.t[len - 1]);
       y.push(at(len - 1));
     }
     return { x, y };

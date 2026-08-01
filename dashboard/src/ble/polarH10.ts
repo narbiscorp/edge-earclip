@@ -148,12 +148,44 @@ function parseEcgFrame(dv: DataView): number[] {
   return out;
 }
 
-/** Parse a control-point response into a map of settingType → supported values (16-bit LE).
- * Response layout: [0xF0][opcode][measType][status][ settingType, arrayLen, v0_le, v1_le, ... ]* */
-function parseSettingsResponse(dv: DataView): Map<number, number[]> {
+/** PMD control-point status codes, so a rejection reads as a cause rather than a number. */
+const PMD_STATUS_NAMES: Record<number, string> = {
+  0: 'SUCCESS',
+  1: 'INVALID_OP_CODE',
+  2: 'INVALID_MEASUREMENT_TYPE',
+  3: 'NOT_SUPPORTED',
+  4: 'INVALID_LENGTH',
+  5: 'INVALID_PARAMETER',
+  6: 'ALREADY_IN_STATE',
+  7: 'INVALID_RESOLUTION',
+  8: 'INVALID_SAMPLE_RATE',
+  9: 'INVALID_RANGE',
+  10: 'INVALID_MTU',
+  11: 'INVALID_NUMBER_OF_CHANNELS',
+  12: 'INVALID_STATE',
+  13: 'DEVICE_IN_CHARGER',
+};
+
+function pmdStatusName(code: number): string {
+  return PMD_STATUS_NAMES[code] ?? `UNKNOWN_${code}`;
+}
+
+/** Status byte of a control-point response, or null if it isn't one. */
+function ctrlStatus(dv: DataView): number | null {
+  if (dv.byteLength < 4 || dv.getUint8(0) !== 0xf0) return null;
+  return dv.getUint8(3);
+}
+
+function hexDump(dv: DataView, max = 32): string {
+  const n = Math.min(dv.byteLength, max);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push(dv.getUint8(i).toString(16).padStart(2, '0'));
+  return out.join(' ') + (dv.byteLength > n ? ' …' : '');
+}
+
+/** Walk `settingType, arrayLen, v0_le, …` TLVs from `off`. */
+function parseSettingTlvs(dv: DataView, off: number): Map<number, number[]> {
   const map = new Map<number, number[]>();
-  if (dv.byteLength < 5 || dv.getUint8(0) !== 0xf0) return map;
-  let off = 4;
   while (off + 2 <= dv.byteLength) {
     const type = dv.getUint8(off);
     const count = dv.getUint8(off + 1);
@@ -166,6 +198,31 @@ function parseSettingsResponse(dv: DataView): Map<number, number[]> {
     map.set(type, vals);
   }
   return map;
+}
+
+/**
+ * Parse a control-point response into a map of settingType → supported values (16-bit LE).
+ *
+ * Response layout is
+ *   [0xF0][opcode][measType][status][moreFrames][ settingType, arrayLen, v0_le, v1_le, … ]*
+ * so the TLVs begin at offset 5. This originally started at 4, swallowing the more-frames byte
+ * as a setting type; the result was a map whose SAMPLE_RATE entry was always empty, so every
+ * start command silently fell back to its preferred values. That happened to be fine for ACC —
+ * 50 Hz / ±8 g / 16-bit is valid — which is why it went unnoticed until ECG, where the device
+ * rejected the guess.
+ *
+ * Offset 4 is still tried as a fallback: if some firmware really does omit the more-frames byte,
+ * reading real settings from the older offset beats reading none.
+ */
+function parseSettingsResponse(dv: DataView): Map<number, number[]> {
+  if (dv.byteLength < 5 || dv.getUint8(0) !== 0xf0) return new Map();
+  const spec = parseSettingTlvs(dv, 5);
+  const rates = spec.get(PMD_SET_SAMPLE_RATE);
+  if (rates && rates.length > 0) return spec;
+  const legacy = parseSettingTlvs(dv, 4);
+  const legacyRates = legacy.get(PMD_SET_SAMPLE_RATE);
+  if (legacyRates && legacyRates.length > 0) return legacy;
+  return spec;
 }
 
 export interface AccConfig {
@@ -499,12 +556,7 @@ export class PolarH10 extends EventTarget {
       const rates = m.get(PMD_SET_SAMPLE_RATE) ?? [];
       const ranges = m.get(PMD_SET_RANGE) ?? [];
       this.accInfo(`H10 ACC supports rates [${rates.join(',')}] Hz, ranges [${ranges.join(',')}] g`, 'info');
-      if (m.size === 0) {
-        const hex = Array.from(new Uint8Array(sdv.buffer, sdv.byteOffset, Math.min(sdv.byteLength, 20)))
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join(' ');
-        this.accInfo(`ACC settings response unparsed: ${hex}`, 'warn');
-      }
+      if (rates.length === 0) this.accInfo(`ACC settings raw: [${hexDump(sdv)}]`, 'warn');
       return m;
     });
 
@@ -552,9 +604,24 @@ export class PolarH10 extends EventTarget {
         this.accInfo('no ECG settings response from H10 — using defaults', 'warn');
         return new Map<number, number[]>();
       }
+      const st = ctrlStatus(sdv);
+      if (st !== null && st !== 0) {
+        this.accInfo(
+          `H10 refused ECG settings query: ${pmdStatusName(st)} — raw [${hexDump(sdv)}]`,
+          'warn',
+        );
+        return new Map<number, number[]>();
+      }
       const m = parseSettingsResponse(sdv);
       const rates = m.get(PMD_SET_SAMPLE_RATE) ?? [];
-      this.accInfo(`H10 ECG supports rates [${rates.join(',')}] Hz`, 'info');
+      const res = m.get(PMD_SET_RESOLUTION) ?? [];
+      this.accInfo(
+        `H10 ECG offers rates [${rates.join(',')}] Hz, resolutions [${res.join(',')}] bit`,
+        'info',
+      );
+      // The raw bytes are the only way to tell "device offers nothing" apart from
+      // "we failed to read what it offered" — always show them when nothing parsed.
+      if (rates.length === 0) this.accInfo(`ECG settings raw: [${hexDump(sdv)}]`, 'warn');
       return m;
     });
 
@@ -565,13 +632,20 @@ export class PolarH10 extends EventTarget {
       await this.writeCtrl(cmd);
       return startResp;
     });
-    if (rdv && rdv.byteLength >= 4 && rdv.getUint8(0) === 0xf0) {
-      const status = rdv.getUint8(3);
-      if (status !== 0) {
-        this.accInfo(`H10 REJECTED ECG start (status ${status}) at ${sampleRateHz} Hz`, 'error');
-        await this.stopEcgStream();
-        throw new Error(`PMD ECG start rejected (status ${status})`);
-      }
+    const status = rdv ? ctrlStatus(rdv) : null;
+    if (status !== null && status !== 0) {
+      this.accInfo(
+        `H10 REJECTED ECG start: ${pmdStatusName(status)} at ${sampleRateHz} Hz` +
+          (this.accStreaming ? ' (accelerometer is streaming — some straps will not run both)' : '') +
+          ` — sent [${hexDump(new DataView(toBufferSource(cmd)))}], got [${hexDump(rdv as DataView)}]`,
+        'error',
+      );
+      await this.stopEcgStream();
+      const err = new Error(`PMD ECG start rejected (${pmdStatusName(status)})`) as Error & {
+        pmdStatus?: number;
+      };
+      err.pmdStatus = status;
+      throw err;
     }
     this.ecgStreaming = true;
     this.accInfo(`ECG started: ${sampleRateHz} Hz, ${ECG_PREF_RESOLUTION_BITS}-bit (raw µV)`, 'info');
@@ -914,3 +988,16 @@ function toBufferSource(buf: Uint8Array): ArrayBuffer {
 }
 
 export const polarH10 = new PolarH10();
+
+/** Frame/command codecs exposed for unit tests. Not part of the runtime API — the PMD wire
+ * format is exactly the kind of thing that fails silently against real hardware, so it is
+ * worth pinning with fixtures. */
+export const __pmdInternal = {
+  parseSettingsResponse,
+  parseEcgFrame,
+  parseAccFrame,
+  buildEcgStart,
+  buildAccStart,
+  pmdStatusName,
+  ctrlStatus,
+};
