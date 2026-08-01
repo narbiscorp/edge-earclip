@@ -37,6 +37,25 @@ export const STATUS = {
   critical: '#d03b3b',
 } as const;
 
+/**
+ * Breathing-pattern classification colours, from the engineering spec.
+ *
+ * These are STATUS colours, not series colours: exactly one is active at a time
+ * and it always ships beside the classification word, so hue never carries the
+ * meaning alone. All four clear 3:1 on this surface. They are deliberately NOT
+ * used for the two waveforms — the spec's cyan/green pair measures ΔE 12.5 for
+ * normal vision (below the 15 floor) and 3.4 under tritan simulation, which is
+ * unusable when colour is the only thing separating the chest trace from the
+ * abdomen trace. The waveforms use validated categorical slots instead.
+ */
+export const CLASSIFICATION = {
+  DIAPHRAGMATIC: '#10B981',
+  BALANCED: '#06B6D4',
+  THORACIC: '#F59E0B',
+  PARADOXICAL: '#EF4444',
+  UNKNOWN: '#64748b',
+} as const;
+
 /** Chart chrome. Matches the Narbis dev-hub dark palette so this page sits
  * beside the other tools rather than looking like a different product. */
 export const INK = {

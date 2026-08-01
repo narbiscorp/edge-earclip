@@ -8,7 +8,7 @@
  */
 import { create } from 'zustand';
 import { DEFAULT_SHAPING, type TraceShaping } from './dsp';
-import type { BeatSource } from './log';
+import type { BeatSource, StrapId } from './log';
 
 /** View windows for the x-axis. */
 export const VIEW_WINDOWS: ReadonlyArray<{ value: number; label: string }> = [
@@ -104,6 +104,11 @@ export interface AccToggles {
   mag: boolean;
 }
 
+/** Which strap is on the sternum. The other one is the abdominal strap. Swappable
+ * because the roles are a fact about how the subject was strapped up, not about
+ * which device happened to pair first. */
+export type DiaphragmView = 'overlay' | 'differential';
+
 export interface SettingsState {
   /** Shared x-axis span, in seconds. */
   viewWindowSec: number;
@@ -112,6 +117,15 @@ export interface SettingsState {
   /** HRV computation window handed to the metrics worker. */
   analysisWindowSec: number;
   analysisSource: BeatSource;
+
+  /** Strap worn across the sternum; the other is the abdominal strap. */
+  chestStrap: StrapId;
+  /** Accelerometer axis the diaphragm analysis runs on. The spec says Z. */
+  diaphragmAxis: 'x' | 'y' | 'z' | 'mag';
+  diaphragmView: DiaphragmView;
+  /** Deep-breath calibration scale factors. 1 = uncalibrated. */
+  calibChest: number;
+  calibAbdo: number;
 
   metricsShaping: TraceShaping;
   ibiShaping: TraceShaping;
@@ -133,6 +147,10 @@ export interface SettingsState {
   setFollow: (f: boolean) => void;
   setAnalysisWindowSec: (s: number) => void;
   setAnalysisSource: (s: BeatSource) => void;
+  setChestStrap: (s: StrapId) => void;
+  setDiaphragmAxis: (a: 'x' | 'y' | 'z' | 'mag') => void;
+  setDiaphragmView: (v: DiaphragmView) => void;
+  setCalibration: (chest: number, abdo: number) => void;
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
   patchIbiShaping: (p: Partial<TraceShaping>) => void;
   patchAccShaping: (p: Partial<TraceShaping>) => void;
@@ -154,6 +172,12 @@ export const useSettings = create<SettingsState>((set) => ({
 
   // Metrics arrive at 1 Hz and are already windowed averages — smoothing them
   // again by default would hide the variation they exist to show.
+  chestStrap: 'main',
+  diaphragmAxis: 'z',
+  diaphragmView: 'overlay',
+  calibChest: 1,
+  calibAbdo: 1,
+
   metricsShaping: { ...DEFAULT_SHAPING, shape: 'spline', maxPoints: 3000 },
   // A tachogram is irregularly sampled by construction; drawing it linear
   // between beats is the honest default.
@@ -184,6 +208,10 @@ export const useSettings = create<SettingsState>((set) => ({
   setFollow: (follow) => set({ follow }),
   setAnalysisWindowSec: (analysisWindowSec) => set({ analysisWindowSec }),
   setAnalysisSource: (analysisSource) => set({ analysisSource }),
+  setChestStrap: (chestStrap) => set({ chestStrap }),
+  setDiaphragmAxis: (diaphragmAxis) => set({ diaphragmAxis }),
+  setDiaphragmView: (diaphragmView) => set({ diaphragmView }),
+  setCalibration: (calibChest, calibAbdo) => set({ calibChest, calibAbdo }),
   patchMetricsShaping: (p) => set((s) => ({ metricsShaping: { ...s.metricsShaping, ...p } })),
   patchIbiShaping: (p) => set((s) => ({ ibiShaping: { ...s.ibiShaping, ...p } })),
   patchAccShaping: (p) => set((s) => ({ accShaping: { ...s.accShaping, ...p } })),

@@ -69,6 +69,40 @@ baseline, gain and filter settings, because the point of the second one is
 comparing it against the first and that only means anything if they are shaped
 identically. Exports as `acc_lower_samples.csv`.
 
+**Diaphragmatic activation** — chest against abdomen, from the two straps.
+
+Both streams are band-passed into the respiratory band (12 s baseline removal
+for the high-pass, a 2 s centred average for the low-pass), put on ONE common
+20 Hz grid, and compared:
+
+| Output | Meaning |
+|---|---|
+| Ratio R | normalised abdominal / thoracic peak-to-peak. >= 1.5 diaphragmatic, < 0.7 thoracic |
+| Phase dPhi | lag between the straps over one breath. <= 45 normal, > 135 paradoxical |
+| Differential | abdomen minus chest — common-mode rejection for posture and chair movement |
+
+Three details that are easy to get wrong and are the reason this has its own
+test file:
+
+- **One common grid.** The straps have independent clocks and their frames
+  arrive at different instants. Cross-correlating raw samples measures the gap
+  between two BLE streams, not between two parts of a torso.
+- **The low-pass is not optional.** High-pass alone leaves the ~1 Hz cardiac
+  ballistogram, which is a similar size to a shallow breath. It inflates
+  peak-to-peak, and inflates the smaller stream proportionally more, so a
+  genuinely belly-dominant pattern reads as merely balanced.
+- **The period estimator declines rather than guesses.** A biased
+  autocorrelation decays with lag; in a short window that decay outruns the real
+  peak and the maximum lands on the shortest lag searched, so the estimator
+  returns its own lower bound. That produced a 2 s "breath period" from a 10 s
+  breath and a false paradoxical warning. It now uses unbiased normalisation,
+  searches no further than half the window, requires a genuine local maximum,
+  and takes the EARLIEST strong peak so a harmonic cannot halve the rate.
+
+Calibration is a 10-second two-deep-breath capture whose per-strap peak-to-peak
+becomes the scale factor, so the ratio reflects effort rather than how much
+tissue each strap sits on.
+
 **ECG** — the raw Polar H10 lead, 130 Hz, signed microvolts, unfiltered.
 
 Off by default: it is 130 Hz of data that respiration work does not need and it
@@ -161,6 +195,21 @@ why it hid for a long time, and fatal for ECG, where the device answers
 
 Some H10s also refuse ECG while the accelerometer is streaming. The app retries
 once with ACC paused and says so in the event log, restoring ACC when ECG stops.
+
+## Deviations from the dual-strap spec
+
+- **Sample rate is 50 Hz, not 200 Hz.** Respiration lives below 0.5 Hz, so
+  50 Hz is 50x Nyquist and already far more than the analysis needs. Raising the
+  driver's preferred ACC rate would also change it for the main dashboard's
+  Mode B, which is a bigger blast radius than the benefit justifies.
+- **Waveform colours are not the spec's cyan/green.** That pair measures
+  ΔE 12.5 for normal vision (below the 15 floor) and 3.4 under tritan
+  simulation — unusable where colour is the only thing separating the chest
+  trace from the abdomen trace. The chart uses validated categorical slots; the
+  spec's four colours are kept for the classification badge, where a text label
+  always accompanies them.
+- **Role assignment is one "Sternum strap" selector**, not two dropdowns. There
+  are only two straps, so naming one names the other.
 
 ## Notes
 

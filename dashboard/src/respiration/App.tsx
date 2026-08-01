@@ -17,6 +17,7 @@ import CardiacChart from './CardiacChart';
 import IbiChart from './IbiChart';
 import AccChart from './AccChart';
 import EcgChart from './EcgChart';
+import DiaphragmChart from './DiaphragmChart';
 import {
   downloadText,
   downloadZip,
@@ -299,6 +300,15 @@ export default function App(): ReactNode {
 
       <CardiacChart latest={latest} />
       <IbiChart />
+      <DiaphragmChart
+        chestConnected={
+          settings.chestStrap === 'main' ? state.accStreaming : state.lowerAccStreaming
+        }
+        abdoConnected={
+          settings.chestStrap === 'main' ? state.lowerAccStreaming : state.accStreaming
+        }
+      />
+
       <AccChart
         strap="main"
         title="Polar H10 accelerometer"

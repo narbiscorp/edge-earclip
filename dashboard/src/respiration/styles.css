@@ -390,6 +390,104 @@ input[type='range'].input {
   pointer-events: none;
 }
 
+/* ── Diaphragmatic balance bar ──────────────────────────────────────────── */
+
+.balance {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 1rem 1rem 0.5rem;
+}
+
+.balance-end {
+  font-size: 0.68rem;
+  line-height: 1.25;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 84px;
+}
+
+.balance-end.right {
+  text-align: right;
+}
+
+.balance-track {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: linear-gradient(90deg, #F59E0B22, #06B6D422 50%, #10B98122);
+}
+
+.balance-mid {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--axis);
+}
+
+.balance-marker {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--surface);
+  transition: left 0.35s ease-out, background 0.3s;
+}
+
+.balance-caption {
+  padding: 0 1rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 0.5rem;
+  padding: 0.2rem 1rem 0.8rem;
+}
+
+.metric {
+  background: #16202f;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0.45rem 0.6rem;
+}
+
+.metric .k {
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.metric .v {
+  font-size: 1.12rem;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  margin-top: 0.1rem;
+}
+
+.metric .v .u {
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 0.15rem;
+}
+
 /* ── Shaping controls ──────────────────────────────────────────────────── */
 
 .shaping {
