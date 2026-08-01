@@ -48,7 +48,26 @@ beats so they can be compared against it.
 **Inter-beat intervals** — the tachogram everything above is derived from, per
 source, with rejected beats marked rather than hidden.
 
-**Polar H10 accelerometer** — X, Y, Z and the vector magnitude in raw mG.
+**Polar H10 accelerometer** — X, Y, Z and the vector magnitude, one panel per
+axis.
+
+Isolated rather than overlaid, because on a chest strap they cannot share a
+scale: gravity pins whichever axis points down near +/-1000 mG while the
+breathing excursion is a few mG on top of it. Auto-gain does two things per
+channel — subtracts the slow baseline (gravity, posture drift), then lets the
+panel autorange to what is left — so a 3 mG breath fills the panel whichever way
+the strap is facing. Set a fixed +/- range instead when you need the channels to
+be comparable to each other. Both are display transforms; the readout beside each
+label is always the true absolute value and the CSV always holds raw samples.
+
+**ECG** — the raw Polar H10 lead, 130 Hz, signed microvolts, unfiltered.
+
+Off by default: it is 130 Hz of data that respiration work does not need and it
+costs strap battery, so it is opt-in rather than something you find draining the
+H10. Polar's own R-peak detector runs on this signal to produce the RR intervals
+in the tachogram, so it is where to look when a beat there seems wrong. It shares
+the H10's PMD service with the accelerometer — both can stream at once, though
+the strap may narrow the settings it offers for the second one.
 
 ## Controls
 
@@ -69,6 +88,9 @@ Per chart (conditions how that signal is drawn, never what is recorded):
 - **Filter** — none, moving average, median, Savitzky–Golay, or a zero-phase
   EWMA. Median is the one that removes an ectopic beat outright; Savitzky–Golay
   is the one that preserves peak height.
+- **Baseline** — subtracts a slow centred moving average, which is the auto-gain
+  half of "make the small movements visible". Zero-phase, so nothing shifts in
+  time. Defaults to 12 s on the accelerometer, off on ECG.
 - **Spline resample** — monotone cubic (PCHIP) onto a uniform grid. Chosen over
   a plain cubic spline because it cannot overshoot: a ringing spline through a
   tachogram invents RR values below the shortest measured beat, and those feed
@@ -88,6 +110,7 @@ them.
 | `metrics_1hz.csv` | 1 Hz analysis row (27 columns) |
 | `beats.csv` | heartbeat, both devices, chronological, rejected ones flagged |
 | `acc_samples.csv` | accelerometer sample, with magnitude |
+| `ecg_samples.csv` | ECG sample in microvolts (only when ECG was streamed) |
 | `manifest.json` | session — devices, counts, settings, build id |
 
 Every CSV carries both an absolute epoch timestamp and a session-relative
@@ -99,7 +122,10 @@ measurement once it is in a file.
 
 `?demo=1` generates a synthetic H10: resting heart rate with respiratory sinus
 arrhythmia at 6 br/min, a Mayer-wave component, periodic ectopic beats, and a
-chest accelerometer carrying gravity plus the breathing excursion. It dispatches
+chest accelerometer carrying gravity plus the breathing excursion, and a
+synthetic ECG whose R peaks come off the same beat clock as the RR intervals (so
+a misalignment between the waveform and the beat stream shows up as a bug rather
+than hiding in noise). It dispatches
 on the **real** `PolarH10` event surface, so the log, the worker, the engine and
 the exports all run exactly as they do with hardware.
 

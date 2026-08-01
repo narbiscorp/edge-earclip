@@ -27,7 +27,18 @@ export interface PolarAccEvent {
   sampleRateHz: number;
 }
 
-/** Diagnostic messages from the ACC stream setup (service found, accept/reject, first frame). */
+/** A block of ECG samples from one PMD data notification. `samples` are signed microvolts
+ * straight off the H10 (no filtering — this is the raw lead). `lastSampleMs` is the wall-clock
+ * time of the NEWEST sample, derived from the device frame timestamp like the ACC path. */
+export interface PolarEcgEvent {
+  samples: number[];
+  lastSampleMs: number;
+  /** Sample rate the H10 granted (Hz). 130 on every H10 seen so far. */
+  sampleRateHz: number;
+}
+
+/** Diagnostic messages from the PMD stream setup (service found, accept/reject, first frame).
+ * Shared by the ACC and ECG paths; the message text says which stream it refers to. */
 export interface PolarAccInfoDetail {
   message: string;
   level: 'info' | 'warn' | 'error';
@@ -61,6 +72,14 @@ const ACC_PREF_RANGE_G = 8; // H10 supports 2 / 4 / 8
 const ACC_PREF_RESOLUTION_BITS = 16;
 const PMD_MEAS_TYPE_ACC = 0x02;
 
+/* ECG shares the same PMD service, control point and data characteristic as ACC — the
+ * measurement type in byte 0 of each notification is what tells them apart. The H10 offers
+ * exactly one ECG configuration: 130 Hz, 14-bit. We still ask for the supported settings and
+ * echo them back, because the control point rejects a start whose settings it did not offer. */
+const PMD_MEAS_TYPE_ECG = 0x00;
+const ECG_PREF_SAMPLE_RATE_HZ = 130;
+const ECG_PREF_RESOLUTION_BITS = 14;
+
 // PMD control-point op codes + setting-type codes (Polar PMD spec).
 const PMD_OP_GET_SETTINGS = 0x01;
 const PMD_OP_START = 0x02;
@@ -79,6 +98,54 @@ function buildGetSettingsCommand(): Uint8Array {
 /** PMD control-point "stop measurement" for ACC. */
 function buildAccStopCommand(): Uint8Array {
   return new Uint8Array([PMD_OP_STOP, PMD_MEAS_TYPE_ACC]);
+}
+
+/** "Get measurement settings" for ECG. */
+function buildEcgGetSettingsCommand(): Uint8Array {
+  return new Uint8Array([PMD_OP_GET_SETTINGS, PMD_MEAS_TYPE_ECG]);
+}
+
+function buildEcgStopCommand(): Uint8Array {
+  return new Uint8Array([PMD_OP_STOP, PMD_MEAS_TYPE_ECG]);
+}
+
+/** Build the ECG start command from the settings the device actually offered. ECG has no RANGE
+ * setting — including one is a rejection (status 5), same failure mode as a malformed channels TLV
+ * on the ACC path. */
+function buildEcgStart(avail: Map<number, number[]>): { cmd: Uint8Array; sampleRateHz: number } {
+  const pick = (type: number, preferred: number): number => {
+    const opts = avail.get(type);
+    if (!opts || opts.length === 0) return preferred;
+    return opts.includes(preferred) ? preferred : opts[0];
+  };
+  const sampleRateHz = pick(PMD_SET_SAMPLE_RATE, ECG_PREF_SAMPLE_RATE_HZ);
+  const resolutionBits = pick(PMD_SET_RESOLUTION, ECG_PREF_RESOLUTION_BITS);
+  const cmd = new Uint8Array([
+    PMD_OP_START, PMD_MEAS_TYPE_ECG,
+    PMD_SET_SAMPLE_RATE, 0x01, ...u16le(sampleRateHz),
+    PMD_SET_RESOLUTION, 0x01, ...u16le(resolutionBits),
+  ]);
+  return { cmd, sampleRateHz };
+}
+
+/**
+ * Decode a PMD ECG data frame into signed microvolts. Layout:
+ *   [0] measurement type (0x00)  [1..8] timestamp u64  [9] frame type  [10..] payload.
+ * For H10 ECG the frame type is 0x00 and the payload is consecutive 24-bit SIGNED
+ * little-endian samples — one channel, no delta compression (unlike ACC).
+ */
+function parseEcgFrame(dv: DataView): number[] {
+  if (dv.byteLength < 13 || dv.getUint8(0) !== PMD_MEAS_TYPE_ECG) return [];
+  if (dv.getUint8(9) !== 0x00) return []; // only the raw frame type is defined for ECG
+  const payload = new Uint8Array(dv.buffer, dv.byteOffset + 10, dv.byteLength - 10);
+  const count = Math.floor(payload.length / 3);
+  const out = new Array<number>(count);
+  for (let i = 0; i < count; i++) {
+    const o = i * 3;
+    // Sign-extend 24 bits into 32 by shifting up and back down arithmetically.
+    out[i] = ((payload[o] | (payload[o + 1] << 8) | (payload[o + 2] << 16)) << 8) >> 8;
+  }
+  return out;
 }
 
 /** Parse a control-point response into a map of settingType → supported values (16-bit LE).
@@ -288,20 +355,32 @@ export class PolarH10 extends EventTarget {
    * means "no beat seen yet"; the next notification will anchor. Cleared
    * on connect and on any disconnect (intentional or GATT-dropped). */
   private lastBeatTimestamp: number | null = null;
-  /* PMD accelerometer streaming (Coherence Engine Mode B). Lazily set up on
-   * startAccStream(); torn down on stopAccStream() and on disconnect. */
-  private accCtrl: BluetoothRemoteGATTCharacteristic | null = null;
-  private accData: BluetoothRemoteGATTCharacteristic | null = null;
+  /* PMD streaming. The control point and data characteristic are SHARED by every measurement
+   * type — accelerometer (Coherence Engine Mode B) and ECG both arrive on `pmdData`, told apart
+   * by the measurement type in byte 0. Subscribed once by ensurePmd(); torn down when the last
+   * stream stops, and on disconnect. */
+  private pmdCtrl: BluetoothRemoteGATTCharacteristic | null = null;
+  private pmdData: BluetoothRemoteGATTCharacteristic | null = null;
   private accStreaming = false;
   private accFramesSeen = 0;
   private accRateHz = ACC_PREF_SAMPLE_RATE_HZ; // the rate the H10 actually granted
-  // Anchor the H10's device clock (ns, monotonic) to wall-clock on the first ACC frame, so
-  // per-sample timestamps don't jitter with BLE arrival time (frames batch ~5 s each).
+  private ecgStreaming = false;
+  private ecgFramesSeen = 0;
+  private ecgRateHz = ECG_PREF_SAMPLE_RATE_HZ;
+  // Anchor the H10's device clock (ns, monotonic) to wall-clock on the first frame of each
+  // stream, so per-sample timestamps don't jitter with BLE arrival time (frames batch).
+  // Per-stream, because the two streams start at different moments.
   private accAnchorDeviceNs: number | null = null;
   private accAnchorWallMs = 0;
+  private ecgAnchorDeviceNs: number | null = null;
+  private ecgAnchorWallMs = 0;
   /* One pending control-point request at a time (get-settings or start); the next indication
-   * resolves it. The PMD control point is strictly request→response, so this is sufficient. */
+   * resolves it. The PMD control point is strictly request→response, so this is sufficient —
+   * but with two streams there are now two callers, so exchanges are serialised by `ctrlQueue`. */
   private pendingCtrl: { resolve: (dv: DataView) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  /* Serialises control-point exchanges. Starting ECG while ACC is mid-handshake would otherwise
+   * let the second request steal the first one's response slot. */
+  private ctrlQueue: Promise<unknown> = Promise.resolve();
 
   get status(): PolarStatus {
     return this._status;
@@ -309,6 +388,10 @@ export class PolarH10 extends EventTarget {
 
   get isAccStreaming(): boolean {
     return this.accStreaming;
+  }
+
+  get isEcgStreaming(): boolean {
+    return this.ecgStreaming;
   }
 
   get deviceName(): string | null {
@@ -370,9 +453,21 @@ export class PolarH10 extends EventTarget {
     });
   }
 
+  /** Run a control-point exchange with exclusive access to the single response slot. Two streams
+   * means two possible callers, and the PMD control point is strictly request→response. */
+  private runCtrl<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.ctrlQueue.then(fn, fn);
+    // Keep the chain alive regardless of outcome; the caller still sees the rejection.
+    this.ctrlQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   /** Write to the PMD control point, preferring with-response (per spec), falling back to without. */
   private async writeCtrl(bytes: Uint8Array): Promise<void> {
-    const ch = this.accCtrl;
+    const ch = this.pmdCtrl;
     if (!ch) throw new Error('no PMD control point');
     const buf = toBufferSource(bytes);
     try {
@@ -389,61 +484,38 @@ export class PolarH10 extends EventTarget {
     if (this.accStreaming) return;
     if (!this.server) throw new Error('not connected');
     this.accFramesSeen = 0;
-
-    let svc: BluetoothRemoteGATTService;
-    try {
-      svc = await this.server.getPrimaryService(PMD_SERVICE_UUID);
-    } catch (err) {
-      this.accInfo(
-        `PMD service not found (${(err as Error).message}) — reconnect the H10; if it persists this strap may not expose the accelerometer`,
-        'error',
-      );
-      throw err;
-    }
-    const ctrl = await svc.getCharacteristic(PMD_CONTROL_UUID);
-    const data = await svc.getCharacteristic(PMD_DATA_UUID);
-    this.accCtrl = ctrl;
-    this.accData = data;
-
-    // Subscribe to BOTH the control point (indications) AND data BEFORE writing anything —
-    // skipping the control subscription is the classic silent-failure.
-    try {
-      ctrl.addEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
-      this.listeners.push({ target: ctrl, type: 'characteristicvaluechanged', listener: this.onAccCtrlNotify });
-      await ctrl.startNotifications();
-    } catch (err) {
-      this.accInfo(`PMD control subscribe failed: ${(err as Error).message}`, 'warn');
-    }
-    data.addEventListener('characteristicvaluechanged', this.onAccNotify);
-    this.listeners.push({ target: data, type: 'characteristicvaluechanged', listener: this.onAccNotify });
-    await data.startNotifications();
+    await this.ensurePmd('accelerometer');
 
     // 1. Ask which settings the H10 supports, rather than assuming a combo it might reject.
-    let avail = new Map<number, number[]>();
-    const settingsResp = this.waitForCtrlResponse();
-    await this.writeCtrl(buildGetSettingsCommand());
-    const sdv = await settingsResp;
-    if (sdv) {
-      avail = parseSettingsResponse(sdv);
-      const rates = avail.get(PMD_SET_SAMPLE_RATE) ?? [];
-      const ranges = avail.get(PMD_SET_RANGE) ?? [];
+    const avail = await this.runCtrl(async () => {
+      const settingsResp = this.waitForCtrlResponse();
+      await this.writeCtrl(buildGetSettingsCommand());
+      const sdv = await settingsResp;
+      if (!sdv) {
+        this.accInfo('no settings response from H10 — using defaults', 'warn');
+        return new Map<number, number[]>();
+      }
+      const m = parseSettingsResponse(sdv);
+      const rates = m.get(PMD_SET_SAMPLE_RATE) ?? [];
+      const ranges = m.get(PMD_SET_RANGE) ?? [];
       this.accInfo(`H10 ACC supports rates [${rates.join(',')}] Hz, ranges [${ranges.join(',')}] g`, 'info');
-      if (avail.size === 0) {
+      if (m.size === 0) {
         const hex = Array.from(new Uint8Array(sdv.buffer, sdv.byteOffset, Math.min(sdv.byteLength, 20)))
           .map((b) => b.toString(16).padStart(2, '0'))
           .join(' ');
         this.accInfo(`ACC settings response unparsed: ${hex}`, 'warn');
       }
-    } else {
-      this.accInfo('no settings response from H10 — using defaults', 'warn');
-    }
+      return m;
+    });
 
     // 2. Start with a supported combo and confirm the device accepted it.
     const { cmd, cfg } = buildAccStart(avail);
     this.accRateHz = cfg.sampleRateHz;
-    const startResp = this.waitForCtrlResponse();
-    await this.writeCtrl(cmd);
-    const rdv = await startResp;
+    const rdv = await this.runCtrl(async () => {
+      const startResp = this.waitForCtrlResponse();
+      await this.writeCtrl(cmd);
+      return startResp;
+    });
     if (rdv && rdv.byteLength >= 4 && rdv.getUint8(0) === 0xf0) {
       const status = rdv.getUint8(3);
       if (status !== 0) {
@@ -456,27 +528,102 @@ export class PolarH10 extends EventTarget {
     this.accInfo(`ACC started: ${cfg.sampleRateHz} Hz, ±${cfg.rangeG} g, ${cfg.resolutionBits}-bit`, 'info');
   }
 
-  /** Stop the PMD accelerometer stream and tear down its subscriptions. Idempotent; also used to
-   * clean up after a rejected start, so it does NOT early-return on !accStreaming. */
-  async stopAccStream(): Promise<void> {
-    const ctrl = this.accCtrl;
-    const data = this.accData;
-    const wasStreaming = this.accStreaming;
-    this.accStreaming = false;
-    this.accCtrl = null;
-    this.accData = null;
-    this.accAnchorDeviceNs = null;
+  /**
+   * Start the raw ECG stream (PMD measurement type 0x00, 130 Hz, 14-bit, microvolts).
+   * Idempotent; no-op if already streaming. Shares the PMD service and data characteristic with
+   * the accelerometer — running both is supported, though the H10 may narrow the settings it
+   * offers for the second stream, which is why each start re-queries them.
+   *
+   * Emits 'ecgReceived' per data notification and 'accInfo' diagnostics (the shared PMD
+   * diagnostic channel; messages are prefixed so the stream is identifiable).
+   */
+  async startEcgStream(): Promise<void> {
+    if (this.ecgStreaming) return;
+    if (!this.server) throw new Error('not connected');
+    this.ecgFramesSeen = 0;
+    this.ecgAnchorDeviceNs = null;
+    await this.ensurePmd('ECG');
+
+    const avail = await this.runCtrl(async () => {
+      const settingsResp = this.waitForCtrlResponse();
+      await this.writeCtrl(buildEcgGetSettingsCommand());
+      const sdv = await settingsResp;
+      if (!sdv) {
+        this.accInfo('no ECG settings response from H10 — using defaults', 'warn');
+        return new Map<number, number[]>();
+      }
+      const m = parseSettingsResponse(sdv);
+      const rates = m.get(PMD_SET_SAMPLE_RATE) ?? [];
+      this.accInfo(`H10 ECG supports rates [${rates.join(',')}] Hz`, 'info');
+      return m;
+    });
+
+    const { cmd, sampleRateHz } = buildEcgStart(avail);
+    this.ecgRateHz = sampleRateHz;
+    const rdv = await this.runCtrl(async () => {
+      const startResp = this.waitForCtrlResponse();
+      await this.writeCtrl(cmd);
+      return startResp;
+    });
+    if (rdv && rdv.byteLength >= 4 && rdv.getUint8(0) === 0xf0) {
+      const status = rdv.getUint8(3);
+      if (status !== 0) {
+        this.accInfo(`H10 REJECTED ECG start (status ${status}) at ${sampleRateHz} Hz`, 'error');
+        await this.stopEcgStream();
+        throw new Error(`PMD ECG start rejected (status ${status})`);
+      }
+    }
+    this.ecgStreaming = true;
+    this.accInfo(`ECG started: ${sampleRateHz} Hz, ${ECG_PREF_RESOLUTION_BITS}-bit (raw µV)`, 'info');
+  }
+
+  /** Discover the PMD service and subscribe to its control point + data characteristic, once.
+   * Both measurement types share them, so this is idempotent and reference-free: the teardown
+   * happens in releasePmdIfIdle() when the last stream stops. */
+  private async ensurePmd(label: string): Promise<void> {
+    if (this.pmdCtrl && this.pmdData) return;
+    if (!this.server) throw new Error('not connected');
+    let svc: BluetoothRemoteGATTService;
+    try {
+      svc = await this.server.getPrimaryService(PMD_SERVICE_UUID);
+    } catch (err) {
+      this.accInfo(
+        `PMD service not found (${(err as Error).message}) — reconnect the H10; if it persists this strap may not expose the ${label}`,
+        'error',
+      );
+      throw err;
+    }
+    const ctrl = await svc.getCharacteristic(PMD_CONTROL_UUID);
+    const data = await svc.getCharacteristic(PMD_DATA_UUID);
+    this.pmdCtrl = ctrl;
+    this.pmdData = data;
+
+    // Subscribe to BOTH the control point (indications) AND data BEFORE writing anything —
+    // skipping the control subscription is the classic silent-failure.
+    try {
+      ctrl.addEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
+      this.listeners.push({ target: ctrl, type: 'characteristicvaluechanged', listener: this.onAccCtrlNotify });
+      await ctrl.startNotifications();
+    } catch (err) {
+      this.accInfo(`PMD control subscribe failed: ${(err as Error).message}`, 'warn');
+    }
+    data.addEventListener('characteristicvaluechanged', this.onPmdData);
+    this.listeners.push({ target: data, type: 'characteristicvaluechanged', listener: this.onPmdData });
+    await data.startNotifications();
+  }
+
+  /** Drop the shared PMD subscriptions once no measurement type is streaming. */
+  private async releasePmdIfIdle(): Promise<void> {
+    if (this.accStreaming || this.ecgStreaming) return;
+    const ctrl = this.pmdCtrl;
+    const data = this.pmdData;
+    this.pmdCtrl = null;
+    this.pmdData = null;
     if (this.pendingCtrl) {
       clearTimeout(this.pendingCtrl.timer);
       this.pendingCtrl = null;
     }
-    // Forget these characteristics' listener handles so a retry doesn't double-subscribe.
     this.listeners = this.listeners.filter((l) => l.target !== ctrl && l.target !== data);
-    try {
-      if (ctrl && wasStreaming) await ctrl.writeValueWithResponse(toBufferSource(buildAccStopCommand()));
-    } catch {
-      /* device may already be gone — ignore */
-    }
     try {
       if (ctrl) {
         ctrl.removeEventListener('characteristicvaluechanged', this.onAccCtrlNotify);
@@ -487,12 +634,43 @@ export class PolarH10 extends EventTarget {
     }
     try {
       if (data) {
-        data.removeEventListener('characteristicvaluechanged', this.onAccNotify);
+        data.removeEventListener('characteristicvaluechanged', this.onPmdData);
         await data.stopNotifications();
       }
     } catch {
       /* ignore */
     }
+  }
+
+  /** Stop the PMD accelerometer stream and tear down its subscriptions. Idempotent; also used to
+   * clean up after a rejected start, so it does NOT early-return on !accStreaming. */
+  async stopAccStream(): Promise<void> {
+    const ctrl = this.pmdCtrl;
+    const wasStreaming = this.accStreaming;
+    this.accStreaming = false;
+    this.accAnchorDeviceNs = null;
+    try {
+      if (ctrl && wasStreaming) await ctrl.writeValueWithResponse(toBufferSource(buildAccStopCommand()));
+    } catch {
+      /* device may already be gone — ignore */
+    }
+    // The PMD subscriptions are shared, so they only come down if ECG stopped too.
+    await this.releasePmdIfIdle();
+  }
+
+  /** Stop the ECG stream. Idempotent; also used to clean up after a rejected start, so it does
+   * NOT early-return on !ecgStreaming. */
+  async stopEcgStream(): Promise<void> {
+    const ctrl = this.pmdCtrl;
+    const wasStreaming = this.ecgStreaming;
+    this.ecgStreaming = false;
+    this.ecgAnchorDeviceNs = null;
+    try {
+      if (ctrl && wasStreaming) await ctrl.writeValueWithResponse(toBufferSource(buildEcgStopCommand()));
+    } catch {
+      /* device may already be gone — ignore */
+    }
+    await this.releasePmdIfIdle();
   }
 
   /** PMD control-point indication — resolves the in-flight get-settings / start request. */
@@ -507,10 +685,78 @@ export class PolarH10 extends EventTarget {
     }
   };
 
-  private onAccNotify = (ev: Event): void => {
+  /** Shared PMD data notification. ACC and ECG arrive on the same characteristic and are told
+   * apart by the measurement type in byte 0 — dispatch before parsing, or an ECG frame would be
+   * fed to the accelerometer decoder and reported as a corrupt ACC frame. */
+  private onPmdData = (ev: Event): void => {
+    const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
+    if (!dv || dv.byteLength < 1) return;
+    const type = dv.getUint8(0);
+    if (type === PMD_MEAS_TYPE_ECG) {
+      this.handleEcgFrame(dv);
+      return;
+    }
+    if (type === PMD_MEAS_TYPE_ACC) {
+      this.handleAccFrame(dv);
+    }
+    // Any other measurement type is one we never started; ignore it silently.
+  };
+
+  /** Wall-clock time of a frame's NEWEST sample, from the device's monotonic ns timestamp
+   * anchored to Date.now() on the first frame of that stream. Avoids BLE arrival jitter. */
+  private frameLastSampleMs(dv: DataView, stream: 'acc' | 'ecg'): number {
+    if (dv.byteLength < 9) return Date.now();
+    const tsLow = dv.getUint32(1, true);
+    const tsHigh = dv.getUint32(5, true);
+    const tsNs = tsHigh * 4294967296 + tsLow;
+    if (stream === 'acc') {
+      if (this.accAnchorDeviceNs === null) {
+        this.accAnchorDeviceNs = tsNs;
+        this.accAnchorWallMs = Date.now();
+      }
+      return this.accAnchorWallMs + (tsNs - this.accAnchorDeviceNs) / 1e6;
+    }
+    if (this.ecgAnchorDeviceNs === null) {
+      this.ecgAnchorDeviceNs = tsNs;
+      this.ecgAnchorWallMs = Date.now();
+    }
+    return this.ecgAnchorWallMs + (tsNs - this.ecgAnchorDeviceNs) / 1e6;
+  }
+
+  private handleEcgFrame(dv: DataView): void {
     try {
-      const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
-      if (!dv) return;
+      const samples = parseEcgFrame(dv);
+      if (samples.length > 0 && this.ecgFramesSeen < 1) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const v of samples) {
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        this.accInfo(
+          `ECG streaming — ${samples.length} samples/frame (${Math.round(lo)}…${Math.round(hi)} µV)`,
+          'info',
+        );
+      } else if (samples.length === 0 && this.ecgFramesSeen < 3) {
+        this.accInfo(
+          `ECG frame not parsed (frameType=0x${dv.byteLength > 9 ? dv.getUint8(9).toString(16) : '??'}, ${dv.byteLength} B)`,
+          'warn',
+        );
+      }
+      this.ecgFramesSeen += 1;
+      if (samples.length === 0) return;
+      this.dispatch('ecgReceived', {
+        samples,
+        lastSampleMs: this.frameLastSampleMs(dv, 'ecg'),
+        sampleRateHz: this.ecgRateHz,
+      } as PolarEcgEvent);
+    } catch (err) {
+      this.emitError(err, 'ecg-parse');
+    }
+  }
+
+  private handleAccFrame(dv: DataView): void {
+    try {
       const samples = parseAccFrame(dv);
       if (samples.length > 0 && this.accFramesSeen < 1) {
         const fmt = (dv.getUint8(9) & 0x80) === 0 ? 'raw' : 'delta';
@@ -531,29 +777,15 @@ export class PolarH10 extends EventTarget {
       this.accFramesSeen += 1;
       if (samples.length === 0) return;
 
-      // Device frame timestamp = time of the LAST sample (ns, u64 LE at offset 1). Read as two
-      // u32s (avoids BigInt); precise enough for relative timing. Anchor to wall-clock once.
-      let lastSampleMs = Date.now();
-      if (dv.byteLength >= 9) {
-        const tsLow = dv.getUint32(1, true);
-        const tsHigh = dv.getUint32(5, true);
-        const tsNs = tsHigh * 4294967296 + tsLow;
-        if (this.accAnchorDeviceNs === null) {
-          this.accAnchorDeviceNs = tsNs;
-          this.accAnchorWallMs = Date.now();
-        }
-        lastSampleMs = this.accAnchorWallMs + (tsNs - this.accAnchorDeviceNs) / 1e6;
-      }
-
       this.dispatch('accReceived', {
         samples,
-        lastSampleMs,
+        lastSampleMs: this.frameLastSampleMs(dv, 'acc'),
         sampleRateHz: this.accRateHz,
       } as PolarAccEvent);
     } catch (err) {
       this.emitError(err, 'acc-parse');
     }
-  };
+  }
 
   private async openSession(): Promise<void> {
     if (!this.device?.gatt) throw new Error('no GATT server');
@@ -637,12 +869,15 @@ export class PolarH10 extends EventTarget {
     }
     this.listeners = [];
     this.server = null;
-    // ACC stream characteristics are invalid once the GATT session is gone.
+    // PMD characteristics are invalid once the GATT session is gone.
     this.accStreaming = false;
     this.accFramesSeen = 0;
     this.accAnchorDeviceNs = null;
-    this.accCtrl = null;
-    this.accData = null;
+    this.ecgStreaming = false;
+    this.ecgFramesSeen = 0;
+    this.ecgAnchorDeviceNs = null;
+    this.pmdCtrl = null;
+    this.pmdData = null;
     if (!opts.keepDevice) {
       if (this.device) {
         this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);

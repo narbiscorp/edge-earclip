@@ -144,6 +144,20 @@ export function writeAccCSV(log: SessionLog): string {
   return lines.join('\n') + '\n';
 }
 
+const ECG_HEADER = ['timestamp_ms', 'iso_utc', 'session_s', 'ecg_uv'];
+
+/** Raw ECG, one row per sample. Unfiltered signed microvolts exactly as the H10 sent them —
+ * the display detrend and filters are never applied here. */
+export function writeEcgCSV(log: SessionLog): string {
+  const t0 = log.startedAt ?? 0;
+  const lines = [ECG_HEADER.join(',')];
+  const e = log.ecg;
+  for (let i = 0; i < e.t.length; i++) {
+    lines.push(row([e.t[i], iso(e.t[i]), num((e.t[i] - t0) / 1000, 4), e.uv[i]]));
+  }
+  return lines.join('\n') + '\n';
+}
+
 export interface ManifestExtras {
   polarName: string | null;
   earclipName: string | null;
@@ -183,9 +197,11 @@ export function writeManifestJSON(log: SessionLog, extra: ManifestExtras): strin
       artifactBeats: log.artifactCount,
       beatsBySource: { h10: log.beats.h10.t.length, earclip: log.beats.earclip.t.length },
       accSamples: log.acc.t.length,
+      ecgSamples: log.ecg.t.length,
       metricRows: log.metrics.length,
     },
-    files: ['metrics_1hz.csv', 'beats.csv', 'acc_samples.csv'],
+    files: ['metrics_1hz.csv', 'beats.csv', 'acc_samples.csv']
+      .concat(log.ecg.t.length > 0 ? ['ecg_samples.csv'] : []),
   };
   return JSON.stringify(manifest, null, 2);
 }
@@ -222,6 +238,8 @@ export async function downloadZip(log: SessionLog, extra: ManifestExtras): Promi
   root.file('metrics_1hz.csv', writeMetricsCSV(log));
   root.file('beats.csv', writeBeatsCSV(log));
   root.file('acc_samples.csv', writeAccCSV(log));
+  // Only include ECG when it was actually streamed — an empty 130 Hz file is noise.
+  if (log.ecg.t.length > 0) root.file('ecg_samples.csv', writeEcgCSV(log));
   const blob = await zip.generateAsync({
     type: 'blob',
     compression: 'DEFLATE',
@@ -233,7 +251,12 @@ export async function downloadZip(log: SessionLog, extra: ManifestExtras): Promi
 /** Rough in-memory size of the log, for the UI's "you have N MB buffered" note. */
 export function estimateBytes(log: SessionLog): number {
   // 8 bytes per stored number; the columns are: 4 beat, 4 acc, ~26 metric.
-  return log.beatCount * 8 * 4 + log.acc.t.length * 8 * 4 + log.metrics.length * 8 * 26;
+  return (
+    log.beatCount * 8 * 4 +
+    log.acc.t.length * 8 * 4 +
+    log.ecg.t.length * 8 * 2 +
+    log.metrics.length * 8 * 26
+  );
 }
 
 export type { MetricRow };

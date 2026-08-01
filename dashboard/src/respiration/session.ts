@@ -17,7 +17,13 @@
  */
 import MetricsWorker from '../workers/metricsWorker?worker';
 import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
-import { polarH10, type PolarBeatEvent, type PolarAccEvent, type PolarAccInfoDetail } from '../ble/polarH10';
+import {
+  polarH10,
+  type PolarBeatEvent,
+  type PolarAccEvent,
+  type PolarEcgEvent,
+  type PolarAccInfoDetail,
+} from '../ble/polarH10';
 import { narbisDevice, type NarbisBeatEvent } from '../ble/narbisDevice';
 import { coherenceEngine, type EngineStatus } from '../engine/coherenceEngine';
 import { RespirationFromACC } from '../engine/respirationFromAcc';
@@ -52,6 +58,8 @@ export interface SessionState {
   polarName: string | null;
   earclipName: string | null;
   accStreaming: boolean;
+  /** Raw ECG stream (Polar H10 PMD type 0x00, 130 Hz). */
+  ecgStreaming: boolean;
   engineRunning: boolean;
   /** Synthetic signal from ?demo=1. Surfaced everywhere it could be mistaken
    * for a measurement, including the export manifest. */
@@ -88,6 +96,7 @@ class RespirationSession extends EventTarget {
     polarName: null,
     earclipName: null,
     accStreaming: false,
+    ecgStreaming: false,
     engineRunning: false,
     demo: false,
     analysisSource: 'h10',
@@ -134,6 +143,7 @@ class RespirationSession extends EventTarget {
     polarH10.addEventListener('disconnected', this.onPolarDisconnected as EventListener);
     polarH10.addEventListener('beatReceived', this.onPolarBeat as EventListener);
     polarH10.addEventListener('accReceived', this.onPolarAcc as EventListener);
+    polarH10.addEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.addEventListener('accInfo', this.onPolarAccInfo as EventListener);
 
     narbisDevice.addEventListener('connected', this.onEarclipConnected as EventListener);
@@ -158,6 +168,7 @@ class RespirationSession extends EventTarget {
     polarH10.removeEventListener('disconnected', this.onPolarDisconnected as EventListener);
     polarH10.removeEventListener('beatReceived', this.onPolarBeat as EventListener);
     polarH10.removeEventListener('accReceived', this.onPolarAcc as EventListener);
+    polarH10.removeEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.removeEventListener('accInfo', this.onPolarAccInfo as EventListener);
     narbisDevice.removeEventListener('connected', this.onEarclipConnected as EventListener);
     narbisDevice.removeEventListener('disconnected', this.onEarclipDisconnected as EventListener);
@@ -232,6 +243,24 @@ class RespirationSession extends EventTarget {
     this.patch({ accStreaming: false });
   }
 
+  /** Raw ECG. Off by default: it is 130 Hz of data nobody needs for respiration work, and it
+   * costs H10 battery. Turn it on when you actually want to look at the waveform. */
+  async startEcg(): Promise<void> {
+    try {
+      await polarH10.startEcgStream();
+      this.patch({ ecgStreaming: polarH10.isEcgStreaming });
+    } catch (err) {
+      this.patch({ ecgStreaming: false });
+      this.log(`ECG stream failed: ${(err as Error).message}`, 'error');
+      throw err;
+    }
+  }
+
+  async stopEcg(): Promise<void> {
+    await polarH10.stopEcgStream();
+    this.patch({ ecgStreaming: false });
+  }
+
   // ── engine ───────────────────────────────────────────────────────────────
 
   startEngine(): void {
@@ -276,6 +305,7 @@ class RespirationSession extends EventTarget {
     this.patch({
       polar: reconnecting ? 'reconnecting' : 'disconnected',
       accStreaming: false,
+      ecgStreaming: false,
       polarName: reconnecting ? this.state.polarName : null,
     });
     this.log(`Polar H10 disconnected (${ev.detail.reason})`, reconnecting ? 'warn' : 'info');
@@ -321,6 +351,12 @@ class RespirationSession extends EventTarget {
       );
     }
     if (!this.state.accStreaming) this.patch({ accStreaming: true });
+  };
+
+  private onPolarEcg = (ev: CustomEvent<PolarEcgEvent>): void => {
+    const { samples, lastSampleMs, sampleRateHz } = ev.detail;
+    sessionLog.addEcgBlock(samples, lastSampleMs, sampleRateHz);
+    if (!this.state.ecgStreaming) this.patch({ ecgStreaming: true });
   };
 
   private onEarclipConnected = (ev: CustomEvent<{ name: string }>): void => {

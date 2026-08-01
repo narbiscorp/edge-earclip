@@ -49,6 +49,30 @@ export const RESAMPLE_OPTIONS: ReadonlyArray<{ value: number; label: string }> =
   { value: 10, label: '10 Hz' },
 ];
 
+/** Baseline-removal windows. The value is the centred moving-average span in
+ * seconds; longer keeps more of the slow content. 12 s passes normal breathing
+ * (0.1-0.5 Hz) while removing gravity and posture drift. */
+export const DETREND_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0, label: 'off (absolute)' },
+  { value: 2, label: '2 s' },
+  { value: 4, label: '4 s' },
+  { value: 8, label: '8 s' },
+  { value: 12, label: '12 s' },
+  { value: 30, label: '30 s' },
+];
+
+/** Per-channel gain for the accelerometer panels. `null` = auto-gain (each
+ * channel autoranges to its own content). A number pins every channel to that
+ * ± range in mG so their amplitudes are directly comparable. */
+export const GAIN_OPTIONS: ReadonlyArray<{ value: number | null; label: string }> = [
+  { value: null, label: 'auto' },
+  { value: 5, label: '±5 mG' },
+  { value: 20, label: '±20 mG' },
+  { value: 50, label: '±50 mG' },
+  { value: 200, label: '±200 mG' },
+  { value: 1200, label: '±1200 mG' },
+];
+
 export const SHAPE_OPTIONS: ReadonlyArray<{ value: TraceShaping['shape']; label: string }> = [
   { value: 'linear', label: 'linear' },
   { value: 'spline', label: 'spline' },
@@ -92,6 +116,9 @@ export interface SettingsState {
   metricsShaping: TraceShaping;
   ibiShaping: TraceShaping;
   accShaping: TraceShaping;
+  ecgShaping: TraceShaping;
+  /** Fixed ± range for every accelerometer panel, or null for auto-gain. */
+  accGain: number | null;
 
   panels: PanelToggles;
   coherence: CoherenceToggles;
@@ -109,6 +136,8 @@ export interface SettingsState {
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
   patchIbiShaping: (p: Partial<TraceShaping>) => void;
   patchAccShaping: (p: Partial<TraceShaping>) => void;
+  patchEcgShaping: (p: Partial<TraceShaping>) => void;
+  setAccGain: (v: number | null) => void;
   togglePanel: (k: keyof PanelToggles) => void;
   toggleCoherence: (k: keyof CoherenceToggles) => void;
   toggleAcc: (k: keyof AccToggles) => void;
@@ -129,8 +158,14 @@ export const useSettings = create<SettingsState>((set) => ({
   // A tachogram is irregularly sampled by construction; drawing it linear
   // between beats is the honest default.
   ibiShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 4000 },
-  // 50 Hz × 3 axes over a long window is the one place decimation matters.
-  accShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 2500 },
+  // 50 Hz x 3 axes over a long window is the one place decimation matters.
+  // Baseline removal is ON by default: without it the breathing movement this
+  // page exists to show is a sub-1% wiggle on the gravity offset.
+  accShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 2500, detrendSec: 12 },
+  // ECG keeps its absolute scale by default — the QRS amplitude is meaningful,
+  // and the wander is obvious enough that removing it should be a choice.
+  ecgShaping: { ...DEFAULT_SHAPING, shape: 'linear', maxPoints: 4000, detrendSec: 0 },
+  accGain: null,
 
   panels: { hr: true, hrv: true, coherence: true, respiration: true },
   coherence: {
@@ -152,6 +187,8 @@ export const useSettings = create<SettingsState>((set) => ({
   patchMetricsShaping: (p) => set((s) => ({ metricsShaping: { ...s.metricsShaping, ...p } })),
   patchIbiShaping: (p) => set((s) => ({ ibiShaping: { ...s.ibiShaping, ...p } })),
   patchAccShaping: (p) => set((s) => ({ accShaping: { ...s.accShaping, ...p } })),
+  patchEcgShaping: (p) => set((s) => ({ ecgShaping: { ...s.ecgShaping, ...p } })),
+  setAccGain: (accGain) => set({ accGain }),
   togglePanel: (k) => set((s) => ({ panels: { ...s.panels, [k]: !s.panels[k] } })),
   toggleCoherence: (k) => set((s) => ({ coherence: { ...s.coherence, [k]: !s.coherence[k] } })),
   toggleAcc: (k) => set((s) => ({ acc: { ...s.acc, [k]: !s.acc[k] } })),

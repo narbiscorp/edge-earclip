@@ -5,6 +5,7 @@ import {
   medianFilter,
   movingAverage,
   pchipResample,
+  removeBaseline,
   savitzkyGolay,
   shapeSeries,
   DEFAULT_SHAPING,
@@ -174,6 +175,72 @@ describe('decimateLTTB', () => {
     y[1234] = 500; // one-sample spike, invisible to every 10th-sample stride
     const r = decimateLTTB(x, y, 200);
     expect(Math.max(...r.y)).toBe(500);
+  });
+});
+
+describe('removeBaseline (auto-gain)', () => {
+  /** 50 Hz accelerometer axis: a big gravity offset with a small breath on top. */
+  const accLike = (n: number, offsetMg: number, breathMg: number) => {
+    const x: number[] = [];
+    const y: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = i * 20; // 50 Hz
+      x.push(t);
+      y.push(offsetMg + breathMg * Math.sin((2 * Math.PI * 0.1 * t) / 1000)); // 0.1 Hz = 6 br/min
+    }
+    return { x, y };
+  };
+
+  it('strips a 1000 mG gravity offset and keeps the 3 mG breath', () => {
+    const { x, y } = accLike(3000, -1006, 3);
+    const out = removeBaseline(x, y, 12);
+    // Ignore the edges, where a centred window is necessarily partial.
+    const mid = out.slice(600, out.length - 600);
+    const lo = Math.min(...mid);
+    const hi = Math.max(...mid);
+    expect(Math.abs((lo + hi) / 2)).toBeLessThan(0.5); // centred on zero, offset gone
+    expect(hi - lo).toBeGreaterThan(4); // the breath survived (~6 mG peak-to-peak)
+    expect(hi - lo).toBeLessThan(8);
+  });
+
+  it('leaves the breathing amplitude essentially intact', () => {
+    const { x, y } = accLike(3000, 980, 3);
+    const out = removeBaseline(x, y, 12);
+    const mid = out.slice(600, out.length - 600);
+    const amp = (Math.max(...mid) - Math.min(...mid)) / 2;
+    expect(amp).toBeGreaterThan(2.6); // within ~15% of the true 3 mG
+  });
+
+  it('does not shift the signal in time (zero-phase)', () => {
+    const { x, y } = accLike(3000, 500, 10);
+    const out = removeBaseline(x, y, 12);
+    // Peak of the detrended signal must line up with a peak of the input.
+    const from = 600;
+    const to = out.length - 600;
+    let peak = from;
+    for (let i = from; i < to; i++) if (out[i] > out[peak]) peak = i;
+    const inputAtPeak = y[peak] - 500;
+    expect(inputAtPeak).toBeGreaterThan(9); // input is also near its maximum there
+  });
+
+  it('is a no-op when disabled', () => {
+    const { x, y } = accLike(200, 100, 5);
+    expect(removeBaseline(x, y, 0)).toEqual(y);
+  });
+
+  it('falls back to mean removal when the window exceeds the data', () => {
+    const { x, y } = accLike(50, 900, 4); // 1 s of data, 30 s window
+    const out = removeBaseline(x, y, 30);
+    const mean = out.reduce((s, v) => s + v, 0) / out.length;
+    expect(Math.abs(mean)).toBeLessThan(1e-9);
+    expect(Math.abs(Math.max(...out))).toBeLessThan(10); // offset gone, not the shape
+  });
+
+  it('survives a degenerate time axis instead of dividing by zero', () => {
+    const y = [1, 2, 3, 4];
+    const out = removeBaseline([5, 5, 5, 5], y, 10);
+    expect(out).toEqual(y);
+    expect(out.every(Number.isFinite)).toBe(true);
   });
 });
 

@@ -337,6 +337,54 @@ export function decimateLTTB(
   return { x: outX, y: outY };
 }
 
+/**
+ * Remove the slow baseline from a signal — the auto-gain half of "make the small movements
+ * visible".
+ *
+ * On a chest accelerometer, gravity puts whichever axis points down at roughly ±1000 mG while
+ * the breathing excursion is a few mG riding on top. Plotted raw, the breathing is invisible:
+ * it is a 0.3% wiggle on a huge DC offset. Subtracting a slow moving average leaves only the
+ * movement, which then fills the panel once the axis autoranges.
+ *
+ * The baseline is a CENTRED moving average, so it is zero-phase — a causal high-pass would slide
+ * every breath later in time than the accelerometer sample that produced it, which matters when
+ * the whole point is lining the breath up against the tachogram.
+ *
+ * `windowSec` sets what counts as "slow": the baseline follows anything slower than roughly
+ * 1/windowSec Hz and is subtracted away. 12 s passes normal breathing (0.1-0.5 Hz) while
+ * removing gravity and posture drift. Returns a copy unchanged when windowSec <= 0.
+ */
+export function removeBaseline(
+  x: readonly number[],
+  y: readonly number[],
+  windowSec: number,
+): number[] {
+  const n = Math.min(x.length, y.length);
+  if (windowSec <= 0 || n < 3) return y.slice(0, n);
+  // Sample spacing from the span rather than adjacent diffs, so one duplicated
+  // timestamp cannot blow up the window length.
+  const spanMs = x[n - 1] - x[0];
+  if (!(spanMs > 0)) return y.slice(0, n);
+  const dtMs = spanMs / (n - 1);
+  let win = Math.round((windowSec * 1000) / dtMs);
+  if (win % 2 === 0) win += 1; // odd, so the average is truly centred
+  if (win < 3) return y.slice(0, n);
+  // A baseline window longer than the data has no slow component to estimate; fall back to
+  // removing the mean, which is the limit of the same operation.
+  if (win >= n) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += y[i];
+    const mean = sum / n;
+    const out = new Array<number>(n);
+    for (let i = 0; i < n; i++) out[i] = y[i] - mean;
+    return out;
+  }
+  const base = movingAverage(y.slice(0, n), win);
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) out[i] = y[i] - base[i];
+  return out;
+}
+
 export type FilterKind = 'none' | 'movavg' | 'median' | 'savgol' | 'ewma';
 
 /** How a trace is conditioned before it is drawn. One of these per chart. */
@@ -355,6 +403,9 @@ export interface TraceShaping {
   shape: 'linear' | 'spline' | 'hv';
   /** Max points drawn per trace after conditioning. */
   maxPoints: number;
+  /** Baseline-removal window in seconds. 0 disables it and the trace keeps its
+   * absolute value. See removeBaseline. */
+  detrendSec: number;
 }
 
 export const DEFAULT_SHAPING: TraceShaping = {
@@ -365,6 +416,7 @@ export const DEFAULT_SHAPING: TraceShaping = {
   resampleHz: 0,
   shape: 'linear',
   maxPoints: 4000,
+  detrendSec: 0,
 };
 
 /** Apply the configured filter to an already-uniform series. */
@@ -384,8 +436,15 @@ export function applyFilter(y: readonly number[], s: TraceShaping): number[] {
   }
 }
 
-/** Full conditioning chain: spline-resample onto a uniform grid (optional),
- * filter, then decimate for drawing. */
+/**
+ * Full conditioning chain: spline-resample onto a uniform grid (optional), remove the slow
+ * baseline (optional), filter, then decimate for drawing.
+ *
+ * Order matters. Baseline removal runs on the full-rate series, BEFORE decimation — estimating a
+ * 12-second baseline from 2500 points that have already been thinned by a peak-preserving
+ * reduction would track the peaks instead of the trend, and subtract the signal along with the
+ * drift.
+ */
 export function shapeSeries(
   x: readonly number[],
   y: readonly number[],
@@ -401,6 +460,7 @@ export function shapeSeries(
     sy = r.y;
   }
   if (sy.length === 0) return { x: [], y: [] };
+  if (s.detrendSec > 0) sy = removeBaseline(sx, sy, s.detrendSec);
   const filtered = applyFilter(sy, s);
   return decimateLTTB(sx, filtered, s.maxPoints);
 }

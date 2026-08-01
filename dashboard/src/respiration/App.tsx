@@ -16,6 +16,7 @@ import { Segmented, Select, Info, fmt } from './ui';
 import CardiacChart from './CardiacChart';
 import IbiChart from './IbiChart';
 import AccChart from './AccChart';
+import EcgChart from './EcgChart';
 import {
   downloadText,
   downloadZip,
@@ -24,6 +25,7 @@ import {
   writeAccCSV,
   writeBeatsCSV,
   writeMetricsCSV,
+  writeEcgCSV,
 } from './csv';
 
 const MAX_LOG_LINES = 200;
@@ -35,6 +37,7 @@ export default function App(): ReactNode {
   const [truncated, setTruncated] = useState(false);
   const [showTable, setShowTable] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [ecgBusy, setEcgBusy] = useState(false);
   // Drives the live readouts in the chart headers. The plots redraw themselves
   // on rAF; this only refreshes the numbers beside the labels.
   const [, setTick] = useState(0);
@@ -221,6 +224,7 @@ export default function App(): ReactNode {
         />
         <Stat k="Beats" v={String(sessionLog.beatCount)} />
         <Stat k="ACC samples" v={String(sessionLog.acc.t.length)} />
+        <Stat k="ECG samples" v={String(sessionLog.ecg.t.length)} />
       </div>
 
       {/* One filter row, above everything it scopes. */}
@@ -274,6 +278,19 @@ export default function App(): ReactNode {
       <CardiacChart latest={latest} />
       <IbiChart />
       <AccChart streaming={state.accStreaming} />
+      <EcgChart
+        streaming={state.ecgStreaming}
+        busy={ecgBusy}
+        onToggle={(on) => {
+          setEcgBusy(true);
+          const done = (): void => setEcgBusy(false);
+          if (on) {
+            void respirationSession.startEcg().then(done, done);
+          } else {
+            void respirationSession.stopEcg().then(done, done);
+          }
+        }}
+      />
 
       <section className="card">
         <div className="card-head">
@@ -315,6 +332,13 @@ export default function App(): ReactNode {
             onClick={() => downloadText(writeAccCSV(sessionLog), `respiration-${stamp}-acc.csv`)}
           >
             acc_samples.csv
+          </button>
+          <button
+            className="btn"
+            disabled={sessionLog.ecg.t.length === 0}
+            onClick={() => downloadText(writeEcgCSV(sessionLog), `respiration-${stamp}-ecg.csv`)}
+          >
+            ecg_samples.csv
           </button>
           <div className="sep" />
           <button className="btn sm" onClick={() => setShowTable((v) => !v)}>

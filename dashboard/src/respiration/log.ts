@@ -18,6 +18,9 @@ export type BeatSource = 'h10' | 'earclip';
 /** Caps chosen so a long session (~4 h) fits comfortably; hitting one sets
  * `truncated` and is surfaced in the UI instead of being absorbed. */
 const MAX_ACC_SAMPLES = 800_000;
+/* ECG is 130 Hz — 2.6x the accelerometer rate — so it gets its own, larger cap.
+ * 1.5 M samples is a little over 3 hours. */
+const MAX_ECG_SAMPLES = 1_500_000;
 const MAX_BEATS = 60_000;
 const MAX_METRICS = 40_000;
 
@@ -92,6 +95,12 @@ interface AccColumns {
   z: number[];
 }
 
+/** Raw ECG, one column of signed microvolts at 130 Hz. */
+interface EcgColumns {
+  t: number[];
+  uv: number[];
+}
+
 /** First index whose value is >= `target`, over a sorted-ascending array. */
 function lowerBound(arr: readonly number[], target: number): number {
   let lo = 0;
@@ -115,6 +124,7 @@ export class SessionLog extends EventTarget {
     earclip: emptyBeats(),
   };
   readonly acc: AccColumns = { t: [], x: [], y: [], z: [] };
+  readonly ecg: EcgColumns = { t: [], uv: [] };
   readonly metrics: MetricRow[] = [];
 
   /** Wall-clock ms of the first sample of any kind, or null when empty. */
@@ -150,7 +160,12 @@ export class SessionLog extends EventTarget {
   }
 
   get isEmpty(): boolean {
-    return this.beatCount === 0 && this.acc.t.length === 0 && this.metrics.length === 0;
+    return (
+      this.beatCount === 0 &&
+      this.acc.t.length === 0 &&
+      this.ecg.t.length === 0 &&
+      this.metrics.length === 0
+    );
   }
 
   /** Session length in ms from the first sample to the newest one. */
@@ -161,6 +176,7 @@ export class SessionLog extends EventTarget {
       tail(this.beats.h10.t),
       tail(this.beats.earclip.t),
       tail(this.acc.t),
+      tail(this.ecg.t),
       this.metrics.length ? this.metrics[this.metrics.length - 1].t : 0,
     );
     return Math.max(0, last - this._startedAt);
@@ -218,6 +234,44 @@ export class SessionLog extends EventTarget {
     this.touch(lastSampleMs);
   }
 
+  /** Append one ECG frame. Like the accelerometer, `lastSampleMs` is the NEWEST
+   * sample's device-clock time and the rest of the block is spaced backwards from it. */
+  addEcgBlock(samples: ArrayLike<number>, lastSampleMs: number, sampleRateHz: number): void {
+    const n = samples.length;
+    if (n === 0) return;
+    if (this.ecg.t.length + n > MAX_ECG_SAMPLES) {
+      this.markTruncated();
+      return;
+    }
+    const dt = 1000 / Math.max(1, sampleRateHz);
+    for (let i = 0; i < n; i++) {
+      this.ecg.t.push(lastSampleMs - (n - 1 - i) * dt);
+      this.ecg.uv.push(samples[i]);
+    }
+    this.touch(lastSampleMs);
+  }
+
+  /** ECG over the trailing window, in microvolts. `maxRaw` strides the same way
+   * accWindow does — at 130 Hz an hour is 468 000 samples. */
+  ecgWindow(windowSec: number, nowMs: number, maxRaw = 60_000): WindowedXY {
+    const from = nowMs - windowSec * 1000;
+    const start = lowerBound(this.ecg.t, from);
+    const len = this.ecg.t.length;
+    const count = Math.max(0, len - start);
+    const stride = count > maxRaw ? Math.ceil(count / maxRaw) : 1;
+    const x: number[] = [];
+    const y: number[] = [];
+    for (let i = start; i < len; i += stride) {
+      x.push(this.ecg.t[i]);
+      y.push(this.ecg.uv[i]);
+    }
+    if (stride > 1 && len > start && x[x.length - 1] !== this.ecg.t[len - 1]) {
+      x.push(this.ecg.t[len - 1]);
+      y.push(this.ecg.uv[len - 1]);
+    }
+    return { x, y };
+  }
+
   addMetric(row: MetricRow): void {
     if (this.metrics.length >= MAX_METRICS) {
       this.markTruncated();
@@ -245,6 +299,8 @@ export class SessionLog extends EventTarget {
     this.acc.x.length = 0;
     this.acc.y.length = 0;
     this.acc.z.length = 0;
+    this.ecg.t.length = 0;
+    this.ecg.uv.length = 0;
     this.metrics.length = 0;
     this._startedAt = null;
     this._truncated = false;
