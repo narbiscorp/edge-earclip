@@ -20,6 +20,7 @@ import type { MetricsRequest, MetricsResult } from '../workers/metricsWorker';
 import {
   PolarH10,
   polarH10,
+  describeBleError,
   type PolarBeatEvent,
   type PolarAccEvent,
   type PolarEcgEvent,
@@ -168,11 +169,13 @@ class RespirationSession extends EventTarget {
     polarH10.addEventListener('accReceived', this.onPolarAcc as EventListener);
     polarH10.addEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.addEventListener('accInfo', this.onPolarAccInfo as EventListener);
+    polarH10.addEventListener('info', this.onPolarInfo as EventListener);
 
     lowerStrap.addEventListener('connected', this.onLowerConnected as EventListener);
     lowerStrap.addEventListener('disconnected', this.onLowerDisconnected as EventListener);
     lowerStrap.addEventListener('accReceived', this.onLowerAcc as EventListener);
     lowerStrap.addEventListener('accInfo', this.onLowerAccInfo as EventListener);
+    lowerStrap.addEventListener('info', this.onLowerInfo as EventListener);
 
     narbisDevice.addEventListener('connected', this.onEarclipConnected as EventListener);
     narbisDevice.addEventListener('disconnected', this.onEarclipDisconnected as EventListener);
@@ -201,10 +204,12 @@ class RespirationSession extends EventTarget {
     polarH10.removeEventListener('accReceived', this.onPolarAcc as EventListener);
     polarH10.removeEventListener('ecgReceived', this.onPolarEcg as EventListener);
     polarH10.removeEventListener('accInfo', this.onPolarAccInfo as EventListener);
+    polarH10.removeEventListener('info', this.onPolarInfo as EventListener);
     lowerStrap.removeEventListener('connected', this.onLowerConnected as EventListener);
     lowerStrap.removeEventListener('disconnected', this.onLowerDisconnected as EventListener);
     lowerStrap.removeEventListener('accReceived', this.onLowerAcc as EventListener);
     lowerStrap.removeEventListener('accInfo', this.onLowerAccInfo as EventListener);
+    lowerStrap.removeEventListener('info', this.onLowerInfo as EventListener);
     narbisDevice.removeEventListener('connected', this.onEarclipConnected as EventListener);
     narbisDevice.removeEventListener('disconnected', this.onEarclipDisconnected as EventListener);
     narbisDevice.removeEventListener('beatReceived', this.onEarclipBeat as EventListener);
@@ -236,13 +241,28 @@ class RespirationSession extends EventTarget {
       await polarH10.connect();
     } catch (err) {
       this.patch({ polar: 'disconnected' });
-      this.log(`Polar H10 connect failed: ${(err as Error).message}`, 'error');
+      this.log(`Polar H10 connect failed: ${describeBleError(err)}`, 'error');
       throw err;
     }
   }
 
   async disconnectPolar(): Promise<void> {
     await polarH10.disconnect();
+  }
+
+  /** Forget the remembered strap so the next Connect offers the chooser. The
+   * device handle is kept across failed attempts to save re-picking it, which
+   * is wrong if the wrong one was picked in the first place. */
+  forgetPolar(): void {
+    polarH10.forgetDevice();
+    this.patch({ polarName: null });
+    this.log('Forgot the main strap — Connect will offer the device list again');
+  }
+
+  forgetLower(): void {
+    lowerStrap.forgetDevice();
+    this.patch({ lowerName: null });
+    this.log('Forgot the lower strap — Connect will offer the device list again');
   }
 
   async connectEarclip(): Promise<void> {
@@ -373,7 +393,7 @@ class RespirationSession extends EventTarget {
       await lowerStrap.connect();
     } catch (err) {
       this.patch({ lower: 'disconnected' });
-      this.log(`Lower strap connect failed: ${(err as Error).message}`, 'error');
+      this.log(`Lower strap connect failed: ${describeBleError(err)}`, 'error');
       throw err;
     }
   }
@@ -465,6 +485,14 @@ class RespirationSession extends EventTarget {
     // The strap may come back on a different body — never carry a breathing
     // estimate across the gap.
     this.resp.reset();
+  };
+
+  private onPolarInfo = (ev: CustomEvent<PolarAccInfoDetail>): void => {
+    this.log(`H10: ${ev.detail.message}`, ev.detail.level);
+  };
+
+  private onLowerInfo = (ev: CustomEvent<PolarAccInfoDetail>): void => {
+    this.log(`Lower strap: ${ev.detail.message}`, ev.detail.level);
   };
 
   private onPolarAccInfo = (ev: CustomEvent<PolarAccInfoDetail>): void => {

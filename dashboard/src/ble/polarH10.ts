@@ -57,6 +57,68 @@ export interface PolarErrorDetail {
 const HEART_RATE_MEASUREMENT_UUID = 0x2a37;
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 
+/* Chrome's GATT connect fails on first contact routinely — usually
+ * "NetworkError: Connection failed" — and succeeds moments later with no change
+ * in circumstances. Without a retry here the only recovery was the user pressing
+ * Connect again, and because a failed attempt used to discard the chosen device,
+ * each press reopened the chooser. Retrying in place is the difference between
+ * "connects" and "connects on the fourth try". */
+const GATT_CONNECT_RETRY_MS = [0, 350, 900, 1800, 3000];
+/* Service discovery can lag the connection: getPrimaryService throws
+ * "No Services found" if it is called before the GATT database is populated. */
+const SERVICE_RETRY_MS = [0, 250, 700, 1500];
+
+/**
+ * Run `fn` until it resolves, waiting `delaysMs[i]` before attempt i. Rethrows
+ * the LAST error once every delay is spent. Pure enough to unit test, which is
+ * the point — the retry policy is the part worth pinning down.
+ */
+export async function retryAsync<T>(
+  fn: (attempt: number) => Promise<T>,
+  delaysMs: readonly number[],
+  onFailedAttempt?: (err: unknown, attempt: number, willRetry: boolean) => void,
+): Promise<T> {
+  let last: unknown = new Error('no attempts made');
+  for (let i = 0; i < delaysMs.length; i++) {
+    if (delaysMs[i] > 0) await sleep(delaysMs[i]);
+    try {
+      return await fn(i);
+    } catch (err) {
+      last = err;
+      onFailedAttempt?.(err, i, i < delaysMs.length - 1);
+    }
+  }
+  throw last;
+}
+
+/** True when the user dismissed the device chooser, or no device matched. There
+ * is nothing to retry in that case — retrying would just reopen the dialog. */
+export function isChooserDismissal(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name;
+  return name === 'NotFoundError' || name === 'AbortError';
+}
+
+/**
+ * Turn a Web Bluetooth failure into something a person can act on. The raw
+ * messages name the API call that failed, never the physical situation causing
+ * it, and on a chest strap the cause is nearly always one of a short list.
+ */
+export function describeBleError(err: unknown): string {
+  const e = err as { name?: string; message?: string } | null;
+  const name = e?.name ?? '';
+  const msg = e?.message ?? String(err);
+  if (name === 'NetworkError') {
+    return `${msg} — the strap may be out of range, still connected to a phone app, or asleep. A Polar strap only advertises when it is being worn with damp electrodes.`;
+  }
+  if (name === 'NotFoundError') return `${msg} — no matching device was selected.`;
+  if (name === 'SecurityError') {
+    return `${msg} — Web Bluetooth needs a secure context (https or localhost) and a user gesture.`;
+  }
+  if (name === 'InvalidStateError') return `${msg} — the adapter is busy or the device dropped mid-handshake.`;
+  if (name === 'NotSupportedError') return `${msg} — this device does not expose the expected service.`;
+  return msg;
+}
+
 /* Polar Measurement Data (PMD) service — exposes the H10 accelerometer (used by the
  * Coherence Engine's Mode B for an independent respiration channel). The HR Measurement
  * characteristic alone does not carry ACC. */
@@ -482,22 +544,52 @@ export class PolarH10 extends EventTarget {
     this.intentionalDisconnect = false;
     this.lastBeatTimestamp = null;
     this.setStatus('connecting');
+
+    let device = this.device;
     try {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [HEART_RATE_SERVICE] }, { namePrefix: 'Polar' }],
-        optionalServices: [HEART_RATE_SERVICE, PMD_SERVICE_UUID],
-      });
-      this.device = device;
+      // Reuse the strap already chosen in this session. A previous attempt that
+      // failed to open its GATT session keeps the handle, so pressing Connect
+      // again goes straight back to the same device instead of reopening the
+      // chooser and making the user find it in the list all over again.
+      if (!device) {
+        this.info('select your Polar strap in the browser dialog…');
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [HEART_RATE_SERVICE] }, { namePrefix: 'Polar' }],
+          optionalServices: [HEART_RATE_SERVICE, PMD_SERVICE_UUID],
+        });
+        this.device = device;
+        device.addEventListener('gattserverdisconnected', this.onGattDisconnected);
+      }
       this._deviceName = device.name ?? 'Polar H10';
-      device.addEventListener('gattserverdisconnected', this.onGattDisconnected);
+
       await this.openSession();
       this.setStatus('connected');
       this.dispatch('connected', { name: this._deviceName });
     } catch (err) {
       this.setStatus('disconnected');
-      this.cleanupConnection();
+      if (isChooserDismissal(err)) {
+        // Nothing was chosen — drop everything so the next press offers the list.
+        this.cleanupConnection();
+      } else {
+        // Transient radio failure. Keep the device so a retry skips the chooser.
+        this.cleanupConnection({ keepDevice: true });
+        this.info(
+          `could not open a session with ${this._deviceName ?? 'the strap'}: ${describeBleError(err)}`,
+          'error',
+        );
+      }
       throw err;
     }
+  }
+
+  /** Forget the chosen device, so the next connect() offers the chooser again.
+   * Use when the wrong strap was picked. */
+  forgetDevice(): void {
+    if (this.device) {
+      this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);
+    }
+    this.device = null;
+    this._deviceName = null;
   }
 
   async disconnect(): Promise<void> {
@@ -881,14 +973,48 @@ export class PolarH10 extends EventTarget {
   }
 
   private async openSession(): Promise<void> {
-    if (!this.device?.gatt) throw new Error('no GATT server');
-    this.server = await this.device.gatt.connect();
+    const gatt = this.device?.gatt;
+    if (!gatt) throw new Error('no GATT server');
 
-    const hrSvc = await this.server.getPrimaryService(HEART_RATE_SERVICE);
+    // 1. Connect. Retried, because the first attempt fails often enough that a
+    //    single try is the main reason a strap "won't connect".
+    this.server = await retryAsync(
+      async () => {
+        // A live session from a previous attempt is reusable as-is.
+        if (gatt.connected) return gatt;
+        return await gatt.connect();
+      },
+      GATT_CONNECT_RETRY_MS,
+      (err, attempt, willRetry) => {
+        this.info(
+          `connect attempt ${attempt + 1} failed (${describeBleError(err)})${willRetry ? ' — retrying' : ''}`,
+          willRetry ? 'warn' : 'error',
+        );
+      },
+    );
+
+    // 2. Discovery. Also retried: the GATT database is not always populated the
+    //    instant the connection resolves, and asking too early throws.
+    const hrSvc = await retryAsync(
+      () => (this.server as BluetoothRemoteGATTServer).getPrimaryService(HEART_RATE_SERVICE),
+      SERVICE_RETRY_MS,
+      (err, attempt, willRetry) => {
+        if (!willRetry) {
+          this.info(`heart-rate service not found after ${attempt + 1} tries: ${describeBleError(err)}`, 'error');
+        }
+      },
+    );
+
     const hrCh = await hrSvc.getCharacteristic(HEART_RATE_MEASUREMENT_UUID);
     hrCh.addEventListener('characteristicvaluechanged', this.onHrNotify);
     this.listeners.push({ target: hrCh, type: 'characteristicvaluechanged', listener: this.onHrNotify });
     await hrCh.startNotifications();
+  }
+
+  /** Connection-level diagnostics. Separate from accInfo, which is specifically
+   * about PMD streams, so the event log does not label a radio failure "ACC:". */
+  private info(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    this.dispatch('info', { message, level } as PolarAccInfoDetail);
   }
 
   private onGattDisconnected = (): void => {

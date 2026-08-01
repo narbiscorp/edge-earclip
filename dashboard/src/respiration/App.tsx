@@ -150,9 +150,28 @@ export default function App(): ReactNode {
             Disconnect H10
           </button>
         ) : (
-          <button className="btn primary" onClick={() => void respirationSession.connectPolar().catch(() => {})}>
-            Connect Polar H10
-          </button>
+          <>
+            <button
+              className="btn primary"
+              disabled={state.polar === 'connecting'}
+              onClick={() => void respirationSession.connectPolar().catch(() => {})}
+            >
+              {state.polar === 'connecting'
+                ? 'Connecting…'
+                : state.polarName
+                  ? `Reconnect ${state.polarName}`
+                  : 'Connect Polar H10'}
+            </button>
+            {state.polarName && state.polar !== 'connecting' && (
+              <button
+                className="btn sm"
+                title="Forget this strap and choose a different one"
+                onClick={() => respirationSession.forgetPolar()}
+              >
+                Change
+              </button>
+            )}
+          </>
         )}
 
         <StatusPill
@@ -165,12 +184,28 @@ export default function App(): ReactNode {
             Disconnect lower
           </button>
         ) : (
-          <button
-            className="btn"
-            onClick={() => void respirationSession.connectLower().catch(() => {})}
-          >
-            Connect lower strap
-          </button>
+          <>
+            <button
+              className="btn"
+              disabled={state.lower === 'connecting'}
+              onClick={() => void respirationSession.connectLower().catch(() => {})}
+            >
+              {state.lower === 'connecting'
+                ? 'Connecting…'
+                : state.lowerName
+                  ? `Reconnect ${state.lowerName}`
+                  : 'Connect lower strap'}
+            </button>
+            {state.lowerName && state.lower !== 'connecting' && (
+              <button
+                className="btn sm"
+                title="Forget this strap and choose a different one"
+                onClick={() => respirationSession.forgetLower()}
+              >
+                Change
+              </button>
+            )}
+          </>
         )}
 
         <StatusPill label={state.earclipName ?? 'Earclip'} status={state.earclip} />
@@ -210,6 +245,20 @@ export default function App(): ReactNode {
           </div>
         </div>
       )}
+
+      {events.some((e) => e.level === 'error' && /connect|session|strap/i.test(e.message)) &&
+        state.polar !== 'connected' && (
+          <div className="banner info">
+            <WarnIcon />
+            <div>
+              <strong>Strap not connecting?</strong> A Polar H10 only advertises while it is being
+              worn with <em>damp</em> electrodes — a dry strap on a desk is invisible to the browser.
+              It also accepts one connection at a time, so close the Polar app on your phone and any
+              other tab holding it. Retries now happen automatically and the strap is remembered, so
+              pressing Reconnect goes straight back to it without the chooser.
+            </div>
+          </div>
+        )}
 
       {truncated && (
         <div className="banner warn">
