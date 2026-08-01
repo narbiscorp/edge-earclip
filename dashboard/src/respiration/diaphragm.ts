@@ -242,14 +242,142 @@ export function crossCorrelationLag(
   return { lagSamples: bestLag, correlation: bestR };
 }
 
-/** Spec classification. Paradoxical outranks the ratio: a belly moving the
- * wrong way is the finding, whatever the amplitudes say. */
-export function classify(ratio: number | null, phaseDeg: number | null): Classification {
-  if (phaseDeg != null && phaseDeg > PHASE_PARADOXICAL_DEG) return 'PARADOXICAL';
+/**
+ * Spec classification. Paradoxical outranks the ratio: a belly moving the wrong
+ * way is the finding, whatever the amplitudes say.
+ *
+ * But it only outranks it when the two straps are actually tracking one rhythm.
+ * A phase angle computed from a weak correlation is not a measurement of
+ * anything, and PARADOXICAL is a clinical-sounding claim — firing it off
+ * r = 0.5 at a nonsense lag is how the app told a normally-breathing subject
+ * they had abdominal collapse. Below `MIN_CLASSIFY_CORRELATION` the phase is
+ * ignored and the ratio alone decides.
+ */
+export function classify(
+  ratio: number | null,
+  phaseDeg: number | null,
+  correlation: number | null = 1,
+): Classification {
+  const phaseTrusted =
+    correlation == null ? false : Math.abs(correlation) >= MIN_CLASSIFY_CORRELATION;
+  if (phaseTrusted && phaseDeg != null && phaseDeg > PHASE_PARADOXICAL_DEG) return 'PARADOXICAL';
   if (ratio == null || !Number.isFinite(ratio)) return 'UNKNOWN';
   if (ratio >= RATIO_DIAPHRAGMATIC) return 'DIAPHRAGMATIC';
   if (ratio < RATIO_THORACIC) return 'THORACIC';
   return 'BALANCED';
+}
+
+export type AccAxis = 'x' | 'y' | 'z' | 'mag';
+
+/** How usable one accelerometer axis is for comparing the two straps. */
+export interface AxisQuality {
+  axis: AccAxis;
+  /** Signed peak cross-correlation. Negative means the straps move oppositely
+   * on this axis — either real paradox, or one strap mounted the other way up. */
+  correlation: number;
+  /** Band-passed amplitude (SD, mG) each strap sees on this axis. */
+  chestAmp: number;
+  abdoAmp: number;
+  /**
+   * How differently the two straps are ROTATED, measured as the difference in
+   * this axis's gravity component (mG).
+   *
+   * This is the load-bearing number. An accelerometer axis is a direction in
+   * the STRAP's frame, not the body's. If two straps sit at different rotations
+   * about the torso, the same axis points different ways on each, and the chest
+   * wall's movement projects onto it with different magnitudes — and possibly
+   * different SIGNS. Comparing them then produces a phase difference that is
+   * entirely an artifact of how the straps were put on.
+   */
+  gravityDeltaMg: number;
+  /** Enough movement on both straps for the comparison to mean anything. */
+  usable: boolean;
+}
+
+/** Minimum band-passed amplitude (mG) for an axis to be considered at all. */
+const AXIS_MIN_AMPLITUDE_MG = 1.5;
+/** Gravity-component difference above which the two straps are rotated too
+ * differently for this axis to be comparable between them. */
+export const AXIS_ORIENTATION_WARN_MG = 250;
+/** Correlation magnitude below which the straps are not tracking one rhythm and
+ * no phase-based claim should be made. */
+export const MIN_CLASSIFY_CORRELATION = 0.5;
+
+/** Mean of a series — the gravity component, once the breathing is averaged out. */
+function meanOf(y: readonly number[]): number {
+  if (y.length === 0) return 0;
+  let s = 0;
+  for (const v of y) s += v;
+  return s / y.length;
+}
+
+function sdOf(y: readonly number[]): number {
+  const n = y.length;
+  if (n < 2) return 0;
+  const m = meanOf(y);
+  let acc = 0;
+  for (const v of y) acc += (v - m) * (v - m);
+  return Math.sqrt(acc / n);
+}
+
+/** Assess one axis without running the full analysis. */
+export function assessAxis(
+  axis: AccAxis,
+  chest: Series,
+  abdo: Series,
+  opts: DiaphragmOptions = DEFAULT_DIAPHRAGM_OPTIONS,
+): AxisQuality {
+  const empty: AxisQuality = {
+    axis,
+    correlation: 0,
+    chestAmp: 0,
+    abdoAmp: 0,
+    gravityDeltaMg: Infinity,
+    usable: false,
+  };
+  const r = analyseDualStreams(chest, abdo, opts);
+  if (r.t.length === 0) return empty;
+  const chestAmp = sdOf(r.chest);
+  const abdoAmp = sdOf(r.abdo);
+  return {
+    axis,
+    correlation: r.correlation ?? 0,
+    chestAmp,
+    abdoAmp,
+    // Gravity is the mean of the RAW series, before the baseline was removed.
+    gravityDeltaMg: Math.abs(meanOf(chest.y) - meanOf(abdo.y)),
+    usable: chestAmp >= AXIS_MIN_AMPLITUDE_MG && abdoAmp >= AXIS_MIN_AMPLITUDE_MG,
+  };
+}
+
+/**
+ * Pick the axis on which the two straps are actually comparable.
+ *
+ * Defaulting to Z (as the spec does) assumes both straps are mounted the same
+ * way up and the same way round. On real recordings they are not: a session
+ * measured here had gravity on Z differing by 390 mG between the straps, so
+ * their Z axes pointed in materially different directions. Comparing that axis
+ * produced a weak correlation at a nonsense lag, which became a 180° phase and
+ * a PARADOXICAL warning — from a subject whose Y axes correlated at 0.95 with
+ * zero lag, i.e. who was breathing perfectly normally.
+ *
+ * Selection is by the strongest ABSOLUTE correlation among axes with enough
+ * movement on both straps. Absolute, not signed, so a genuinely antiphase
+ * (paradoxical) pattern is still selected rather than discarded in favour of a
+ * weakly-correlated axis — the sign is reported, not optimised away.
+ */
+export function chooseAxis(
+  candidates: ReadonlyArray<{ axis: AccAxis; chest: Series; abdo: Series }>,
+  opts: DiaphragmOptions = DEFAULT_DIAPHRAGM_OPTIONS,
+): AxisQuality | null {
+  const scored = candidates.map((c) => assessAxis(c.axis, c.chest, c.abdo, opts));
+  const usable = scored.filter((q) => q.usable);
+  const pool = usable.length > 0 ? usable : scored;
+  let best: AxisQuality | null = null;
+  for (const q of pool) {
+    if (!best || Math.abs(q.correlation) > Math.abs(best.correlation)) best = q;
+  }
+  return best;
 }
 
 export interface Series {
@@ -358,7 +486,7 @@ export function analyseDualStreams(
     }
   }
 
-  out.classification = classify(out.ratio, out.phaseAngleDeg);
+  out.classification = classify(out.ratio, out.phaseAngleDeg, out.correlation);
   return out;
 }
 

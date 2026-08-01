@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyseDualStreams,
+  assessAxis,
   balancePosition,
+  chooseAxis,
   classify,
+  AXIS_ORIENTATION_WARN_MG,
+  PHASE_SYNCHRONOUS_DEG,
   crossCorrelationLag,
   estimatePeriodMs,
   peakToPeak,
@@ -322,5 +326,85 @@ describe('balancePosition', () => {
     expect(balancePosition(null)).toBeNull();
     expect(balancePosition(0)).toBeNull();
     expect(balancePosition(Number.NaN)).toBeNull();
+  });
+});
+
+describe('axis selection (regression: real 2026-07-31 dual-strap recording)', () => {
+  /* That session produced a PARADOXICAL WARNING at 180 degrees from a subject
+   * who was breathing normally. Cause: the analysis defaulted to Z, and the two
+   * straps were rotated differently about the torso — their Z gravity
+   * components differed by ~390 mG, so the axis pointed materially different
+   * ways on each. On Y, where both straps agreed to within 1 mG, the same
+   * recording correlated at 0.95 with zero lag.
+   *
+   * Reproduced here with the measured orientations and correlations. */
+  const HZ = 50;
+  const DUR = 60;
+
+  const straps = (opts: {
+    chestGravity: [number, number, number];
+    abdoGravity: [number, number, number];
+    /** Per-axis breathing amplitude and phase for each strap. */
+    chestAmp: [number, number, number];
+    abdoAmp: [number, number, number];
+    abdoPhase: [number, number, number];
+  }) => {
+    const mk = (g: [number, number, number], a: [number, number, number], ph: [number, number, number]) => {
+      const out = { x: { x: [] as number[], y: [] as number[] }, y: { x: [] as number[], y: [] as number[] }, z: { x: [] as number[], y: [] as number[] } };
+      for (let i = 0; i < DUR * HZ; i++) {
+        const tMs = T0 + (i * 1000) / HZ;
+        const s = i / HZ;
+        (['x', 'y', 'z'] as const).forEach((ax, k) => {
+          out[ax].x.push(tMs);
+          out[ax].y.push(g[k] + a[k] * Math.sin(2 * Math.PI * 0.1 * s + ph[k]));
+        });
+      }
+      return out;
+    };
+    return {
+      chest: mk(opts.chestGravity, opts.chestAmp, [0, 0, 0]),
+      abdo: mk(opts.abdoGravity, opts.abdoAmp, opts.abdoPhase),
+    };
+  };
+
+  const real = straps({
+    chestGravity: [-903, 49, 426],
+    abdoGravity: [-1016, 48, 36],
+    chestAmp: [22.3, 9.6, 39.8],
+    abdoAmp: [0.65, 8.5, 17.2],
+    // Y in phase (the truth); Z inverted by the differing strap rotation.
+    abdoPhase: [Math.PI / 2, 0, Math.PI],
+  });
+
+  it('picks the axis the straps agree on, not the one with the biggest signal', () => {
+    const pick = chooseAxis([
+      { axis: 'x', chest: real.chest.x, abdo: real.abdo.x },
+      { axis: 'y', chest: real.chest.y, abdo: real.abdo.y },
+      { axis: 'z', chest: real.chest.z, abdo: real.abdo.z },
+    ]);
+    expect(pick).not.toBeNull();
+    // Z carries the largest amplitude but the straps are rotated differently there.
+    expect(pick!.axis).toBe('y');
+    expect(Math.abs(pick!.correlation)).toBeGreaterThan(0.9);
+  });
+
+  it('does not report PARADOXICAL on the axis it picks', () => {
+    const r = analyseDualStreams(real.chest.y, real.abdo.y, DEFAULT_DIAPHRAGM_OPTIONS);
+    expect(r.classification).not.toBe('PARADOXICAL');
+    expect(r.phaseAngleDeg as number).toBeLessThan(PHASE_SYNCHRONOUS_DEG);
+  });
+
+  it('flags the rotation mismatch on the axis that caused the false alarm', () => {
+    const q = assessAxis('z', real.chest.z, real.abdo.z);
+    expect(q.gravityDeltaMg).toBeGreaterThan(AXIS_ORIENTATION_WARN_MG);
+  });
+
+  it('never calls PARADOXICAL off a weak correlation', () => {
+    // A clinical-sounding claim must not come from a phase angle measured
+    // against two signals that are not tracking one rhythm.
+    expect(classify(1.19, 180, 0.2)).not.toBe('PARADOXICAL');
+    expect(classify(1.19, 180, 0.49)).not.toBe('PARADOXICAL');
+    expect(classify(1.19, 180, 0.9)).toBe('PARADOXICAL');
+    expect(classify(1.19, 180, null)).not.toBe('PARADOXICAL');
   });
 });

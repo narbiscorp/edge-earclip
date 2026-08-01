@@ -142,8 +142,9 @@ export interface SettingsState {
 
   /** Strap worn across the sternum; the other is the abdominal strap. */
   chestStrap: StrapId;
-  /** Accelerometer axis the diaphragm analysis runs on. The spec says Z. */
-  diaphragmAxis: 'x' | 'y' | 'z' | 'mag';
+  /** Accelerometer axis the diaphragm analysis runs on. 'auto' picks the axis
+   * the two straps are actually comparable on — see chooseAxis. */
+  diaphragmAxis: 'x' | 'y' | 'z' | 'mag' | 'auto';
   diaphragmView: DiaphragmView;
   /** Deep-breath calibration scale factors. 1 = uncalibrated. */
   calibChest: number;
@@ -172,7 +173,7 @@ export interface SettingsState {
   setAnalysisWindowSec: (s: number) => void;
   setAnalysisSource: (s: BeatSource) => void;
   setChestStrap: (s: StrapId) => void;
-  setDiaphragmAxis: (a: 'x' | 'y' | 'z' | 'mag') => void;
+  setDiaphragmAxis: (a: 'x' | 'y' | 'z' | 'mag' | 'auto') => void;
   setDiaphragmView: (v: DiaphragmView) => void;
   setCalibration: (chest: number, abdo: number) => void;
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
@@ -198,7 +199,7 @@ export const useSettings = create<SettingsState>((set) => ({
   // Metrics arrive at 1 Hz and are already windowed averages — smoothing them
   // again by default would hide the variation they exist to show.
   chestStrap: 'main',
-  diaphragmAxis: 'z',
+  diaphragmAxis: 'auto',
   diaphragmView: 'overlay',
   calibChest: 1,
   calibAbdo: 1,

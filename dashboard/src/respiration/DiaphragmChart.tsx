@@ -17,12 +17,17 @@ import { sessionLog, type StrapId } from './log';
 import {
   analyseDualStreams,
   balancePosition,
+  chooseAxis,
   peakToPeak,
+  AXIS_ORIENTATION_WARN_MG,
+  MIN_CLASSIFY_CORRELATION,
   DEFAULT_DIAPHRAGM_OPTIONS,
   PHASE_PARADOXICAL_DEG,
   PHASE_SYNCHRONOUS_DEG,
   RATIO_DIAPHRAGMATIC,
   RATIO_THORACIC,
+  type AccAxis,
+  type AxisQuality,
   type Classification,
   type DiaphragmResult,
 } from './diaphragm';
@@ -74,6 +79,7 @@ export default function DiaphragmChart({
   const abdoStrap: StrapId = chestStrap === 'main' ? 'lower' : 'main';
 
   const [result, setResult] = useState<DiaphragmResult | null>(null);
+  const [axisPick, setAxisPick] = useState<AxisQuality | null>(null);
   const [calibratingUntil, setCalibratingUntil] = useState<number | null>(null);
   const [, setTick] = useState(0);
 
@@ -88,6 +94,8 @@ export default function DiaphragmChart({
   const resultRef = useRef<DiaphragmResult | null>(null);
   /** Bumped each time a new analysis lands, so the plot knows to rebuild. */
   const analysisSeq = useRef(0);
+  /** Axis the auto picker settled on, for the calibration routine. */
+  const axisPickRef = useRef<AccAxis | null>(null);
   // Switching overlay/differential changes the traces without new data arriving.
   useEffect(() => {
     analysisSeq.current += 1;
@@ -104,13 +112,36 @@ export default function DiaphragmChart({
       const o = optsRef.current;
       const now = Date.now();
       const win = Math.min(120, Math.max(30, viewRef.current));
-      const chest = sessionLog.accWindow(o.chestStrap, win, now, o.diaphragmAxis);
-      const abdo = sessionLog.accWindow(o.abdoStrap, win, now, o.diaphragmAxis);
-      const r = analyseDualStreams(chest, abdo, {
+      const opts = {
         ...DEFAULT_DIAPHRAGM_OPTIONS,
         calibChest: o.calibChest,
         calibAbdo: o.calibAbdo,
-      });
+      };
+      const grab = (strap: StrapId, ax: AccAxis) => sessionLog.accWindow(strap, win, now, ax);
+
+      // 'auto' asks which axis the two straps are actually comparable on,
+      // rather than assuming they were mounted identically.
+      let axis: AccAxis;
+      if (o.diaphragmAxis === 'auto') {
+        const pick = chooseAxis(
+          (['x', 'y', 'z'] as const).map((ax) => ({
+            axis: ax,
+            chest: grab(o.chestStrap, ax),
+            abdo: grab(o.abdoStrap, ax),
+          })),
+          opts,
+        );
+        setAxisPick(pick);
+        axisPickRef.current = pick?.axis ?? null;
+        axis = pick?.axis ?? 'z';
+      } else {
+        axis = o.diaphragmAxis;
+        setAxisPick(null);
+      }
+
+      const chest = grab(o.chestStrap, axis);
+      const abdo = grab(o.abdoStrap, axis);
+      const r = analyseDualStreams(chest, abdo, opts);
       resultRef.current = r;
       analysisSeq.current += 1;
       setResult(r);
@@ -131,8 +162,9 @@ export default function DiaphragmChart({
       const o = optsRef.current;
       const now = Date.now();
       const sec = CALIBRATION_MS / 1000;
-      const c = sessionLog.accWindow(o.chestStrap, sec, now, o.diaphragmAxis);
-      const a = sessionLog.accWindow(o.abdoStrap, sec, now, o.diaphragmAxis);
+      const ax: AccAxis = o.diaphragmAxis === 'auto' ? (axisPickRef.current ?? 'z') : o.diaphragmAxis;
+      const c = sessionLog.accWindow(o.chestStrap, sec, now, ax);
+      const a = sessionLog.accWindow(o.abdoStrap, sec, now, ax);
       const cP = peakToPeak(removeBaseline(c.x, c.y, DEFAULT_DIAPHRAGM_OPTIONS.detrendSec));
       const aP = peakToPeak(removeBaseline(a.x, a.y, DEFAULT_DIAPHRAGM_OPTIONS.detrendSec));
       // Refuse to store a degenerate factor — dividing by it later would produce
@@ -244,6 +276,25 @@ export default function DiaphragmChart({
         </span>
       </div>
 
+      {axisPick && axisPick.gravityDeltaMg > AXIS_ORIENTATION_WARN_MG && (
+        <div className="card-note" style={{ color: '#fde68a' }}>
+          The straps are rotated differently — their gravity readings differ by{' '}
+          {Math.round(axisPick.gravityDeltaMg)} mG on the axis in use. Auto has picked the axis they
+          agree on best; a phase angle from a mismatched axis measures strap placement, not
+          breathing.
+        </div>
+      )}
+
+      {result?.correlation != null &&
+        Math.abs(result.correlation) < MIN_CLASSIFY_CORRELATION &&
+        bothLive && (
+          <div className="card-note">
+            The two straps are only loosely correlated ({result.correlation.toFixed(2)}), so no
+            phase-based call is being made — the classification is on amplitude alone. Check both
+            straps are snug and roughly level with each other.
+          </div>
+        )}
+
       {!bothLive && (
         <div className="card-note">
           Needs both straps connected — the main strap and the lower strap. Assign which one is on
@@ -343,13 +394,14 @@ export default function DiaphragmChart({
           label="Axis"
           value={diaphragmAxis}
           options={[
+            { value: 'auto', label: axisPick ? `Auto (${axisPick.axis.toUpperCase()})` : 'Auto' },
             { value: 'z', label: 'Z' },
             { value: 'x', label: 'X' },
             { value: 'y', label: 'Y' },
             { value: 'mag', label: '|mag|' },
           ]}
-          onChange={(v) => setDiaphragmAxis(v as 'x' | 'y' | 'z' | 'mag')}
-          info="Accelerometer axis the analysis runs on. Z (front–back) is the usual choice for a chest strap and is the spec default, but if a strap sits at an angle another axis may carry the breathing more cleanly — check the per-axis panels above."
+          onChange={(v) => setDiaphragmAxis(v as AccAxis | 'auto')}
+          info="An accelerometer axis is a direction in the STRAP's frame, not the body's. If the two straps sit at different rotations, the same axis points different ways on each and comparing them measures how they were put on rather than how the subject breathes. Auto picks the axis where the two straps genuinely track one rhythm (strongest correlation, either sign) instead of assuming they were mounted identically."
         />
         <div className="sep" />
         <button
