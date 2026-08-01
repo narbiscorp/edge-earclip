@@ -150,6 +150,12 @@ const PMD_SET_SAMPLE_RATE = 0x00;
 const PMD_SET_RESOLUTION = 0x01;
 const PMD_SET_RANGE = 0x02;
 
+/* "Already in state" — the measurement the command asked for is already
+ * running. That is the desired end state, not an error, and treating it as one
+ * is actively harmful: the failure path tears the stream down, so a duplicate
+ * start would STOP a perfectly good stream. */
+const PMD_STATUS_ALREADY_IN_STATE = 6;
+
 const u16le = (v: number): number[] => [v & 0xff, (v >> 8) & 0xff];
 
 /** "Get measurement settings" for ACC — the H10 replies with the rates/ranges/resolutions it supports. */
@@ -493,6 +499,9 @@ export class PolarH10 extends EventTarget {
    * arrive more often — which is what actually makes a live plot look smooth. */
   private accPreferredRateHz = ACC_PREF_SAMPLE_RATE_HZ;
   private ecgStreaming = false;
+  /* In-flight start promises, so concurrent callers share one attempt. */
+  private accStarting: Promise<void> | null = null;
+  private ecgStarting: Promise<void> | null = null;
   private ecgFramesSeen = 0;
   private ecgRateHz = ECG_PREF_SAMPLE_RATE_HZ;
   // Anchor the H10's device clock (ns, monotonic) to wall-clock on the first frame of each
@@ -509,6 +518,12 @@ export class PolarH10 extends EventTarget {
   /* Serialises control-point exchanges. Starting ECG while ACC is mid-handshake would otherwise
    * let the second request steal the first one's response slot. */
   private ctrlQueue: Promise<unknown> = Promise.resolve();
+  /* Bumped whenever a new connection attempt begins. The reconnect loop and a
+   * user-initiated connect() are two independent paths to an open session; if
+   * both complete, both dispatch 'connected', every listener runs twice, and
+   * the duplicate startAccStream() is answered ALREADY_IN_STATE. Whichever
+   * attempt bumped the counter last is the only one allowed to announce. */
+  private sessionGen = 0;
 
   get status(): PolarStatus {
     return this._status;
@@ -543,6 +558,10 @@ export class PolarH10 extends EventTarget {
     }
     this.intentionalDisconnect = false;
     this.lastBeatTimestamp = null;
+    // Take ownership. A reconnect loop may be mid-backoff; bumping the counter
+    // makes it stand down rather than opening a second session in parallel and
+    // announcing a second 'connected'.
+    const gen = ++this.sessionGen;
     this.setStatus('connecting');
 
     let device = this.device;
@@ -563,9 +582,12 @@ export class PolarH10 extends EventTarget {
       this._deviceName = device.name ?? 'Polar H10';
 
       await this.openSession();
+      // Another attempt superseded this one while it was in flight.
+      if (gen !== this.sessionGen) return;
       this.setStatus('connected');
       this.dispatch('connected', { name: this._deviceName });
     } catch (err) {
+      if (gen !== this.sessionGen) throw err;
       this.setStatus('disconnected');
       if (isChooserDismissal(err)) {
         // Nothing was chosen — drop everything so the next press offers the list.
@@ -594,6 +616,7 @@ export class PolarH10 extends EventTarget {
 
   async disconnect(): Promise<void> {
     this.intentionalDisconnect = true;
+    this.sessionGen++;
     if (this.device?.gatt?.connected) {
       this.device.gatt.disconnect();
     } else {
@@ -650,6 +673,20 @@ export class PolarH10 extends EventTarget {
    * Emits 'accReceived' per data notification and 'accInfo' diagnostics so failures are visible. */
   async startAccStream(): Promise<void> {
     if (this.accStreaming) return;
+    // Coalesce concurrent starts. `accStreaming` is only set once the device
+    // confirms, so two callers arriving together both pass the check above and
+    // both send a start — the second is answered ALREADY_IN_STATE. Two
+    // 'connected' events (a reconnect loop finishing while the user also
+    // pressed Connect) is exactly how that happens.
+    if (this.accStarting) return this.accStarting;
+    this.accStarting = this.doStartAccStream().finally(() => {
+      this.accStarting = null;
+    });
+    return this.accStarting;
+  }
+
+  private async doStartAccStream(): Promise<void> {
+    if (this.accStreaming) return;
     if (!this.server) throw new Error('not connected');
     this.accFramesSeen = 0;
     await this.ensurePmd('accelerometer');
@@ -679,13 +716,20 @@ export class PolarH10 extends EventTarget {
       await this.writeCtrl(cmd);
       return startResp;
     });
-    if (rdv && rdv.byteLength >= 4 && rdv.getUint8(0) === 0xf0) {
-      const status = rdv.getUint8(3);
-      if (status !== 0) {
-        this.accInfo(`H10 REJECTED ACC start (status ${status}) at ${cfg.sampleRateHz} Hz / ±${cfg.rangeG} g`, 'error');
-        await this.stopAccStream();
-        throw new Error(`PMD start rejected (status ${status})`);
-      }
+    const accStatus = rdv ? ctrlStatus(rdv) : null;
+    if (accStatus === PMD_STATUS_ALREADY_IN_STATE) {
+      // Already running — adopt it rather than tearing it down.
+      this.accStreaming = true;
+      this.accInfo('ACC was already streaming — adopted the running stream', 'info');
+      return;
+    }
+    if (accStatus !== null && accStatus !== 0) {
+      this.accInfo(
+        `H10 REJECTED ACC start: ${pmdStatusName(accStatus)} at ${cfg.sampleRateHz} Hz / ±${cfg.rangeG} g`,
+        'error',
+      );
+      await this.stopAccStream();
+      throw new Error(`PMD start rejected (${pmdStatusName(accStatus)})`);
     }
     this.accStreaming = true;
     this.accInfo(`ACC started: ${cfg.sampleRateHz} Hz, ±${cfg.rangeG} g, ${cfg.resolutionBits}-bit`, 'info');
@@ -701,6 +745,15 @@ export class PolarH10 extends EventTarget {
    * diagnostic channel; messages are prefixed so the stream is identifiable).
    */
   async startEcgStream(): Promise<void> {
+    if (this.ecgStreaming) return;
+    if (this.ecgStarting) return this.ecgStarting;
+    this.ecgStarting = this.doStartEcgStream().finally(() => {
+      this.ecgStarting = null;
+    });
+    return this.ecgStarting;
+  }
+
+  private async doStartEcgStream(): Promise<void> {
     if (this.ecgStreaming) return;
     if (!this.server) throw new Error('not connected');
     this.ecgFramesSeen = 0;
@@ -744,6 +797,11 @@ export class PolarH10 extends EventTarget {
       return startResp;
     });
     const status = rdv ? ctrlStatus(rdv) : null;
+    if (status === PMD_STATUS_ALREADY_IN_STATE) {
+      this.ecgStreaming = true;
+      this.accInfo('ECG was already streaming — adopted the running stream', 'info');
+      return;
+    }
     if (status !== null && status !== 0) {
       this.accInfo(
         `H10 REJECTED ECG start: ${pmdStatusName(status)} at ${sampleRateHz} Hz` +
@@ -1032,17 +1090,21 @@ export class PolarH10 extends EventTarget {
     this.setStatus('reconnecting');
     this.cleanupConnection({ keepDevice: true });
     this.dispatch('disconnected', { reason: 'gatt' } as PolarDisconnectedDetail);
-    void this.reconnectLoop();
+    void this.reconnectLoop(++this.sessionGen);
   };
 
-  private async reconnectLoop(): Promise<void> {
+  private async reconnectLoop(gen: number): Promise<void> {
     let attempt = 0;
     while (!this.intentionalDisconnect && this.device) {
+      // A user-initiated connect() bumps sessionGen; this loop then stops
+      // rather than racing it to an open session.
+      if (gen !== this.sessionGen) return;
       const delay = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
       await sleep(delay);
-      if (this.intentionalDisconnect || !this.device) return;
+      if (this.intentionalDisconnect || !this.device || gen !== this.sessionGen) return;
       try {
         await this.openSession();
+        if (gen !== this.sessionGen) return;
         this.setStatus('connected');
         this.dispatch('connected', { name: this._deviceName ?? 'Polar H10' });
         return;

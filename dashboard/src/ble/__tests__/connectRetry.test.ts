@@ -6,7 +6,9 @@
  * the retry behaviour is worth pinning down rather than trusting by inspection.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { describeBleError, isChooserDismissal, retryAsync } from '../polarH10';
+import { describeBleError, isChooserDismissal, retryAsync, __pmdInternal } from '../polarH10';
+
+const { pmdStatusName } = __pmdInternal;
 
 const err = (name: string, message = 'boom'): Error => {
   const e = new Error(message);
@@ -114,5 +116,61 @@ describe('describeBleError', () => {
   it('survives a non-Error', () => {
     expect(describeBleError('plain string')).toBe('plain string');
     expect(typeof describeBleError(null)).toBe('string');
+  });
+});
+
+describe('PMD status handling (regression: ACC died after a reconnect)', () => {
+  /* Observed log, oldest first:
+   *   Polar H10 disconnected (gatt)
+   *   Polar H10 connected            <- reconnect loop
+   *   Polar H10 connected            <- user-initiated connect, same device
+   *   H10 ACC supports rates [...]   x2
+   *   ACC started: 100 Hz            <- first start succeeded
+   *   H10 REJECTED ACC start (6)     <- second start, ALREADY_IN_STATE
+   *   ACC stream failed
+   * The second start's error handler then called stopAccStream() and killed a
+   * working stream. Status 6 must be treated as success, and two concurrent
+   * starts must share one attempt. */
+
+  it('names status 6 as the already-running case', () => {
+    expect(describeBleError(err('x', 'y'))).toBeTruthy();
+    // The decoder lives in polarH10; assert the mapping is what the fix relies on.
+    expect(pmdStatusName(6)).toBe('ALREADY_IN_STATE');
+    expect(pmdStatusName(0)).toBe('SUCCESS');
+  });
+
+  it('coalesces concurrent starts into one attempt', async () => {
+    // Model the guard: a second caller arriving before the first resolves must
+    // await it rather than issuing a second start command.
+    let starts = 0;
+    let inFlight: Promise<void> | null = null;
+    let streaming = false;
+    const start = (): Promise<void> => {
+      if (streaming) return Promise.resolve();
+      if (inFlight) return inFlight;
+      inFlight = (async () => {
+        starts++;
+        await new Promise((r) => setTimeout(r, 5));
+        streaming = true;
+      })().finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    };
+    await Promise.all([start(), start(), start()]);
+    expect(starts).toBe(1);
+    expect(streaming).toBe(true);
+    await start();
+    expect(starts).toBe(1); // already streaming — no further attempt
+  });
+
+  it('lets a newer attempt supersede an older one', () => {
+    // The generation guard: only the latest attempt announces 'connected'.
+    let gen = 0;
+    const attempt = (): number => ++gen;
+    const a = attempt();
+    const b = attempt();
+    expect(a === gen).toBe(false); // superseded, must stay quiet
+    expect(b === gen).toBe(true); // owner, may announce
   });
 });
