@@ -16,7 +16,7 @@ import type { TraceShaping } from './dsp';
 
 export function Info({ text }: { text: string }): ReactNode {
   return (
-    <button type="button" className="info" title={text} aria-label={text}>
+    <button type="button" className="info-dot" title={text} aria-label={text}>
       i
     </button>
   );

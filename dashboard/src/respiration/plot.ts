@@ -95,7 +95,17 @@ export function useAnalysisPlot(opts: UseAnalysisPlotOptions): React.RefObject<H
 
   useEffect(() => {
     const div = divRef.current;
-    if (!div) return;
+    if (!div) {
+      // This effect runs once on mount, so a ref that is null here is never
+      // retried — the chart would sit blank forever while its readouts updated
+      // beside it. Callers must render the plot div unconditionally and overlay
+      // any empty state, rather than swapping the div out.
+      console.error(
+        `[respiration] plot "${opts.key}" has no container element on mount; ` +
+          'render the plot div unconditionally and overlay the empty state instead.',
+      );
+      return;
+    }
 
     const o = optsRef.current;
     let lastSeq = -1;

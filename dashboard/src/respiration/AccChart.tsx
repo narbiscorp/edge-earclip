@@ -123,13 +123,19 @@ export default function AccChart({ streaming }: { streaming: boolean }): ReactNo
       </div>
 
       <div className="card-body">
-        {!streaming && n === 0 ? (
-          <div className="empty">
-            No accelerometer data yet. Connect a Polar H10 — the stream starts automatically.
-          </div>
-        ) : (
+        {/* The plot div is ALWAYS rendered and the empty state is an overlay on
+         * top of it. Swapping the div out for a placeholder means the ref is
+         * null on first mount, and since the plot hook sets up once on mount it
+         * would never initialise Plotly when data finally arrived — an empty
+         * box with live readouts beside it. */}
+        <div className="plot-wrap">
           <div ref={divRef} className="plot" style={{ height: 250 }} />
-        )}
+          {!streaming && n === 0 && (
+            <div className="plot-overlay">
+              No accelerometer data yet. Connect a Polar H10 — the stream starts automatically.
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="shaping" style={{ paddingBottom: 0 }}>

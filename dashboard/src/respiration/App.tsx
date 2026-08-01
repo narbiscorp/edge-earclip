@@ -341,7 +341,7 @@ export default function App(): ReactNode {
         ) : (
           <div className="log">
             {events.map((e, i) => (
-              <div key={`${e.timestamp}-${i}`} className={`log-row ${e.level}`}>
+              <div key={`${e.timestamp}-${i}`} className={`log-row log-${e.level}`}>
                 <span className="t">{new Date(e.timestamp).toLocaleTimeString()}</span>
                 <span>{e.message}</span>
               </div>

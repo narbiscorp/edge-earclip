@@ -371,6 +371,25 @@ input[type='range'].input {
   width: 100%;
 }
 
+/* Empty-state overlay. The plot container must stay mounted (the plot hook
+   initialises once, on mount), so an empty state sits ON TOP of it. */
+.plot-wrap {
+  position: relative;
+}
+
+.plot-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  pointer-events: none;
+}
+
 /* ── Shaping controls ──────────────────────────────────────────────────── */
 
 .shaping {
@@ -496,11 +515,11 @@ input[type='range'].input {
   flex-shrink: 0;
 }
 
-.log-row.warn {
+.log-row.log-warn {
   color: #fde68a;
 }
 
-.log-row.error {
+.log-row.log-error {
   color: #fca5a5;
 }
 
@@ -555,7 +574,7 @@ table.data td {
 
 /* ── Info tooltip ──────────────────────────────────────────────────────── */
 
-.info {
+.info-dot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -574,7 +593,7 @@ table.data td {
   line-height: 1;
 }
 
-.info:hover {
+.info-dot:hover {
   color: var(--text);
   border-color: var(--accent);
 }
