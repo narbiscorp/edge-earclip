@@ -9,6 +9,8 @@
 import { create } from 'zustand';
 import { DEFAULT_SHAPING, type TraceShaping } from './dsp';
 import type { BeatSource, StrapId } from './log';
+import type { CalibrationModel } from './calibration';
+import type { PostureReference } from './posture';
 
 /** View windows for the x-axis. */
 export const VIEW_WINDOWS: ReadonlyArray<{ value: number; label: string }> = [
@@ -149,6 +151,10 @@ export interface SettingsState {
   /** Deep-breath calibration scale factors. 1 = uncalibrated. */
   calibChest: number;
   calibAbdo: number;
+  /** Learned per-subject breathing signatures and postures. */
+  calibrationModel: CalibrationModel | null;
+  /** Upright posture captured during the guided sequence. */
+  postureReference: PostureReference | null;
 
   metricsShaping: TraceShaping;
   ibiShaping: TraceShaping;
@@ -176,6 +182,8 @@ export interface SettingsState {
   setDiaphragmAxis: (a: 'x' | 'y' | 'z' | 'mag' | 'auto') => void;
   setDiaphragmView: (v: DiaphragmView) => void;
   setCalibration: (chest: number, abdo: number) => void;
+  setCalibrationModel: (m: CalibrationModel | null) => void;
+  setPostureReference: (r: PostureReference | null) => void;
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
   patchIbiShaping: (p: Partial<TraceShaping>) => void;
   patchAccShaping: (p: Partial<TraceShaping>) => void;
@@ -203,6 +211,8 @@ export const useSettings = create<SettingsState>((set) => ({
   diaphragmView: 'overlay',
   calibChest: 1,
   calibAbdo: 1,
+  calibrationModel: null,
+  postureReference: null,
 
   metricsShaping: { ...DEFAULT_SHAPING, shape: 'spline', maxPoints: 3000 },
   // A tachogram is irregularly sampled by construction; drawing it linear
@@ -248,6 +258,8 @@ export const useSettings = create<SettingsState>((set) => ({
   setDiaphragmAxis: (diaphragmAxis) => set({ diaphragmAxis }),
   setDiaphragmView: (diaphragmView) => set({ diaphragmView }),
   setCalibration: (calibChest, calibAbdo) => set({ calibChest, calibAbdo }),
+  setCalibrationModel: (calibrationModel) => set({ calibrationModel }),
+  setPostureReference: (postureReference) => set({ postureReference }),
   patchMetricsShaping: (p) => set((s) => ({ metricsShaping: { ...s.metricsShaping, ...p } })),
   patchIbiShaping: (p) => set((s) => ({ ibiShaping: { ...s.ibiShaping, ...p } })),
   patchAccShaping: (p) => set((s) => ({ accShaping: { ...s.accShaping, ...p } })),

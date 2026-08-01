@@ -390,6 +390,102 @@ input[type='range'].input {
   pointer-events: none;
 }
 
+/* ── Posture check + guided calibration ────────────────────────────────── */
+
+.calib {
+  border-bottom: 1px solid var(--border);
+  background: #16202f;
+}
+
+.calib-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+}
+
+.calib-advice {
+  padding: 0 1rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+.calib-step {
+  padding: 0.2rem 1rem 0.8rem;
+}
+
+.calib-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  font-size: 0.9rem;
+}
+
+.calib-step-n {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.calib-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.calib-instruction {
+  font-size: 0.8rem;
+  color: var(--text-2);
+  line-height: 1.45;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.calib-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: #0f172a;
+  overflow: hidden;
+}
+
+.calib-bar-fill {
+  height: 100%;
+  transition: width 0.2s linear;
+}
+
+.calib-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 1rem 0.7rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.calib-model-title {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  font-size: 0.66rem;
+}
+
+.calib-chip {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.45rem;
+  background: var(--surface);
+}
+
+.calib-chip strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Diaphragmatic balance bar ──────────────────────────────────────────── */
 
 .balance {

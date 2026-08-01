@@ -210,6 +210,29 @@ export class SessionLog extends EventTarget {
     return Math.sqrt(c.x[i] * c.x[i] + c.y[i] * c.y[i] + c.z[i] * c.z[i]);
   }
 
+  /** Mean of all three axes over the trailing window — the strap's gravity
+   * direction once breathing averages out. Used for posture and alignment. */
+  accMeanVector(
+    strap: StrapId,
+    windowSec: number,
+    nowMs: number,
+  ): { x: number; y: number; z: number } | null {
+    const c = this.acc[strap];
+    const from = nowMs - windowSec * 1000;
+    const start = lowerBound(c.t, from);
+    const n = c.t.length - start;
+    if (n <= 0) return null;
+    let sx = 0;
+    let sy = 0;
+    let sz = 0;
+    for (let i = start; i < c.t.length; i++) {
+      sx += c.x[i];
+      sy += c.y[i];
+      sz += c.z[i];
+    }
+    return { x: sx / n, y: sy / n, z: sz / n };
+  }
+
   /** Newest non-artifact IBI from a source, for the live readouts. */
   lastIbi(source: BeatSource): number | null {
     const c = this.beats[source];

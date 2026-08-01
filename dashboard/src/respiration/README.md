@@ -196,6 +196,47 @@ why it hid for a long time, and fatal for ECG, where the device answers
 Some H10s also refuse ECG while the accelerometer is streaming. The app retries
 once with ACC paused and says so in the event log, restoring ACC when ECG stops.
 
+## Posture alignment and the guided learning sequence
+
+Checked and shown BEFORE any classification, because an accelerometer axis is a
+direction in the STRAP's frame, not the body's. If two straps are rotated
+differently, the same axis points different ways on each and the chest wall's
+motion projects onto it with different sign — a phase comparison then measures
+how the straps were put on. A real recording where they sat 23 deg apart
+produced a PARADOXICAL warning from a subject breathing normally; on the axis
+where the straps agreed to within 1 mG, the same recording correlated at 0.95
+with zero lag.
+
+Gravity is the one direction both straps measure independently, so it is the
+reference they get checked against:
+
+- **Straps misaligned** — the angle between the two gravity vectors exceeds
+  15 deg. The classification is shown muted and marked PROVISIONAL.
+- **Posture drifted** — either strap has tilted more than 12 deg from the
+  calibrated upright reference.
+- **Aligned** — straps agree with each other and with the reference.
+
+**Guided calibration** (90 s, six steps): sit upright, then demonstrate chest,
+diaphragmatic and belly breathing, then sit slouched and sit back. Upright comes
+first so all three breathing demonstrations share one posture, which is what
+makes their ratios comparable; the disturbed postures come last.
+
+What it buys:
+
+- **Per-subject thresholds.** The spec's fixed 0.7 / 1.5 are population guesses
+  applied to a ratio that depends on strap tightness and body shape — the same
+  person can cross a threshold by refastening a strap. (Measured: the same
+  strap moved 13 deg between two sessions minutes apart.) Boundaries are instead
+  the geometric mean between consecutive demonstrations, i.e. the midpoint in
+  log space, which is the neutral choice for a ratio. If the demonstrations come
+  out too alike, it says so and keeps the defaults rather than inventing a
+  personal boundary from two identical measurements.
+- **Nearest-signature classification.** "Closest to your belly demonstration",
+  with a confidence from the gap to the runner-up.
+- **Posture recognition.** Reports whether you are currently sitting upright,
+  slouched or back, using both straps — one alone cannot tell leaning back from
+  sliding down.
+
 ## Why the plots stay smooth
 
 `useAnalysisPlot` takes a cheap `seq()` and an expensive `pull()`, and only

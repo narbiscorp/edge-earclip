@@ -36,6 +36,9 @@ import { useAnalysisPlot } from './plot';
 import { SERIES, INK, CLASSIFICATION, baseLayout, axisStyle } from './theme';
 import { useSettings } from './settings';
 import { Info, Select, Segmented, fmt } from './ui';
+import CalibrationPanel from './CalibrationPanel';
+import { assessPosture, type PostureStatus } from './posture';
+import { matchBreathing, learnedThresholds } from './calibration';
 
 const CALIBRATION_MS = 10_000;
 /** Below this the phase angle is not describing a shared rhythm. */
@@ -80,6 +83,7 @@ export default function DiaphragmChart({
 
   const [result, setResult] = useState<DiaphragmResult | null>(null);
   const [axisPick, setAxisPick] = useState<AxisQuality | null>(null);
+  const [posture, setPosture] = useState<PostureStatus | null>(null);
   const [calibratingUntil, setCalibratingUntil] = useState<number | null>(null);
   const [, setTick] = useState(0);
 
@@ -101,8 +105,22 @@ export default function DiaphragmChart({
     analysisSeq.current += 1;
   }, [diaphragmView]);
 
-  const optsRef = useRef({ chestStrap, abdoStrap, diaphragmAxis, calibChest, calibAbdo });
-  optsRef.current = { chestStrap, abdoStrap, diaphragmAxis, calibChest, calibAbdo };
+  const optsRef = useRef({
+    chestStrap,
+    abdoStrap,
+    diaphragmAxis,
+    calibChest,
+    calibAbdo,
+    postureReference: settings.postureReference,
+  });
+  optsRef.current = {
+    chestStrap,
+    abdoStrap,
+    diaphragmAxis,
+    calibChest,
+    calibAbdo,
+    postureReference: settings.postureReference,
+  };
 
   // Analysis runs at 2 Hz, not at frame rate: it resamples, detrends and
   // cross-correlates a whole window, which is far too much to redo 8 times a
@@ -142,6 +160,14 @@ export default function DiaphragmChart({
       const chest = grab(o.chestStrap, axis);
       const abdo = grab(o.abdoStrap, axis);
       const r = analyseDualStreams(chest, abdo, opts);
+
+      setPosture(
+        assessPosture(
+          sessionLog.accMeanVector(o.chestStrap, 3, now),
+          sessionLog.accMeanVector(o.abdoStrap, 3, now),
+          o.postureReference,
+        ),
+      );
       resultRef.current = r;
       analysisSeq.current += 1;
       setResult(r);
@@ -249,6 +275,8 @@ export default function DiaphragmChart({
     },
   });
 
+  const learned = matchBreathing(settings.calibrationModel, result?.ratio ?? null);
+  const learnedBounds = learnedThresholds(settings.calibrationModel);
   const cls: Classification = result?.classification ?? 'UNKNOWN';
   const color = CLASSIFICATION[cls];
   const pos = balancePosition(result?.ratio ?? null);
@@ -268,13 +296,29 @@ export default function DiaphragmChart({
         </h2>
         <span
           className="pill"
-          style={{ borderColor: color, color, fontWeight: 650 }}
+          style={{
+            borderColor: color,
+            color,
+            fontWeight: 650,
+            // A misaligned pair cannot support a confident claim, and this one
+            // reads as clinical. Show it muted and say it is provisional rather
+            // than letting it look like a finding.
+            opacity: posture?.state === 'misaligned' ? 0.55 : 1,
+          }}
           title={BLURB[cls]}
         >
           <span className="dot" style={{ background: color, boxShadow: `0 0 0 3px ${color}22` }} />
           {LABELS[cls].toUpperCase()}
+          {posture?.state === 'misaligned' && ' · PROVISIONAL'}
         </span>
       </div>
+
+      <CalibrationPanel
+        chestStrap={chestStrap}
+        abdoStrap={abdoStrap}
+        axis={(axisPick?.axis ?? (diaphragmAxis === 'auto' ? 'z' : diaphragmAxis)) as AccAxis}
+        bothLive={bothLive}
+      />
 
       {axisPick && axisPick.gravityDeltaMg > AXIS_ORIENTATION_WARN_MG && (
         <div className="card-note" style={{ color: '#fde68a' }}>
@@ -321,6 +365,14 @@ export default function DiaphragmChart({
         {result?.ratio != null ? (
           <>
             Ratio <strong style={{ color }}>{result.ratio.toFixed(2)}</strong> — {BLURB[cls]}
+            {learned && (
+              <>
+                {' '}Closest to your <strong>{learned.label.toLowerCase()}</strong> demonstration
+                {learned.confidence < 0.25 && ' (though your demonstrations were similar, so this is a weak call)'}
+                {learnedBounds &&
+                  ` — your own boundaries are ${learnedBounds.thoracic.toFixed(2)} / ${learnedBounds.diaphragmatic.toFixed(2)}, not the default 0.70 / 1.50.`}
+              </>
+            )}
           </>
         ) : (
           BLURB.UNKNOWN
