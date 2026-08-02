@@ -37,6 +37,7 @@ import { SERIES, INK, CLASSIFICATION, baseLayout, axisStyle } from './theme';
 import { useSettings } from './settings';
 import { Info, Select, Segmented, fmt } from './ui';
 import CalibrationPanel from './CalibrationPanel';
+import BodyFigure from './BodyFigure';
 import { assessPosture, type PostureStatus } from './posture';
 import { matchBreathing, learnedThresholds } from './calibration';
 
@@ -346,6 +347,10 @@ export default function DiaphragmChart({
         </div>
       )}
 
+      <div className="body-row">
+        <BodyFigure result={result} posture={posture} live={bothLive} />
+
+        <div className="body-readouts">
       {/* Balance bar */}
       <div className="balance">
         <span className="balance-end">Thoracic<br />(chest)</span>
@@ -405,6 +410,9 @@ export default function DiaphragmChart({
           v={fmt(result?.correlation, 2)}
           info="Peak normalised cross-correlation between the two traces. Below 0.35 the phase angle is meaningless and is hidden."
         />
+      </div>
+
+        </div>
       </div>
 
       <div className="card-body">
