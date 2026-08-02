@@ -13,7 +13,12 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { sessionLog, type StrapId } from './log';
-import { analyseDualStreams, DEFAULT_DIAPHRAGM_OPTIONS, type AccAxis } from './diaphragm';
+import {
+  analyseDualStreams,
+  resolveAbdoInversion,
+  DEFAULT_DIAPHRAGM_OPTIONS,
+  type AccAxis,
+} from './diaphragm';
 import {
   CALIBRATION_STEPS,
   TOTAL_CALIBRATION_SEC,
@@ -66,6 +71,7 @@ export default function CalibrationPanel({
     setCalibrationModel,
     postureReference,
     setPostureReference,
+    setAbdoInverted,
   } = useSettings();
 
   const [status, setStatus] = useState<PostureStatus | null>(null);
@@ -142,6 +148,11 @@ export default function CalibrationPanel({
           createdAt: Date.now(),
         };
         setCalibrationModel(model);
+        // Resolve which way the abdominal axis points. Every demonstration here
+        // is a NORMAL pattern, in which chest and belly move together — so a
+        // consistently negative correlation means the axis reads backwards.
+        const sign = resolveAbdoInversion(model.breathing.map((b) => b.correlation));
+        if (sign !== null) setAbdoInverted(sign);
         const upright = model.postures.find((p) => p.id === 'upright');
         if (upright) {
           setPostureReference({

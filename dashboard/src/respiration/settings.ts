@@ -151,6 +151,9 @@ export interface SettingsState {
   /** Deep-breath calibration scale factors. 1 = uncalibrated. */
   calibChest: number;
   calibAbdo: number;
+  /** Negate the abdominal signal — see DiaphragmOptions.invertAbdo. null means
+   * the sign has not been established, which qualifies any antiphase reading. */
+  abdoInverted: boolean | null;
   /** Learned per-subject breathing signatures and postures. */
   calibrationModel: CalibrationModel | null;
   /** Upright posture captured during the guided sequence. */
@@ -182,6 +185,7 @@ export interface SettingsState {
   setDiaphragmAxis: (a: 'x' | 'y' | 'z' | 'mag' | 'auto') => void;
   setDiaphragmView: (v: DiaphragmView) => void;
   setCalibration: (chest: number, abdo: number) => void;
+  setAbdoInverted: (v: boolean | null) => void;
   setCalibrationModel: (m: CalibrationModel | null) => void;
   setPostureReference: (r: PostureReference | null) => void;
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
@@ -211,6 +215,7 @@ export const useSettings = create<SettingsState>((set) => ({
   diaphragmView: 'overlay',
   calibChest: 1,
   calibAbdo: 1,
+  abdoInverted: null,
   calibrationModel: null,
   postureReference: null,
 
@@ -258,6 +263,7 @@ export const useSettings = create<SettingsState>((set) => ({
   setDiaphragmAxis: (diaphragmAxis) => set({ diaphragmAxis }),
   setDiaphragmView: (diaphragmView) => set({ diaphragmView }),
   setCalibration: (calibChest, calibAbdo) => set({ calibChest, calibAbdo }),
+  setAbdoInverted: (abdoInverted) => set({ abdoInverted }),
   setCalibrationModel: (calibrationModel) => set({ calibrationModel }),
   setPostureReference: (postureReference) => set({ postureReference }),
   patchMetricsShaping: (p) => set((s) => ({ metricsShaping: { ...s.metricsShaping, ...p } })),

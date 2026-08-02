@@ -42,6 +42,22 @@ export interface DiaphragmOptions {
   /** Common analysis grid, Hz. 20 Hz is far above the 0.5 Hz respiratory band
    * and keeps the cross-correlation lag resolution at 50 ms. */
   gridHz: number;
+  /**
+   * Negate the abdominal signal.
+   *
+   * An accelerometer axis has a direction but no notion of "outward". Because
+   * the two straps sit at ~22 degrees to each other, the axis that best carries
+   * breathing on the abdominal strap frequently points the opposite way to the
+   * chest's — so the belly reads as moving IN while it moves out. Measured on a
+   * real session: correlation 0.80 at a -5.2 s lag as recorded, 0.92 at 0.05 s
+   * once flipped. The first reads as paradoxical breathing; the second is
+   * ordinary synchronous breathing, and is the truth.
+   *
+   * This is a calibration constant, not a per-frame adaptation — flipping to
+   * whatever correlates best each frame would make genuine paradoxical
+   * breathing impossible to ever detect.
+   */
+  invertAbdo: boolean;
 }
 
 export const DEFAULT_DIAPHRAGM_OPTIONS: DiaphragmOptions = {
@@ -51,6 +67,7 @@ export const DEFAULT_DIAPHRAGM_OPTIONS: DiaphragmOptions = {
   calibChest: 1,
   calibAbdo: 1,
   gridHz: 20,
+  invertAbdo: false,
 };
 
 /** Classification thresholds, from the engineering spec. */
@@ -443,7 +460,8 @@ export function analyseDualStreams(
     return span > 1 ? movingAverage(hp, span) : hp;
   };
   const chestClean = band(cRes.y.slice(0, n));
-  const abdoClean = band(aRes.y.slice(0, n));
+  const abdoRaw = band(aRes.y.slice(0, n));
+  const abdoClean = opts.invertAbdo ? abdoRaw.map((v) => -v) : abdoRaw;
 
   // 4. Common-mode rejection: whatever moved both straps together was not breathing.
   const differential = new Array<number>(n);
@@ -488,6 +506,35 @@ export function analyseDualStreams(
 
   out.classification = classify(out.ratio, out.phaseAngleDeg, out.correlation);
   return out;
+}
+
+/**
+ * Should the abdominal signal be inverted?
+ *
+ * Decided from breathing the subject was ASKED to perform. In chest,
+ * diaphragmatic and belly breathing alike the abdomen moves outward on
+ * inhalation together with the chest — paradoxical motion is a clinical finding,
+ * not something a person produces on request. So a consistently NEGATIVE
+ * chest-abdomen correlation across those demonstrations means the abdominal
+ * axis is reading backwards, and the sign can be fixed once rather than guessed
+ * at every frame.
+ *
+ * Returns null when the demonstrations do not agree, which leaves the sign
+ * unresolved rather than guessing — and an unresolved sign is why a later
+ * antiphase reading has to be reported as ambiguous instead of paradoxical.
+ */
+export function resolveAbdoInversion(
+  correlations: ReadonlyArray<number | null>,
+): boolean | null {
+  const usable = correlations.filter(
+    (c): c is number => c != null && Number.isFinite(c) && Math.abs(c) >= 0.4,
+  );
+  if (usable.length === 0) return null;
+  const negative = usable.filter((c) => c < 0).length;
+  const positive = usable.length - negative;
+  if (negative > 0 && positive === 0) return true;
+  if (positive > 0 && negative === 0) return false;
+  return null; // demonstrations disagreed
 }
 
 /** Where the balance bar's marker sits, 0 (all thoracic) to 1 (all diaphragmatic).

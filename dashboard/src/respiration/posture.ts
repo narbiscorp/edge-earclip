@@ -67,10 +67,24 @@ export interface PostureStatus {
   moving: boolean;
 }
 
-/** Straps further apart than this are mounted too differently for a per-axis
- * comparison to mean anything. The recording that produced the false paradox
- * measured 23 degrees. */
-export const STRAP_ALIGN_WARN_DEG = 15;
+/**
+ * Angle between the straps' gravity vectors above which they are genuinely
+ * mounted wrong.
+ *
+ * NOT 15 degrees, which is what this was. A sternal strap and an epigastric one
+ * lie on surfaces that slope differently — the chest is not a cylinder — so
+ * they are never parallel even when both are worn correctly. Two independent
+ * recordings from a correctly-strapped subject measured 23.0 and 22.4 degrees,
+ * so the old threshold fired on every good session and the warning never
+ * cleared. Anything under about 35 degrees is ordinary anatomy.
+ *
+ * Whether the two straps are COMPARABLE is answered by whether their signals
+ * correlate, not by this angle — see chooseAxis. This threshold now only
+ * catches a strap that is obviously twisted or upside down.
+ */
+export const STRAP_ALIGN_WARN_DEG = 40;
+/** Angles above this are worth mentioning, but are not a fault. */
+export const STRAP_ALIGN_NOTE_DEG = 30;
 /** Posture change from the calibrated reference worth flagging. */
 export const POSTURE_DRIFT_WARN_DEG = 12;
 /** Gravity should read ~1 g when still; beyond this the subject is moving and
@@ -143,7 +157,7 @@ export function meanVector(
 export function postureAdvice(s: PostureStatus): string {
   switch (s.state) {
     case 'misaligned':
-      return `Straps are ${Math.round(s.interStrapDeg ?? 0)}° apart — they are rotated differently on the torso. Line them up so both sit squarely front-and-centre, then run the posture alignment calibration. Until then a phase reading compares strap placement, not breathing.`;
+      return `Straps are ${Math.round(s.interStrapDeg ?? 0)}° apart — far enough that one is probably twisted or upside down. Check both sit squarely front-and-centre with the logo upright, then recalibrate. (A difference of 20-25° is normal: the chest slopes, so the two straps never sit parallel.)`;
     case 'uncalibrated':
       return 'Sit upright and still, then run the posture alignment calibration. It records where both straps sit so later readings can be checked against it.';
     case 'drifted':

@@ -5,6 +5,7 @@ import {
   balancePosition,
   chooseAxis,
   classify,
+  resolveAbdoInversion,
   AXIS_ORIENTATION_WARN_MG,
   PHASE_SYNCHRONOUS_DEG,
   crossCorrelationLag,
@@ -406,5 +407,63 @@ describe('axis selection (regression: real 2026-07-31 dual-strap recording)', ()
     expect(classify(1.19, 180, 0.49)).not.toBe('PARADOXICAL');
     expect(classify(1.19, 180, 0.9)).toBe('PARADOXICAL');
     expect(classify(1.19, 180, null)).not.toBe('PARADOXICAL');
+  });
+});
+
+describe('abdominal sign convention', () => {
+  /* An accelerometer axis has a direction but no notion of "outward". On a real
+   * session the abdominal axis pointed opposite the chest's: correlation 0.80
+   * at a -5.2 s lag as recorded, 0.92 at 0.05 s once flipped. Unflipped that is
+   * reported as paradoxical breathing; flipped it is ordinary synchronous
+   * breathing, and is the truth. */
+
+  it('turns an apparent antiphase pattern into a synchronous one', () => {
+    const chest = strap({ ampMg: 30, phaseRad: 0 });
+    // Same breath, axis reading backwards.
+    const abdoFlipped = strap({ ampMg: 20, phaseRad: Math.PI, startMs: 5 });
+
+    const asRecorded = analyseDualStreams(chest, abdoFlipped, DEFAULT_DIAPHRAGM_OPTIONS);
+    expect(asRecorded.phaseAngleDeg as number).toBeGreaterThan(135);
+    expect(asRecorded.classification).toBe('PARADOXICAL');
+
+    const corrected = analyseDualStreams(chest, abdoFlipped, {
+      ...DEFAULT_DIAPHRAGM_OPTIONS,
+      invertAbdo: true,
+    });
+    expect(corrected.phaseAngleDeg as number).toBeLessThan(45);
+    expect(corrected.classification).not.toBe('PARADOXICAL');
+  });
+
+  it('leaves the amplitude ratio untouched — sign is not magnitude', () => {
+    const chest = strap({ ampMg: 30 });
+    const abdo = strap({ ampMg: 20, startMs: 5 });
+    const a = analyseDualStreams(chest, abdo, DEFAULT_DIAPHRAGM_OPTIONS);
+    const b = analyseDualStreams(chest, abdo, { ...DEFAULT_DIAPHRAGM_OPTIONS, invertAbdo: true });
+    expect(b.ratio as number).toBeCloseTo(a.ratio as number, 6);
+  });
+});
+
+describe('resolveAbdoInversion', () => {
+  it('flips when every demonstration correlated negatively', () => {
+    // All three demonstrations are NORMAL patterns, in which chest and belly
+    // move together — so consistent negatives mean the axis reads backwards.
+    expect(resolveAbdoInversion([-0.9, -0.8, -0.85])).toBe(true);
+  });
+
+  it('leaves the sign alone when the demonstrations were positive', () => {
+    expect(resolveAbdoInversion([0.9, 0.8, 0.85])).toBe(false);
+  });
+
+  it('declines when the demonstrations disagreed', () => {
+    expect(resolveAbdoInversion([0.9, -0.8, 0.7])).toBeNull();
+  });
+
+  it('ignores correlations too weak to mean anything', () => {
+    expect(resolveAbdoInversion([0.1, -0.2, null])).toBeNull();
+    expect(resolveAbdoInversion([])).toBeNull();
+  });
+
+  it('decides from the strong ones when the rest are noise', () => {
+    expect(resolveAbdoInversion([-0.88, 0.05, null])).toBe(true);
   });
 });

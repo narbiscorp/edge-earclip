@@ -79,6 +79,8 @@ export default function DiaphragmChart({
     calibChest,
     calibAbdo,
     setCalibration,
+    abdoInverted,
+    setAbdoInverted,
   } = settings;
   const abdoStrap: StrapId = chestStrap === 'main' ? 'lower' : 'main';
 
@@ -112,6 +114,7 @@ export default function DiaphragmChart({
     diaphragmAxis,
     calibChest,
     calibAbdo,
+    abdoInverted,
     postureReference: settings.postureReference,
   });
   optsRef.current = {
@@ -120,6 +123,7 @@ export default function DiaphragmChart({
     diaphragmAxis,
     calibChest,
     calibAbdo,
+    abdoInverted,
     postureReference: settings.postureReference,
   };
 
@@ -135,6 +139,7 @@ export default function DiaphragmChart({
         ...DEFAULT_DIAPHRAGM_OPTIONS,
         calibChest: o.calibChest,
         calibAbdo: o.calibAbdo,
+        invertAbdo: o.abdoInverted === true,
       };
       const grab = (strap: StrapId, ax: AccAxis) => sessionLog.accWindow(strap, win, now, ax);
 
@@ -330,6 +335,14 @@ export default function DiaphragmChart({
         </div>
       )}
 
+      {abdoInverted === null && result?.classification === 'PARADOXICAL' && (
+        <div className="card-note" style={{ color: '#fde68a' }}>
+          The belly direction has not been established, so this could equally be an abdominal strap
+          whose axis reads backwards — the far more common cause. Run the guided calibration, or set
+          Belly direction below, before treating this as a finding.
+        </div>
+      )}
+
       {result?.correlation != null &&
         Math.abs(result.correlation) < MIN_CLASSIFY_CORRELATION &&
         bothLive && (
@@ -462,6 +475,18 @@ export default function DiaphragmChart({
           ]}
           onChange={(v) => setDiaphragmAxis(v as AccAxis | 'auto')}
           info="An accelerometer axis is a direction in the STRAP's frame, not the body's. If the two straps sit at different rotations, the same axis points different ways on each and comparing them measures how they were put on rather than how the subject breathes. Auto picks the axis where the two straps genuinely track one rhythm (strongest correlation, either sign) instead of assuming they were mounted identically."
+        />
+        <div className="sep" />
+        <Select
+          label="Belly direction"
+          value={abdoInverted === null ? 'auto' : abdoInverted ? 'inverted' : 'normal'}
+          options={[
+            { value: 'auto', label: 'Unset' },
+            { value: 'normal', label: 'Outward = +' },
+            { value: 'inverted', label: 'Flipped' },
+          ]}
+          onChange={(v) => setAbdoInverted(v === 'auto' ? null : v === 'inverted')}
+          info="An accelerometer axis has a direction but no notion of 'outward'. Because the two straps sit at an angle to each other, the abdominal axis often points the opposite way to the chest's, so the belly reads as moving in while it moves out — and that reads as paradoxical breathing. The guided calibration works this out from your demonstrations; set it here if you have not run one."
         />
         <div className="sep" />
         <button

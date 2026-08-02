@@ -30,14 +30,15 @@ describe('angleBetweenDeg', () => {
     expect(angleBetweenDeg(v(0, 0, 0), v(0, 0, 1))).toBeNull();
   });
 
-  it('measures the real recording as ~23 degrees apart', () => {
-    // The two straps from the session that produced the false PARADOXICAL
-    // warning. This is the number the whole feature exists to catch.
+  it('measures the real recording as ~23 degrees apart — which is NORMAL', () => {
+    // Originally read as the cause of a false PARADOXICAL warning. It was not:
+    // a sternal and an epigastric strap sit on differently-sloped surfaces and
+    // are never parallel. The real cause was the axis, and then the sign.
     const deg = angleBetweenDeg(v(-903, 49, 426), v(-1016, 48, 36));
     expect(deg).not.toBeNull();
     expect(deg as number).toBeGreaterThan(20);
     expect(deg as number).toBeLessThan(26);
-    expect(deg as number).toBeGreaterThan(STRAP_ALIGN_WARN_DEG);
+    expect(deg as number).toBeLessThan(STRAP_ALIGN_WARN_DEG);
   });
 });
 
@@ -49,11 +50,17 @@ describe('assessPosture', () => {
     capturedAt: 0,
   };
 
-  it('flags straps rotated differently, ahead of anything else', () => {
-    const s = assessPosture(v(-903, 49, 426), v(-1016, 48, 36), ref);
+  it('flags a genuinely twisted strap ahead of anything else', () => {
+    // 90 degrees apart cannot be anatomy; posture drift is beside the point.
+    const s = assessPosture(v(0, 0, 1000), v(1000, 0, 0), ref);
     expect(s.state).toBe('misaligned');
     expect(s.interStrapDeg as number).toBeGreaterThan(STRAP_ALIGN_WARN_DEG);
-    expect(postureAdvice(s)).toMatch(/rotated differently/i);
+    expect(postureAdvice(s)).toMatch(/twisted|upside down/i);
+  });
+
+  it('does not call a normally-worn pair misaligned', () => {
+    const s = assessPosture(v(-903, 49, 426), v(-1016, 48, 36), ref);
+    expect(s.state).not.toBe('misaligned');
   });
 
   it('asks for calibration when there is no reference', () => {
@@ -187,5 +194,53 @@ describe('learnedThresholds', () => {
   it('produces an ordered pair of boundaries', () => {
     const t = learnedThresholds(model([0.4, 1.2, 2.6]));
     expect(t!.diaphragmatic).toBeGreaterThan(t!.thoracic);
+  });
+});
+
+describe('strap alignment threshold (regression: warning never cleared)', () => {
+  /* Reported: "the misaligned message never goes away". It was right.
+   *
+   * A sternal strap and an epigastric one lie on surfaces that slope
+   * differently — the chest is not a cylinder — so they are never parallel even
+   * when both are worn correctly. Two independent sessions from a correctly
+   * strapped subject, minutes and a day apart:
+   *
+   *   2026-07-31  chest (-903, 49, 426)  abdo (-1016, 48,  36)  ->  23.0 deg
+   *   2026-08-01  chest (-927, 21, 401)  abdo ( -990, 66,  21)  ->  22.4 deg
+   *
+   * The original 15 deg threshold called both of those a fault, so it fired on
+   * every good session. */
+  const sessions: Array<[string, Vec3ish, Vec3ish]> = [
+    ['2026-07-31', { x: -903, y: 49, z: 426 }, { x: -1016, y: 48, z: 36 }],
+    ['2026-08-01', { x: -927, y: 21, z: 401 }, { x: -990, y: 66, z: 21 }],
+  ];
+  type Vec3ish = { x: number; y: number; z: number };
+
+  it('measures both real sessions at 20-25 degrees', () => {
+    for (const [, chest, abdo] of sessions) {
+      const deg = angleBetweenDeg(chest, abdo) as number;
+      expect(deg).toBeGreaterThan(20);
+      expect(deg).toBeLessThan(26);
+    }
+  });
+
+  it('does NOT call a correctly-worn pair misaligned', () => {
+    for (const [label, chest, abdo] of sessions) {
+      const s = assessPosture(chest, abdo, null);
+      expect(s.state, `${label} should not be misaligned`).not.toBe('misaligned');
+    }
+  });
+
+  it('still catches a strap that is genuinely twisted', () => {
+    // 90 degrees apart is not anatomy.
+    const s = assessPosture({ x: 0, y: 0, z: 1000 }, { x: 1000, y: 0, z: 0 }, null);
+    expect(s.state).toBe('misaligned');
+    expect(postureAdvice(s)).toMatch(/twisted|upside down/i);
+  });
+
+  it('reaches "aligned" once a reference exists at a realistic strap angle', () => {
+    const [, chest, abdo] = sessions[1];
+    const ref = { chest, abdo, interStrapDeg: null, capturedAt: 0 };
+    expect(assessPosture(chest, abdo, ref).state).toBe('aligned');
   });
 });
