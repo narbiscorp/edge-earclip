@@ -213,6 +213,12 @@ export const useSettings = create<SettingsState>((set) => ({
 
   // Metrics arrive at 1 Hz and are already windowed averages — smoothing them
   // again by default would hide the variation they exist to show.
+  /* The sternum strap is the MAIN one. Across three sessions the main strap
+   * consistently read a much larger gravity z-component (401-468 mG) than the
+   * lower one (21-98 mG), which is the sternum's slope — a strap worn higher
+   * tilts more. Swapping this exchanges chest for abdomen in every readout,
+   * the figure and the classification, so it is worth getting right by
+   * default. */
   chestStrap: 'main',
   diaphragmAxis: 'auto',
   diaphragmView: 'overlay',

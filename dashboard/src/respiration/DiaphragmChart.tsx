@@ -146,6 +146,7 @@ export default function DiaphragmChart({
       // 'auto' asks which axis the two straps are actually comparable on,
       // rather than assuming they were mounted identically.
       let axis: AccAxis;
+      let autoInvert = false;
       if (o.diaphragmAxis === 'auto') {
         const pick = chooseAxis(
           (['x', 'y', 'z'] as const).map((ax) => ({
@@ -158,6 +159,7 @@ export default function DiaphragmChart({
         setAxisPick(pick);
         axisPickRef.current = pick?.axis ?? null;
         axis = pick?.axis ?? 'z';
+        autoInvert = pick?.inverted ?? false;
       } else {
         axis = o.diaphragmAxis;
         setAxisPick(null);
@@ -165,7 +167,13 @@ export default function DiaphragmChart({
 
       const chest = grab(o.chestStrap, axis);
       const abdo = grab(o.abdoStrap, axis);
-      const r = analyseDualStreams(chest, abdo, opts);
+      // With no explicit setting, use the polarity the axis assessment found.
+      // An explicit choice always wins — it is the user telling us the ground
+      // truth, which is worth more than an inference.
+      const r = analyseDualStreams(chest, abdo, {
+        ...opts,
+        invertAbdo: o.abdoInverted ?? autoInvert,
+      });
 
       setPosture(
         assessPosture(
@@ -333,6 +341,13 @@ export default function DiaphragmChart({
           {Math.round(axisPick.gravityDeltaMg)} mG on the axis in use. Auto has picked the axis they
           agree on best; a phase angle from a mismatched axis measures strap placement, not
           breathing.
+        </div>
+      )}
+
+      {result?.moving && bothLive && (
+        <div className="card-note" style={{ color: '#fde68a' }}>
+          Too much body movement to read breathing from — the straps are seeing you shift, not
+          breathe. Sit still for a few breaths and it will pick up again.
         </div>
       )}
 

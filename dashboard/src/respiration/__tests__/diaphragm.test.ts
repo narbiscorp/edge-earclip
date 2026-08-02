@@ -377,22 +377,66 @@ describe('axis selection (regression: real 2026-07-31 dual-strap recording)', ()
     abdoPhase: [Math.PI / 2, 0, Math.PI],
   });
 
-  it('picks the axis the straps agree on, not the one with the biggest signal', () => {
+  it('picks the axis with real signal, and detects that it reads inverted', () => {
+    /* This originally asserted Y, on the reasoning that Z's antiphase meant the
+     * straps were incomparable there. That was wrong: Z's antiphase was a SIGN
+     * artifact, not a physical one, and rejecting Z threw away the axis with
+     * five times the signal — landing the analysis on a 2 mG axis where the
+     * period estimator could find nothing, which is exactly what a real session
+     * then did (phase, period and correlation all blank).
+     *
+     * With the sign searched per axis and the score weighted by amplitude, Z
+     * wins and is correctly reported as inverted. */
     const pick = chooseAxis([
       { axis: 'x', chest: real.chest.x, abdo: real.abdo.x },
       { axis: 'y', chest: real.chest.y, abdo: real.abdo.y },
       { axis: 'z', chest: real.chest.z, abdo: real.abdo.z },
     ]);
     expect(pick).not.toBeNull();
-    // Z carries the largest amplitude but the straps are rotated differently there.
-    expect(pick!.axis).toBe('y');
-    expect(Math.abs(pick!.correlation)).toBeGreaterThan(0.9);
+    expect(pick!.axis).toBe('z');
+    expect(pick!.inverted).toBe(true);
+    expect(pick!.correlation).toBeGreaterThan(0.9);
+    // X has almost no abdominal signal and must not be chosen.
+    expect(pick!.abdoAmp).toBeGreaterThan(5);
   });
 
-  it('does not report PARADOXICAL on the axis it picks', () => {
-    const r = analyseDualStreams(real.chest.y, real.abdo.y, DEFAULT_DIAPHRAGM_OPTIONS);
+  it('does not let a near-silent axis outscore one carrying the breathing', () => {
+    // The failure mode behind a real session's blank phase/period: during a
+    // posture change every axis correlates near 1.0, so correlation alone chose
+    // the axis with the least breathing in it.
+    const loud = chooseAxis([
+      { axis: 'y', chest: real.chest.y, abdo: real.abdo.y },
+      { axis: 'z', chest: real.chest.z, abdo: real.abdo.z },
+    ]);
+    expect(loud!.axis).toBe('z');
+    expect(loud!.score).toBeGreaterThan(0);
+  });
+
+  it('does not report PARADOXICAL once the axis sign is applied', () => {
+    const pick = chooseAxis([
+      { axis: 'y', chest: real.chest.y, abdo: real.abdo.y },
+      { axis: 'z', chest: real.chest.z, abdo: real.abdo.z },
+    ])!;
+    const series = pick.axis === 'z' ? real : real;
+    const r = analyseDualStreams(
+      pick.axis === 'z' ? series.chest.z : series.chest.y,
+      pick.axis === 'z' ? series.abdo.z : series.abdo.y,
+      { ...DEFAULT_DIAPHRAGM_OPTIONS, invertAbdo: pick.inverted },
+    );
     expect(r.classification).not.toBe('PARADOXICAL');
     expect(r.phaseAngleDeg as number).toBeLessThan(PHASE_SYNCHRONOUS_DEG);
+  });
+
+  it('refuses to classify a window dominated by body movement', () => {
+    // Measured from the posture steps of a real calibration: 358 mG and 533 mG
+    // peak-to-peak, both straps moving as one. That is a person shifting in a
+    // chair, and describing it as a breathing pattern is worse than saying
+    // nothing.
+    const big = (amp: number, startMs: number) =>
+      strap({ ampMg: amp, breathBpm: 6, startMs, offsetMg: 900 });
+    const r = analyseDualStreams(big(180, 0), big(260, 4), DEFAULT_DIAPHRAGM_OPTIONS);
+    expect(r.moving).toBe(true);
+    expect(r.classification).toBe('UNKNOWN');
   });
 
   it('flags the rotation mismatch on the axis that caused the false alarm', () => {

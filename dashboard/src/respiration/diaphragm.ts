@@ -105,6 +105,8 @@ export interface DiaphragmResult {
    * chair movement appear on BOTH straps, so subtracting removes them and
    * leaves the part of the motion that is genuinely differential. */
   differential: number[];
+  /** The window is dominated by body movement, so no classification is offered. */
+  moving: boolean;
 }
 
 function emptyResult(): DiaphragmResult {
@@ -121,6 +123,7 @@ function emptyResult(): DiaphragmResult {
     chest: [],
     abdo: [],
     differential: [],
+    moving: false,
   };
 }
 
@@ -289,9 +292,15 @@ export type AccAxis = 'x' | 'y' | 'z' | 'mag';
 /** How usable one accelerometer axis is for comparing the two straps. */
 export interface AxisQuality {
   axis: AccAxis;
-  /** Signed peak cross-correlation. Negative means the straps move oppositely
-   * on this axis — either real paradox, or one strap mounted the other way up. */
+  /** Peak cross-correlation, taken over BOTH polarities of the abdominal
+   * signal — see `inverted`. */
   correlation: number;
+  /** True when the abdominal signal had to be negated to reach that
+   * correlation, i.e. this axis reads backwards on the lower strap. */
+  inverted: boolean;
+  /** Score the axis was chosen by: correlation weighted by how much signal
+   * there is to correlate. */
+  score: number;
   /** Band-passed amplitude (SD, mG) each strap sees on this axis. */
   chestAmp: number;
   abdoAmp: number;
@@ -313,6 +322,18 @@ export interface AxisQuality {
 
 /** Minimum band-passed amplitude (mG) for an axis to be considered at all. */
 const AXIS_MIN_AMPLITUDE_MG = 1.5;
+/**
+ * Band-passed amplitude above which the window is gross body movement, not
+ * breathing.
+ *
+ * Quiet breathing moves a chest strap by single-to-low-tens of mG. Sitting up,
+ * slouching or shifting in the chair moves it by hundreds — a calibration
+ * recording measured 151 mG on the chest and 220 mG on the abdomen during the
+ * posture steps, with all three axes correlating at 1.00 because the whole
+ * torso was travelling together. Feeding that to a breathing classifier
+ * produces a confident reading of something that is not breathing.
+ */
+export const MOVEMENT_AMPLITUDE_MG = 60;
 /** Gravity-component difference above which the two straps are rotated too
  * differently for this axis to be comparable between them. */
 export const AXIS_ORIENTATION_WARN_MG = 250;
@@ -347,18 +368,37 @@ export function assessAxis(
   const empty: AxisQuality = {
     axis,
     correlation: 0,
+    inverted: false,
+    score: 0,
     chestAmp: 0,
     abdoAmp: 0,
     gravityDeltaMg: Infinity,
     usable: false,
   };
-  const r = analyseDualStreams(chest, abdo, opts);
-  if (r.t.length === 0) return empty;
-  const chestAmp = sdOf(r.chest);
-  const abdoAmp = sdOf(r.abdo);
+  // Try both polarities. An axis that reads backwards on the lower strap
+  // otherwise scores as weakly correlated at a half-cycle lag, and loses to an
+  // axis with barely any signal in it.
+  const upright = analyseDualStreams(chest, abdo, { ...opts, invertAbdo: false });
+  if (upright.t.length === 0) return empty;
+  const flipped = analyseDualStreams(chest, abdo, { ...opts, invertAbdo: true });
+  const rUp = Math.abs(upright.correlation ?? 0);
+  const rFlip = Math.abs(flipped.correlation ?? 0);
+  const inverted = rFlip > rUp;
+  const best = inverted ? flipped : upright;
+  const correlation = inverted ? rFlip : rUp;
+
+  const chestAmp = sdOf(best.chest);
+  const abdoAmp = sdOf(best.abdo);
   return {
     axis,
-    correlation: r.correlation ?? 0,
+    correlation,
+    inverted,
+    /* Correlation ALONE is the wrong criterion. During a posture change every
+     * axis correlates near 1.0 because the whole torso is moving as one, so the
+     * axis with the least breathing in it can win. Weighting by the geometric
+     * mean of the two amplitudes asks for an axis that both agrees AND has
+     * something to agree about. */
+    score: correlation * Math.sqrt(Math.max(0, chestAmp) * Math.max(0, abdoAmp)),
     chestAmp,
     abdoAmp,
     // Gravity is the mean of the RAW series, before the baseline was removed.
@@ -392,7 +432,7 @@ export function chooseAxis(
   const pool = usable.length > 0 ? usable : scored;
   let best: AxisQuality | null = null;
   for (const q of pool) {
-    if (!best || Math.abs(q.correlation) > Math.abs(best.correlation)) best = q;
+    if (!best || q.score > best.score) best = q;
   }
   return best;
 }
@@ -502,6 +542,17 @@ export function analyseDualStreams(
       out.correlation = lag.correlation;
       out.phaseAngleDeg = Math.min(180, (Math.abs(out.lagMs) / period) * 360);
     }
+  }
+
+  // Gross movement is not breathing. Report the traces so the chart still shows
+  // what happened, but withhold a classification rather than describing a
+  // shift in the chair as a breathing pattern.
+  out.moving =
+    (chestPtP != null && chestPtP > MOVEMENT_AMPLITUDE_MG * 2) ||
+    (abdoPtP != null && abdoPtP > MOVEMENT_AMPLITUDE_MG * 2);
+  if (out.moving) {
+    out.classification = 'UNKNOWN';
+    return out;
   }
 
   out.classification = classify(out.ratio, out.phaseAngleDeg, out.correlation);
