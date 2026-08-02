@@ -324,6 +324,7 @@ export default function DiaphragmChart({
         abdoStrap={abdoStrap}
         axis={(axisPick?.axis ?? (diaphragmAxis === 'auto' ? 'z' : diaphragmAxis)) as AccAxis}
         bothLive={bothLive}
+        breathPeriodSec={result?.breathPeriodMs != null ? result.breathPeriodMs / 1000 : null}
       />
 
       {axisPick && axisPick.gravityDeltaMg > AXIS_ORIENTATION_WARN_MG && (

@@ -10,10 +10,14 @@ import {
 } from '../posture';
 import {
   CALIBRATION_STEPS,
+  FALLBACK_BREATH_SEC,
   TOTAL_CALIBRATION_SEC,
   learnedThresholds,
   matchBreathing,
   matchPosture,
+  mergeCalibration,
+  stepSeconds,
+  totalCalibrationSec,
   type CalibrationModel,
 } from '../calibration';
 
@@ -242,5 +246,97 @@ describe('strap alignment threshold (regression: warning never cleared)', () => 
     const [, chest, abdo] = sessions[1];
     const ref = { chest, abdo, interStrapDeg: null, capturedAt: 0 };
     expect(assessPosture(chest, abdo, ref).state).toBe('aligned');
+  });
+});
+
+describe('step sizing by breath count', () => {
+  const breathing = CALIBRATION_STEPS.find((s) => s.kind === 'breathing')!;
+  const postureStep = CALIBRATION_STEPS.find((s) => s.kind === 'posture')!;
+
+  it('gives a slow breather more time than a fast one for the same count', () => {
+    // 20 s is two breaths at 6 br/min but four at 12, so a fixed duration
+    // collected very different amounts of evidence depending on the subject.
+    const slow = stepSeconds(breathing, 10, 4); // 10 s period
+    const fast = stepSeconds(breathing, 3, 4); // 3 s period
+    expect(slow).toBeGreaterThan(fast);
+    expect(slow).toBe(40);
+  });
+
+  it('scales with the requested breath count', () => {
+    expect(stepSeconds(breathing, 5, 6)).toBeGreaterThan(stepSeconds(breathing, 5, 3));
+  });
+
+  it('clamps so a step is never uselessly short or unbearably long', () => {
+    expect(stepSeconds(breathing, 2, 2)).toBeGreaterThanOrEqual(12);
+    expect(stepSeconds(breathing, 20, 8)).toBeLessThanOrEqual(75);
+  });
+
+  it('falls back to an assumed period before one has been measured', () => {
+    expect(stepSeconds(breathing, null, 4)).toBe(4 * FALLBACK_BREATH_SEC);
+  });
+
+  it('ignores an implausible period rather than trusting it', () => {
+    expect(stepSeconds(breathing, 0.2, 4)).toBe(4 * FALLBACK_BREATH_SEC);
+    expect(stepSeconds(breathing, 900, 4)).toBe(4 * FALLBACK_BREATH_SEC);
+  });
+
+  it('leaves posture steps as a fixed hold', () => {
+    expect(stepSeconds(postureStep, 12, 8)).toBe(postureStep.seconds);
+  });
+
+  it('reports a total that tracks the settings', () => {
+    expect(totalCalibrationSec(6, 6)).toBeGreaterThan(totalCalibrationSec(6, 3));
+  });
+});
+
+describe('mergeCalibration (redo one step)', () => {
+  const sig = (id: 'chest' | 'diaphragm' | 'belly', ratio: number) => ({
+    id,
+    ratio,
+    chestPtP: 40,
+    abdoPtP: 40 * ratio,
+    phaseDeg: 5,
+    correlation: 0.9,
+  });
+  const base = {
+    axis: 'y' as const,
+    createdAt: 1,
+    breathing: [sig('chest', 0.5), sig('diaphragm', 1.4), sig('belly', 3.0)],
+    postures: [
+      { id: 'upright' as const, chest: v(0, 0, 1000), abdo: v(0, 0, 1000) },
+      { id: 'slouched' as const, chest: v(0, 500, 866), abdo: v(0, 500, 866) },
+    ],
+  };
+
+  it('replaces just the redone demonstration and keeps the rest', () => {
+    const merged = mergeCalibration(base, [sig('belly', 4.2)], [], 'y', 2);
+    expect(merged.breathing).toHaveLength(3);
+    expect(merged.breathing.find((b) => b.id === 'belly')!.ratio).toBe(4.2);
+    expect(merged.breathing.find((b) => b.id === 'chest')!.ratio).toBe(0.5);
+    expect(merged.breathing.find((b) => b.id === 'diaphragm')!.ratio).toBe(1.4);
+  });
+
+  it('replaces a single posture without disturbing the others', () => {
+    const merged = mergeCalibration(base, [], [{ id: 'upright', chest: v(0, 0, 990), abdo: v(0, 0, 990) }], 'y', 2);
+    expect(merged.postures).toHaveLength(2);
+    expect(merged.postures.find((p) => p.id === 'upright')!.chest.z).toBe(990);
+    expect(merged.postures.find((p) => p.id === 'slouched')).toBeDefined();
+  });
+
+  it('adds a step that had not been captured before', () => {
+    const merged = mergeCalibration(base, [], [{ id: 'back', chest: v(0, -500, 866), abdo: v(0, -500, 866) }], 'y', 2);
+    expect(merged.postures).toHaveLength(3);
+  });
+
+  it('keeps entries in the sequence order, not the order they were redone', () => {
+    const merged = mergeCalibration(base, [sig('chest', 0.4)], [], 'y', 2);
+    expect(merged.breathing.map((b) => b.id)).toEqual(['chest', 'diaphragm', 'belly']);
+  });
+
+  it('builds a fresh model when there was none', () => {
+    const merged = mergeCalibration(null, [sig('chest', 0.6)], [], 'z', 5);
+    expect(merged.breathing).toHaveLength(1);
+    expect(merged.axis).toBe('z');
+    expect(merged.createdAt).toBe(5);
   });
 });

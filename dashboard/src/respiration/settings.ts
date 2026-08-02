@@ -154,6 +154,8 @@ export interface SettingsState {
   /** Negate the abdominal signal — see DiaphragmOptions.invertAbdo. null means
    * the sign has not been established, which qualifies any antiphase reading. */
   abdoInverted: boolean | null;
+  /** Breaths per breathing demonstration in the guided sequence. */
+  calibBreaths: number;
   /** Learned per-subject breathing signatures and postures. */
   calibrationModel: CalibrationModel | null;
   /** Upright posture captured during the guided sequence. */
@@ -186,6 +188,7 @@ export interface SettingsState {
   setDiaphragmView: (v: DiaphragmView) => void;
   setCalibration: (chest: number, abdo: number) => void;
   setAbdoInverted: (v: boolean | null) => void;
+  setCalibBreaths: (n: number) => void;
   setCalibrationModel: (m: CalibrationModel | null) => void;
   setPostureReference: (r: PostureReference | null) => void;
   patchMetricsShaping: (p: Partial<TraceShaping>) => void;
@@ -216,6 +219,7 @@ export const useSettings = create<SettingsState>((set) => ({
   calibChest: 1,
   calibAbdo: 1,
   abdoInverted: null,
+  calibBreaths: 4,
   calibrationModel: null,
   postureReference: null,
 
@@ -264,6 +268,7 @@ export const useSettings = create<SettingsState>((set) => ({
   setDiaphragmView: (diaphragmView) => set({ diaphragmView }),
   setCalibration: (calibChest, calibAbdo) => set({ calibChest, calibAbdo }),
   setAbdoInverted: (abdoInverted) => set({ abdoInverted }),
+  setCalibBreaths: (calibBreaths) => set({ calibBreaths }),
   setCalibrationModel: (calibrationModel) => set({ calibrationModel }),
   setPostureReference: (postureReference) => set({ postureReference }),
   patchMetricsShaping: (p) => set((s) => ({ metricsShaping: { ...s.metricsShaping, ...p } })),

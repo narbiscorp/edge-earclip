@@ -10,6 +10,10 @@
  * The guided sequence then replaces the spec's fixed ratio thresholds with what
  * each pattern actually looks like on this subject, in this session, with these
  * straps at this tightness.
+ *
+ * Steps run from a QUEUE rather than a straight walk through the list, which is
+ * what lets a single botched demonstration be redone — during it, or afterwards
+ * — without discarding the ones the subject already sat through.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { sessionLog, type StrapId } from './log';
@@ -20,23 +24,26 @@ import {
   type AccAxis,
 } from './diaphragm';
 import {
+  BREATHS_PER_STEP_OPTIONS,
   CALIBRATION_STEPS,
-  TOTAL_CALIBRATION_SEC,
   learnedThresholds,
   matchPosture,
+  mergeCalibration,
+  stepSeconds,
+  totalCalibrationSec,
   type BreathingSignature,
   type BreathingStepId,
-  type CalibrationModel,
   type PostureSignature,
   type PostureStepId,
+  type StepId,
 } from './calibration';
 import { assessPosture, postureAdvice, type PostureStatus } from './posture';
 import { CLASSIFICATION, INK } from './theme';
 import { useSettings } from './settings';
-import { Info } from './ui';
+import { Info, Select } from './ui';
 
-/** Gravity is averaged over the trailing part of a step, skipping the first
- * couple of seconds so the subject has time to actually get into position. */
+/** Gravity and amplitude are averaged over the trailing part of a step, skipping
+ * the first couple of seconds so the subject has time to get into position. */
 const SETTLE_SEC = 2;
 
 const STATE_COLOR: Record<PostureStatus['state'], string> = {
@@ -60,11 +67,14 @@ export default function CalibrationPanel({
   abdoStrap,
   axis,
   bothLive,
+  breathPeriodSec,
 }: {
   chestStrap: StrapId;
   abdoStrap: StrapId;
   axis: AccAxis;
   bothLive: boolean;
+  /** Measured breath period, used to size the breathing steps. */
+  breathPeriodSec: number | null;
 }): ReactNode {
   const {
     calibrationModel,
@@ -72,16 +82,34 @@ export default function CalibrationPanel({
     postureReference,
     setPostureReference,
     setAbdoInverted,
+    calibBreaths,
+    setCalibBreaths,
   } = useSettings();
 
   const [status, setStatus] = useState<PostureStatus | null>(null);
-  const [stepIndex, setStepIndex] = useState<number | null>(null);
+  /** Indices into CALIBRATION_STEPS still to run. Empty = idle. */
+  const [queue, setQueue] = useState<number[]>([]);
   const [stepEndsAt, setStepEndsAt] = useState(0);
   const [, setTick] = useState(0);
 
-  const ctx = useRef({ chestStrap, abdoStrap, axis, postureReference });
-  ctx.current = { chestStrap, abdoStrap, axis, postureReference };
-  // Captures accumulate here across steps and become the model at the end.
+  const ctx = useRef({
+    chestStrap,
+    abdoStrap,
+    axis,
+    postureReference,
+    breathPeriodSec,
+    calibBreaths,
+    calibrationModel,
+  });
+  ctx.current = {
+    chestStrap,
+    abdoStrap,
+    axis,
+    postureReference,
+    breathPeriodSec,
+    calibBreaths,
+    calibrationModel,
+  };
   const captured = useRef<{ breathing: BreathingSignature[]; postures: PostureSignature[] }>({
     breathing: [],
     postures: [],
@@ -92,25 +120,34 @@ export default function CalibrationPanel({
     const run = (): void => {
       const c = ctx.current;
       const now = Date.now();
-      const chest = sessionLog.accMeanVector(c.chestStrap, 3, now);
-      const abdo = sessionLog.accMeanVector(c.abdoStrap, 3, now);
-      setStatus(assessPosture(chest, abdo, c.postureReference));
+      setStatus(
+        assessPosture(
+          sessionLog.accMeanVector(c.chestStrap, 3, now),
+          sessionLog.accMeanVector(c.abdoStrap, 3, now),
+          c.postureReference,
+        ),
+      );
     };
     run();
     const id = setInterval(run, 500);
     return () => clearInterval(id);
   }, []);
 
-  /** Capture whatever the step at `index` was meant to measure. */
+  const durationOf = (index: number): number =>
+    stepSeconds(CALIBRATION_STEPS[index], ctx.current.breathPeriodSec, ctx.current.calibBreaths);
+
+  /** Capture whatever the step was meant to measure. */
   const captureStep = (index: number): void => {
     const step = CALIBRATION_STEPS[index];
     const c = ctx.current;
     const now = Date.now();
-    const win = Math.max(2, step.seconds - SETTLE_SEC);
+    const win = Math.max(2, durationOf(index) - SETTLE_SEC);
     if (step.kind === 'posture') {
       const chest = sessionLog.accMeanVector(c.chestStrap, win, now);
       const abdo = sessionLog.accMeanVector(c.abdoStrap, win, now);
       if (chest && abdo) {
+        // Replace any earlier capture of the same step — a redo supersedes.
+        captured.current.postures = captured.current.postures.filter((p) => p.id !== step.id);
         captured.current.postures.push({ id: step.id as PostureStepId, chest, abdo });
       }
       return;
@@ -118,10 +155,12 @@ export default function CalibrationPanel({
     const r = analyseDualStreams(
       sessionLog.accWindow(c.chestStrap, win, now, c.axis),
       sessionLog.accWindow(c.abdoStrap, win, now, c.axis),
-      // Uncalibrated on purpose: these ARE the calibration.
-      { ...DEFAULT_DIAPHRAGM_OPTIONS, calibChest: 1, calibAbdo: 1 },
+      // Uncalibrated and unflipped on purpose: these ARE the calibration, and
+      // the sign is one of the things being decided from them.
+      { ...DEFAULT_DIAPHRAGM_OPTIONS, calibChest: 1, calibAbdo: 1, invertAbdo: false },
     );
     if (r.ratio != null && r.chestPtP != null && r.abdoPtP != null) {
+      captured.current.breathing = captured.current.breathing.filter((b) => b.id !== step.id);
       captured.current.breathing.push({
         id: step.id as BreathingStepId,
         ratio: r.ratio,
@@ -133,60 +172,98 @@ export default function CalibrationPanel({
     }
   };
 
+  const finish = (): void => {
+    const model = mergeCalibration(
+      ctx.current.calibrationModel,
+      captured.current.breathing,
+      captured.current.postures,
+      ctx.current.axis,
+      Date.now(),
+    );
+    setCalibrationModel(model);
+    const upright = model.postures.find((p) => p.id === 'upright');
+    if (upright) {
+      setPostureReference({
+        chest: upright.chest,
+        abdo: upright.abdo,
+        interStrapDeg: null,
+        capturedAt: Date.now(),
+      });
+    }
+    // Every demonstration is a NORMAL pattern, so a consistently negative
+    // chest-abdomen correlation means the abdominal axis reads backwards.
+    const sign = resolveAbdoInversion(model.breathing.map((b) => b.correlation));
+    if (sign !== null) setAbdoInverted(sign);
+    setQueue([]);
+  };
+
   // Step clock.
   useEffect(() => {
-    if (stepIndex == null) return;
+    if (queue.length === 0) return;
+    const index = queue[0];
     const remaining = stepEndsAt - Date.now();
-    const advance = setTimeout(() => {
-      captureStep(stepIndex);
-      const next = stepIndex + 1;
-      if (next >= CALIBRATION_STEPS.length) {
-        const model: CalibrationModel = {
-          breathing: captured.current.breathing,
-          postures: captured.current.postures,
-          axis: ctx.current.axis,
-          createdAt: Date.now(),
-        };
-        setCalibrationModel(model);
-        // Resolve which way the abdominal axis points. Every demonstration here
-        // is a NORMAL pattern, in which chest and belly move together — so a
-        // consistently negative correlation means the axis reads backwards.
-        const sign = resolveAbdoInversion(model.breathing.map((b) => b.correlation));
-        if (sign !== null) setAbdoInverted(sign);
-        const upright = model.postures.find((p) => p.id === 'upright');
-        if (upright) {
-          setPostureReference({
-            chest: upright.chest,
-            abdo: upright.abdo,
-            interStrapDeg: null,
-            capturedAt: Date.now(),
-          });
+    const advance = setTimeout(
+      () => {
+        captureStep(index);
+        const rest = queue.slice(1);
+        if (rest.length === 0) {
+          finish();
+          return;
         }
-        setStepIndex(null);
-        return;
-      }
-      setStepIndex(next);
-      setStepEndsAt(Date.now() + CALIBRATION_STEPS[next].seconds * 1000);
-    }, Math.max(0, remaining));
+        setQueue(rest);
+        setStepEndsAt(Date.now() + durationOf(rest[0]) * 1000);
+      },
+      Math.max(0, remaining),
+    );
     const ticker = setInterval(() => setTick((t) => t + 1), 200);
     return () => {
       clearTimeout(advance);
       clearInterval(ticker);
     };
-    // captureStep reads through refs, so it does not need to be a dependency.
+    // Everything else is read through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepIndex, stepEndsAt]);
+  }, [queue, stepEndsAt]);
 
-  const start = (): void => {
-    captured.current = { breathing: [], postures: [] };
-    setStepIndex(0);
-    setStepEndsAt(Date.now() + CALIBRATION_STEPS[0].seconds * 1000);
+  const startQueue = (indices: number[]): void => {
+    if (indices.length === 0) return;
+    setQueue(indices);
+    setStepEndsAt(Date.now() + durationOf(indices[0]) * 1000);
   };
-  const cancel = (): void => setStepIndex(null);
 
-  const running = stepIndex != null;
-  const step = running ? CALIBRATION_STEPS[stepIndex] : null;
+  const startAll = (): void => {
+    captured.current = { breathing: [], postures: [] };
+    startQueue(CALIBRATION_STEPS.map((_, i) => i));
+  };
+
+  /** Restart the step in progress. Nothing else is discarded. */
+  const redoCurrent = (): void => {
+    if (queue.length === 0) return;
+    setStepEndsAt(Date.now() + durationOf(queue[0]) * 1000);
+  };
+
+  /** Re-run one step alone; its result merges into the existing model. */
+  const redoOne = (id: StepId): void => {
+    const idx = CALIBRATION_STEPS.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    captured.current = { breathing: [], postures: [] };
+    startQueue([idx]);
+  };
+
+  /** Capture now and move on, rather than dropping the step entirely. */
+  const skipCurrent = (): void => {
+    if (queue.length === 0) return;
+    setStepEndsAt(Date.now());
+  };
+
+  const cancel = (): void => setQueue([]);
+
+  const running = queue.length > 0;
+  const stepIndex = running ? queue[0] : null;
+  const step = stepIndex != null ? CALIBRATION_STEPS[stepIndex] : null;
+  const stepDur = stepIndex != null ? durationOf(stepIndex) : 0;
   const remainingSec = running ? Math.max(0, Math.ceil((stepEndsAt - Date.now()) / 1000)) : 0;
+  const isSingle = running && queue.length === 1 && CALIBRATION_STEPS.length > 1;
+  const doneCount = running ? CALIBRATION_STEPS.length - queue.length : 0;
   const st = status?.state ?? 'unknown';
   const thresholds = learnedThresholds(calibrationModel);
   const posture = matchPosture(
@@ -194,6 +271,7 @@ export default function CalibrationPanel({
     sessionLog.accMeanVector(chestStrap, 3, Date.now()),
     sessionLog.accMeanVector(abdoStrap, 3, Date.now()),
   );
+  const totalSec = totalCalibrationSec(breathPeriodSec, calibBreaths);
 
   return (
     <div className="calib">
@@ -211,17 +289,35 @@ export default function CalibrationPanel({
             Sitting: {posture.label} ({Math.round(posture.deg)}° off)
           </span>
         )}
-        <Info text="Checked before anything else, because an accelerometer axis is a direction in the STRAP's frame, not the body's. If the two straps are rotated differently, the same axis points different ways on each and a phase comparison measures how they were put on rather than how you breathe — which is exactly how this app once reported paradoxical breathing on a normal recording." />
+        <Info text="Checked before anything else, because an accelerometer axis is a direction in the STRAP's frame, not the body's. A 20-25° difference between a sternal and an abdominal strap is normal — the chest slopes — so only a much larger angle is flagged." />
         <span style={{ marginLeft: 'auto' }} />
+
         {!running && (
-          <button className="btn primary sm" disabled={!bothLive} onClick={start}>
-            {calibrationModel ? 'Recalibrate' : `Guided calibration (${TOTAL_CALIBRATION_SEC}s)`}
-          </button>
+          <>
+            <Select
+              label="Per step"
+              value={calibBreaths}
+              options={BREATHS_PER_STEP_OPTIONS}
+              onChange={setCalibBreaths}
+              info="How many breaths each breathing demonstration runs for. Counted in breaths rather than seconds because that is what decides whether a demonstration is long enough — 20 s is two breaths at 6 br/min but four at 12. The step length is derived from your own measured breath period."
+            />
+            <button className="btn primary sm" disabled={!bothLive} onClick={startAll}>
+              {calibrationModel ? 'Recalibrate' : `Guided calibration (~${totalSec}s)`}
+            </button>
+          </>
         )}
         {running && (
-          <button className="btn sm" onClick={cancel}>
-            Cancel
-          </button>
+          <>
+            <button className="btn sm" onClick={redoCurrent} title="Restart just this step">
+              Redo step
+            </button>
+            <button className="btn sm" onClick={skipCurrent} title="Capture now and move on">
+              Skip ahead
+            </button>
+            <button className="btn sm" onClick={cancel}>
+              Cancel
+            </button>
+          </>
         )}
       </div>
 
@@ -233,9 +329,14 @@ export default function CalibrationPanel({
         <div className="calib-step">
           <div className="calib-step-head">
             <span className="calib-step-n">
-              Step {(stepIndex ?? 0) + 1} of {CALIBRATION_STEPS.length}
+              {isSingle ? 'Redoing' : `Step ${doneCount + 1} of ${CALIBRATION_STEPS.length}`}
             </span>
             <strong>{step.label}</strong>
+            {step.kind === 'breathing' && (
+              <span className="calib-step-n">
+                {calibBreaths} breaths · {stepDur}s
+              </span>
+            )}
             <span className="calib-count">{remainingSec}s</span>
           </div>
           <div className="calib-instruction">{step.instruction}</div>
@@ -243,10 +344,14 @@ export default function CalibrationPanel({
             <div
               className="calib-bar-fill"
               style={{
-                width: `${100 * (1 - remainingSec / step.seconds)}%`,
+                width: `${100 * (1 - remainingSec / Math.max(1, stepDur))}%`,
                 background: step.kind === 'posture' ? INK.accent : CLASSIFICATION.BALANCED,
               }}
             />
+          </div>
+          <div className="calib-hint">
+            Lost the pattern? <strong>Redo step</strong> restarts this one only — steps already
+            captured are kept.
           </div>
         </div>
       )}
@@ -255,9 +360,15 @@ export default function CalibrationPanel({
         <div className="calib-model">
           <span className="calib-model-title">Learned on this subject:</span>
           {calibrationModel.breathing.map((b) => (
-            <span key={b.id} className="calib-chip">
-              {b.id} <strong>{b.ratio.toFixed(2)}</strong>
-            </span>
+            <button
+              key={b.id}
+              className="calib-chip calib-chip-btn"
+              title={`Redo the ${b.id} demonstration on its own`}
+              disabled={!bothLive}
+              onClick={() => redoOne(b.id)}
+            >
+              {b.id} <strong>{b.ratio.toFixed(2)}</strong> <span className="calib-redo">redo</span>
+            </button>
           ))}
           {thresholds ? (
             <span className="calib-chip">
@@ -269,11 +380,23 @@ export default function CalibrationPanel({
               demonstrations too alike — using the default 0.7 / 1.5
             </span>
           )}
+          {calibrationModel.postures.map((p) => (
+            <button
+              key={p.id}
+              className="calib-chip calib-chip-btn"
+              title={`Recapture the ${p.id} posture on its own`}
+              disabled={!bothLive}
+              onClick={() => redoOne(p.id)}
+            >
+              {p.id} <span className="calib-redo">redo</span>
+            </button>
+          ))}
           <button
             className="btn sm"
             onClick={() => {
               setCalibrationModel(null);
               setPostureReference(null);
+              setAbdoInverted(null);
             }}
           >
             Clear

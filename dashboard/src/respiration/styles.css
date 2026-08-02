@@ -486,6 +486,42 @@ input[type='range'].input {
   font-variant-numeric: tabular-nums;
 }
 
+.calib-chip-btn {
+  font: inherit;
+  font-size: 0.74rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.14s, color 0.14s;
+}
+
+.calib-chip-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-2);
+}
+
+.calib-chip-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.calib-redo {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-left: 0.25rem;
+}
+
+.calib-chip-btn:disabled .calib-redo {
+  color: var(--muted);
+}
+
+.calib-hint {
+  margin-top: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 /* ── Body figure ───────────────────────────────────────────────────────── */
 
 .body-row {

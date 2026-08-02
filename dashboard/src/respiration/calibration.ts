@@ -29,7 +29,13 @@ export interface CalibrationStep {
   kind: 'breathing' | 'posture';
   label: string;
   instruction: string;
+  /** Posture steps: hold still for this long. */
   seconds: number;
+  /** Breathing steps: how many breaths, which is what actually determines
+   * whether the demonstration is long enough. A fixed 20 s is two breaths at
+   * 6 br/min but four at 12 — so the same setting produced very different
+   * amounts of evidence depending on how fast the subject happened to breathe. */
+  breaths?: number;
 }
 
 /**
@@ -55,6 +61,7 @@ export const CALIBRATION_STEPS: readonly CalibrationStep[] = [
     instruction:
       'Breathe deliberately into your upper chest only — shoulders and sternum rising, belly kept still. This is the pattern to be able to RECOGNISE, not the one to aim for.',
     seconds: 20,
+    breaths: 4,
   },
   {
     id: 'diaphragm',
@@ -63,6 +70,7 @@ export const CALIBRATION_STEPS: readonly CalibrationStep[] = [
     instruction:
       'Breathe low and easy so the belly leads and the chest follows gently. This is the target pattern.',
     seconds: 20,
+    breaths: 4,
   },
   {
     id: 'belly',
@@ -71,6 +79,7 @@ export const CALIBRATION_STEPS: readonly CalibrationStep[] = [
     instruction:
       'Push the breath as far into the belly as you comfortably can, chest as still as possible. Marks the far end of the range.',
     seconds: 20,
+    breaths: 4,
   },
   {
     id: 'slouched',
@@ -87,6 +96,56 @@ export const CALIBRATION_STEPS: readonly CalibrationStep[] = [
     seconds: 10,
   },
 ];
+
+/** Breath-count options for the knob. */
+export const BREATHS_PER_STEP_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 2, label: '2 breaths' },
+  { value: 3, label: '3 breaths' },
+  { value: 4, label: '4 breaths' },
+  { value: 6, label: '6 breaths' },
+  { value: 8, label: '8 breaths' },
+];
+
+/** Assumed breath period when none has been measured yet — 10 br/min. */
+export const FALLBACK_BREATH_SEC = 6;
+/** A demonstration shorter than this cannot support a band-passed estimate;
+ * longer than this and people stop cooperating. */
+const MIN_STEP_SEC = 12;
+const MAX_STEP_SEC = 75;
+
+/**
+ * How long a step should run.
+ *
+ * Posture steps are a fixed hold. Breathing steps are `breaths` times the
+ * subject's own measured period, so a slow breather gets the time they need and
+ * a fast one is not held longer than necessary. Clamped at both ends: too short
+ * and the band-pass has nothing to work with, too long and the demonstration
+ * stops being one.
+ */
+export function stepSeconds(
+  step: CalibrationStep,
+  breathPeriodSec: number | null,
+  breathsOverride?: number,
+): number {
+  if (step.kind !== 'breathing' || !step.breaths) return step.seconds;
+  const breaths = breathsOverride ?? step.breaths;
+  const period =
+    breathPeriodSec != null && breathPeriodSec >= 2 && breathPeriodSec <= 20
+      ? breathPeriodSec
+      : FALLBACK_BREATH_SEC;
+  return Math.round(Math.min(MAX_STEP_SEC, Math.max(MIN_STEP_SEC, breaths * period)));
+}
+
+/** Total run time for the whole sequence, given the current settings. */
+export function totalCalibrationSec(
+  breathPeriodSec: number | null,
+  breathsOverride?: number,
+): number {
+  return CALIBRATION_STEPS.reduce(
+    (acc, st) => acc + stepSeconds(st, breathPeriodSec, breathsOverride),
+    0,
+  );
+}
 
 export const TOTAL_CALIBRATION_SEC = CALIBRATION_STEPS.reduce((s, x) => s + x.seconds, 0);
 
@@ -145,6 +204,38 @@ const BREATHING_LABELS: Record<BreathingStepId, string> = {
   diaphragm: 'Diaphragmatic',
   belly: 'Belly',
 };
+
+/**
+ * Fold fresh captures into an existing model, replacing same-id entries.
+ *
+ * This is what makes redoing ONE step possible: a botched belly demonstration
+ * can be replaced without discarding the chest and diaphragm ones, which were
+ * fine and which the subject already sat through.
+ */
+export function mergeCalibration(
+  existing: CalibrationModel | null,
+  breathing: BreathingSignature[],
+  postures: PostureSignature[],
+  axis: AccAxis,
+  now: number,
+): CalibrationModel {
+  const byId = new Map<string, BreathingSignature>();
+  for (const b of existing?.breathing ?? []) byId.set(b.id, b);
+  for (const b of breathing) byId.set(b.id, b);
+  const pById = new Map<string, PostureSignature>();
+  for (const p of existing?.postures ?? []) pById.set(p.id, p);
+  for (const p of postures) pById.set(p.id, p);
+  // Keep the canonical order rather than insertion order, so the UI is stable.
+  const order = CALIBRATION_STEPS.map((s) => s.id);
+  const sortByStep = <T extends { id: string }>(xs: T[]): T[] =>
+    xs.sort((a, b) => order.indexOf(a.id as StepId) - order.indexOf(b.id as StepId));
+  return {
+    breathing: sortByStep([...byId.values()]),
+    postures: sortByStep([...pById.values()]),
+    axis,
+    createdAt: now,
+  };
+}
 
 /**
  * Which demonstration the current ratio most resembles.
