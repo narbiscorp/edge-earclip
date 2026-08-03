@@ -12,11 +12,13 @@
 
 > ### 📝 Changelog
 >
+> **2026-07-08 — sync to current glasses fw main + Mode B/C rename.** Five corrections after re-auditing against glasses-firmware `main` (post-`4.15.6-strobe-sync`), earclip firmware, and the dashboard: (1) **Edge idle advertising teardown is now 2 minutes, not 5** (`BLE_IDLE_TIMEOUT_MS = 120000`), and teardown fully powers down the radio — §2.5, §4.1, §7.6, §8. (2) **Edge supervision timeout is now 32 s, not 20 s** (`supervision_timeout = 3200`, the BLE max — raised for the image-sized OTA erase window) — §1, §4.1, §6.8, §7.9. (3) **The Edge's earclip-central (relay) is compile-disabled on stock builds** — `EARCLIP_CENTRAL_ENABLED 0` eliminates the ~80 mA idle scan drain; §4.6's relay frames/opcodes are implemented but inert unless rebuilt with the flag on — §1, §4.6, §8. (4) **Mode names updated (#85–#90):** Mode B is now the **Static Pacer** (fixed 4.0–10.0 br/min, needs no accelerometer) and the resonance search runs only in **Mode C "Settle & Find"** — §3a and §4.7.1 corrected; **only Mode C requires the H10 accelerometer**. (5) **§3.6 versioning corrected:** the earclip does **not** reject config writes with `config_version < 4` — it ignores the writer's version byte and forces `4` on every accepted write; the `≥ 4` check runs when loading persisted blobs from NVS at boot.
+>
 > **2026-06-30 — Edge audit corrections (synced to glasses firmware `4.15.6-strobe-sync`).** Three Edge-side errors fixed after a line-by-line diff against the live firmware: (1) **§4.4.4 `0xF3` `led_mode` legend was wrong** — the real `led_mode_t` is `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens (there is **no** `off` value); a client decoding byte 20 against the old legend mislabeled every mode. (2) **Breathe+strobe now has an opcode** — `0xB0 0x01` (fw ≥ 4.15.6); the §4.3 opcode table and §4.8.5 are updated (previously documented as "no dedicated standalone opcode yet"). (3) **§6.2 OTA "Recommended chunk size" corrected `240 → 244 B`** (`MTU − 3` at the negotiated MTU 247), reconciling it with §2.4 / §6.8 and `NARBIS_OTA_CHUNK_SIZE = 244`. Earclip-side reference unchanged this pass.
 >
 > **2026-06-17 — coherence is app-side, period.** All coherence + breathing-pacer processing now runs **app-side** in every client (iOS *and* web) via the Mode A/B/C engine; the glasses are a **display** the app drives by commanding the firmware's breathe / static program plus the new **`0xBA` breathe-sync** opcode. New **[§4.8 "Driving the Edge lens"](#48-driving-the-edge-lens)** documents the lens-drive scheme (stream-vs-command, breathe + strobe ops), the **lens duty→opacity floor**, and the **breath-phase sync rule** — send `0xBA` / rate / depth **only at the breath-cycle boundary**, never mid-breath, because the firmware re-renders `wave × depth` every 10 ms from live params and a mid-breath change warps the waveform into a visible stutter. [§4.7](#47-integration-patterns--where-coherence-runs) reframed: app-side is standard; the `0xCA` on-glasses pipeline is legacy/Standard.
 >
-> **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (Follow / Resonance / Standard); [§4.7](#47-integration-patterns--where-coherence-runs) frames app-side (recommended) vs the legacy on-glasses path.
+> **2026-06-16 — app-side Coherence Engine.** The dashboard can now run the full coherence + breathing-pacer algorithm app-side and drive the lens by **commanding the firmware's own breathe / static program** (`0xB0` + `0xB1` rate + `0xA2` depth, or `0xA5` static setpoint) instead of streaming per-tick PWM or routing through the `0xCA` built-in pipeline. New companion doc [`coherence-engine.md`](./coherence-engine.md) covers the architecture and the three modes (then named Follow / Resonance / Standard — **since renamed:** B is the Static Pacer, the resonance search lives in Mode C "Settle & Find"; see the 2026-07-08 entry); [§4.7](#47-integration-patterns--where-coherence-runs) frames app-side (recommended) vs the legacy on-glasses path.
 >
 > **2026-06-09 — audit + sync to current firmware.** Notable changes since the previous version of this doc:
 >
@@ -30,7 +32,7 @@
 > - **§3.1.8 diagnostics bitmask:** added `0x20 DETECTOR_STATS` (adaptive-detector per-beat snapshot, v4 / Path C only).
 > - **`0xB6` pulse-on-beat note:** clarified it works with `0xCA`-injected H10 beats too, not just earclip beats via the relay.
 > - **`0xF2` coherence frame, byte 17:** was documented as `reserved`, is now `pacer_bpm` (current adaptive-pacer target BPM, PR #31 / #32). Length is still 18 B.
-> - **Earclip `narbis_runtime_config_t`:** bumped from Path B (`config_version 3`, 48-byte struct, 50-byte wire) to Path C (`config_version 4`, 72-byte struct, 74-byte wire) with 16 new adaptive-detector + Layer-E auxiliary fields appended. First 48 bytes are byte-identical between v3 and v4 — partial v3 reads still work. v4 firmware rejects writes with `config_version < 4` though, so always set `config_version = 4` when writing. See [§3.6](#36-the-runtime-config-struct).
+> - **Earclip `narbis_runtime_config_t`:** bumped from Path B (`config_version 3`, 48-byte struct, 50-byte wire) to Path C (`config_version 4`, 72-byte struct, 74-byte wire) with 16 new adaptive-detector + Layer-E auxiliary fields appended. First 48 bytes are byte-identical between v3 and v4 — partial v3 reads still work. ~~v4 firmware rejects writes with `config_version < 4`~~ **(Corrected 2026-07-08: the firmware ignores the writer-supplied version byte and forces `config_version = 4` on every accepted write; the `≥ 4` check runs at NVS load, not on writes.)** See [§3.6](#36-the-runtime-config-struct).
 > - **Relayed CONFIG frame `0xF4`:** grew from 51 B (1 + 50) to 75 B (1 + 74) as a consequence of the v4 struct.
 > - **§9.4 firmware index:** replaced stale Edge `main.c` line numbers with function-name anchors so the table doesn't rot every commit.
 
@@ -39,14 +41,14 @@
 > The architecture changed substantially in 2025. Important consequences for iOS:
 >
 > - **ESP-NOW is gone.** The earclip is BLE-only. Wi-Fi is no longer brought up.
-> - **The Edge is now dual-role.** It is still a BLE peripheral (talks to your iOS app on `0x00FF`) **and** is now also a BLE central that connects to the earclip and **relays** earclip data through to you on the same `0x00FF` service via new frame types (`0xF4`–`0xFA`). See [§4.6](#46-the-edge-as-relay-path-b).
+> - **The Edge is now dual-role.** It is still a BLE peripheral (talks to your iOS app on `0x00FF`) **and** is now also a BLE central that connects to the earclip and **relays** earclip data through to you on the same `0x00FF` service via new frame types (`0xF4`–`0xFA`). See [§4.6](#46-the-edge-as-relay-path-b). **⚠️ 2026-07: the central/relay is compile-disabled on stock builds** (`EARCLIP_CENTRAL_ENABLED 0`) — see the note at the top of §4.6.
 > - **The earclip is multi-central.** Your iOS app and the Edge can be connected to it simultaneously. Each central writes its role on connect to a new **PEER_ROLE characteristic** (see [§3.7](#37-peer_role--e987719a)) so the earclip knows which conn-update profile to apply.
 > - **Mode is now 2-axis.** The old `transport_mode` field is gone — only `ble_profile` and `data_format` remain. `narbis_runtime_config_t` shrank from 56 → 48 bytes in Path B (`config_version 3`) and has since **grown to 72 bytes** in Path C (`config_version 4`) with the adaptive-detector knobs (NCC template, Kalman gate, watchdog). Wire size with CRC is **74 B**. The first 48 bytes are identical to Path B; defaults make the new fields no-ops (`detector_mode = FIXED`) so legacy Path-B-aware clients still interoperate. See [§3.6](#36-the-runtime-config-struct).
 > - **New Edge opcodes** `0xC1` (forget earclip), `0xC3` (relay config write to earclip), `0xC4` (toggle raw-PPG relay), `0xC5` (refresh earclip config), `0xCA` (external-IBI injection for Polar H10), `0xCB` (set HR source), `0xE0` (coherence-pipeline tuning) — see [§4.3](#43-control-characteristic-0xff01--command-opcodes).
 >
 > **Two valid integration patterns** for an iOS app:
 > 1. **Direct, two-connection** — connect to both the earclip and the Edge separately. Best if you want raw earclip data with no extra hop.
-> 2. **Single-connection via Edge** — connect only to the Edge; receive relayed earclip IBI/battery/config/raw/diagnostics on `0xFF03` frames `0xF4`–`0xFA`. Simpler from a CoreBluetooth state-management standpoint.
+> 2. **Single-connection via Edge** — connect only to the Edge; receive relayed earclip IBI/battery/config/raw/diagnostics on `0xFF03` frames `0xF4`–`0xFA`. Simpler from a CoreBluetooth state-management standpoint — but **requires a relay-enabled firmware build** ([§4.6](#46-the-edge-as-relay-path-b)); stock builds ship with the relay off.
 
 ---
 
@@ -71,14 +73,14 @@
 | Advertised name | `Narbis_Edge` (exact match) | `Narbis Earclip <mac>` (prefix match) |
 | MCU | ESP32 classic | ESP32-C6 |
 | BLE stack | NimBLE | NimBLE |
-| BLE roles | **peripheral + central** (Path B: connects to earclip itself) | peripheral, **multi-central** (up to 3 simultaneous) |
+| BLE roles | **peripheral + central** (Path B: connects to earclip itself) — ⚠️ central **compile-disabled on stock builds** ([§4.6](#46-the-edge-as-relay-path-b)) | peripheral, **multi-central** (up to 3 simultaneous) |
 | Custom primary service | none advertised | `a24080b2-8857-4785-b3ba-a43b66af4f28` (128-bit) |
 | Standard SIG services | none | HRS `0x180D`, Battery `0x180F`, DIS `0x180A` |
 | OTA service UUID | `0x00FF` (chars `0xFF01`–`0xFF04`) | `0x00FF` (chars `0xFF01`–`0xFF03`) |
 | Encryption / bonding | none | none |
 | Negotiated MTU | requests 247 | requests 247 |
-| Connection interval (typical) | 20–30 ms, slave latency 1, 20 s timeout | per-central, picked from the role byte: DASHBOARD → LOW_LATENCY (15–30 ms), GLASSES → BATCHED (50–100 ms) |
-| Earclip ↔ Edge link | **BLE central role** (Edge is the central; earclip is peripheral). ESP-NOW removed in Path B. | Same — earclip is the peripheral |
+| Connection interval (typical) | 20–30 ms, slave latency 1, 32 s timeout | per-central, picked from the role byte: DASHBOARD → LOW_LATENCY (15–30 ms), GLASSES → BATCHED (50–100 ms) |
+| Earclip ↔ Edge link | **BLE central role** (Edge is the central; earclip is peripheral). ESP-NOW removed in Path B. **Compile-disabled on stock builds** ([§4.6](#46-the-edge-as-relay-path-b)). | Same — earclip is the peripheral |
 
 > ### ⚠️ Critical gotcha — UUID collision
 >
@@ -224,7 +226,7 @@ This value is final only **after** services are discovered. Both devices request
 
 Both devices auto-resume advertising on disconnect. From your `centralManager(_:didDisconnectPeripheral:error:)` delegate, just call `central.connect(peripheral, options: ...)` again.
 
-> **Edge-only quirk:** the glasses tear down their advertising entirely after **5 minutes** with no client connected. The user has to wake the device (magnet tap on the temple) to start advertising again. Surface this in your UX rather than silently retrying forever.
+> **Edge-only quirk:** the glasses tear down their advertising entirely after **2 minutes** with no client connected (`BLE_IDLE_TIMEOUT_MS = 120000`; was 5 minutes before fw main 2026-07) — and the teardown fully powers down the radio. The user has to wake the device (magnet tap on the temple) to start advertising again. Surface this in your UX rather than silently retrying forever.
 
 ---
 
@@ -652,11 +654,11 @@ The full `narbis_runtime_config_t` is **72 bytes packed** (Path C / `config_vers
 > - `config_version 3` — Path B, **50-byte** payload (ESP-NOW fields removed).
 > - `config_version 4` — Path C (current), **74-byte** payload (adaptive-detector + Layer-E auxiliary fields appended).
 >
-> The first 48 bytes of v3 and v4 are **byte-identical**. An iOS client that only knows v3 can still safely read everything it understands by ignoring bytes 48..71 — but writes to a v4 firmware must set `config_version = 4` (offset 0), because the firmware rejects NVS blobs with `config_version < 4` and falls back to defaults.
+> The first 48 bytes of v3 and v4 are **byte-identical**. An iOS client that only knows v3 can still safely read everything it understands by ignoring bytes 48..71. The version byte is **firmware-owned**: on a CONFIG_WRITE the firmware ignores whatever `config_version` the writer sent and forces it to `4` before persisting (a v3-style write is accepted, not rejected — write validation only range-checks the fields). The `config_version ≥ 4` check runs at NVS **load**: a persisted v1/v2/v3 blob is rejected at boot and the firmware falls back to defaults.
 
 | Offset | Size | Field | Default | Range / values | Notes |
 |---|---|---|---|---|---|
-| 0 | 2 | `config_version` | 4 | u16 LE | Must be `4` for current Path C firmware |
+| 0 | 2 | `config_version` | 4 | u16 LE | Firmware-owned: writer's value is ignored and forced to `4` on every accepted write |
 | 2 | 2 | `sample_rate_hz` | 200 | 50, 100, 200, 400 | **Reboot to apply** |
 | 4 | 2 | `led_red_ma_x10` | 70 | 0–510 (×10 mA) | Default 7.0 mA |
 | 6 | 2 | `led_ir_ma_x10` | 70 | 0–510 (×10 mA) | Default 7.0 mA |
@@ -797,19 +799,19 @@ function narbisCrc16(buf, len) {
 
 ## 3a. Polar H10 — app-side data source
 
-> **Why this section exists.** In app-side mode (the standard — [§4.7.1](#471-app-side-coherence--recommended-mode-abc)) the app computes coherence itself, so it reads the sensor **directly**. The Polar H10 is the reference sensor. **Modes B and C cannot run without the H10's accelerometer** (the independent respiration channel that verifies resonance against the Mayer wave) — an app that reads only heart rate will silently fail those modes.
+> **Why this section exists.** In app-side mode (the standard — [§4.7.1](#471-app-side-coherence--recommended-mode-abc)) the app computes coherence itself, so it reads the sensor **directly**. The Polar H10 is the reference sensor. **Mode C cannot run without the H10's accelerometer** (the independent respiration channel that verifies the resonance search against the Mayer wave) — an app that reads only heart rate will silently fail Mode C. Modes A and B need beats only (the accelerometer is optional there, feeding the breath–heart cross-coherence readout).
 
 ### 3a.1 What each mode needs
 
 | Mode | Inputs the engine consumes | H10 services |
 |---|---|---|
 | **A — Follow** | RR intervals | HR `0x180D` / `0x2A37` |
-| **B — Resonance** | RR **+ accelerometer** | HR `0x180D` **+ PMD `fb005c80-…`** |
-| **C — Standard (Settle & Find)** | RR **+ accelerometer** | HR `0x180D` **+ PMD `fb005c80-…`** |
+| **B — Static Pacer** | RR intervals (fixed paced rate you set — no search) | HR `0x180D` / `0x2A37` |
+| **C — Settle & Find (resonance search)** | RR **+ accelerometer** | HR `0x180D` **+ PMD `fb005c80-…`** |
 
-Connect to the H10, subscribe to the **standard Heart Rate Service** for RR ([§3a.2](#3a2-rr-from-the-standard-hr-service--beat-timestamp-reconstruction)), and for **B/C** also start the **PMD accelerometer stream** ([§3a.3](#3a3-accelerometer-via-the-pmd-service-mode-bc)). The earclip can substitute as the RR source (its IBI characteristic, [§3.1.1](#311-ibi--78ef492f)) but has **no accelerometer** — B/C require the H10.
+Connect to the H10, subscribe to the **standard Heart Rate Service** for RR ([§3a.2](#3a2-rr-from-the-standard-hr-service--beat-timestamp-reconstruction)), and for **Mode C** also start the **PMD accelerometer stream** ([§3a.3](#3a3-accelerometer-via-the-pmd-service-mode-c)). The earclip can substitute as the RR source (its IBI characteristic, [§3.1.1](#311-ibi--78ef492f)) but has **no accelerometer** — Mode C requires the H10.
 
-> **Apple Watch caveat.** watchOS / HealthKit does **not** expose reliable beat-to-beat RR intervals to third-party apps, nor an accelerometer-respiration stream equivalent to the H10's PMD. Treat "Apple Watch as HR source" as experimental for **Mode A only** — it is **not** a drop-in for Mode B/C.
+> **Apple Watch caveat.** watchOS / HealthKit does **not** expose reliable beat-to-beat RR intervals to third-party apps, nor an accelerometer-respiration stream equivalent to the H10's PMD. Treat "Apple Watch as HR source" as experimental for **Modes A/B** — and it is **not** a drop-in for Mode C (no accelerometer-respiration stream to verify the search).
 
 ```js
 // dashboard/src/ble/polarH10.ts — connect (both HR + PMD in optionalServices so both are reachable):
@@ -837,7 +839,7 @@ function walkPolarBeatClock(prev, receiveTs, rrs) {            // prev = last em
 }
 ```
 
-### 3a.3 Accelerometer via the PMD service (Mode B/C)
+### 3a.3 Accelerometer via the PMD service (Mode C)
 
 The H10 exposes its accelerometer through Polar's **PMD (Polar Measurement Data)** service — **not** the HR characteristic. Three characteristics:
 
@@ -884,11 +886,11 @@ The Edge advertises one custom service, **`0x00FF`**, with four characteristics 
 | Adv type | connectable + scannable (`ADV_IND`) |
 | TX power | **0 dBm uniform** (all TX types: ADV / SCAN / CONN). Bumped from the prior tiered `−6 dBm` adv / `−12 dBm` connected scheme to maximize range at ~+1 mA idle cost. Roughly 4× connected range and 2× advertising range vs. the old scheme. |
 | Adv flags | GENERAL_DISCOVERABLE + BR/EDR_NOT_SUPPORTED |
-| Idle teardown | After 5 minutes with no client connected, the BLE stack shuts down completely (radio off). Re-armed on magnet tap or wake. |
+| Idle teardown | After **2 minutes** with no client connected (`BLE_IDLE_TIMEOUT_MS = 120000`), the BLE stack shuts down completely (full radio power-down). Re-armed on magnet tap or wake. |
 | Requested MTU | **247** (`ble_att_set_preferred_mtu(247)`). Older revisions of this doc said 517 — that was never accurate. |
 | Connection interval | 20–30 ms |
 | Slave latency | 1 |
-| Supervision timeout | 20 s (long, because OTA partition erase can block for up to 19 s) |
+| Supervision timeout | **32 s** — the BLE-spec max (`supervision_timeout = 3200`; raised from 20 s because the OTA begin now erases an image-sized region, which can block the radio well past 19 s) |
 | Pairing / encryption | none |
 
 ### 4.2 Service `0x00FF` — characteristic map
@@ -1398,6 +1400,10 @@ Detect by reading the type byte; both share characteristic `0xFF04`.
 
 ### 4.6 The Edge as relay (Path B)
 
+> ### ⚠️ Relay disabled on stock firmware (since fw main 2026-07)
+>
+> Current glasses builds ship with **`EARCLIP_CENTRAL_ENABLED 0`** (`components/narbis_ble_central/narbis_ble_central.c`) — the central radio stays dark, eliminating the **~80 mA** active-scan drain when no earclip is in use. Everything in this section (pairing, the relay frames `0xF4`–`0xF9`, and the relay-control opcodes `0xC1` / `0xC3` / `0xC4` / `0xC5`) is implemented but **inert** unless the firmware is rebuilt with the flag set to `1`. On stock builds, use **Pattern A** (direct earclip connection) for earclip data, or feed beats to the glasses via `0xCA` ([§4.7.2](#472-legacy--standard-on-glasses-mode-0xca--0xb7)).
+
 🆕 **New architecture.** The Edge is no longer just a peripheral — it also runs a NimBLE **central** that scans for, pairs with, and persistently reconnects to the earclip. Once linked, the Edge transparently forwards earclip notifications to whichever phone is connected to it.
 
 ```
@@ -1444,7 +1450,7 @@ In addition the Edge emits its own `0xF6` relay-link-state, `0xFA` link-quality,
 | Pattern | When to use it | Trade-offs |
 |---|---|---|
 | **A. Direct (two connections)** — connect to both the earclip and the Edge separately. | You want lowest-latency raw IBI for your own HRV pipeline; you want full control of earclip config. | More CoreBluetooth state to manage; user sees two devices in the system Bluetooth picker if they ever pair. |
-| **B. Single connection via Edge** — connect only to the Edge; consume `0xF4`/`0xF5`/`0xF6`/`0xF7` from `0xFF03`. | You're building a companion app that mainly drives Edge sessions; raw earclip-side data is enough via the relay. | One fewer connection to manage. Slight extra latency on relayed frames (one BLE hop). Earclip config writes go through the Edge via `0xC3` (still landing as a CONFIG_WRITE on the earclip end). |
+| **B. Single connection via Edge** — connect only to the Edge; consume `0xF4`/`0xF5`/`0xF6`/`0xF7` from `0xFF03`. **Requires a relay-enabled build** (`EARCLIP_CENTRAL_ENABLED 1` — see the note at the top of this section). | You're building a companion app that mainly drives Edge sessions; raw earclip-side data is enough via the relay. | One fewer connection to manage. Slight extra latency on relayed frames (one BLE hop). Earclip config writes go through the Edge via `0xC3` (still landing as a CONFIG_WRITE on the earclip end). |
 
 ```swift
 // Pattern B: read the relay state and decide whether to expect earclip data.
@@ -1524,7 +1530,7 @@ There are two ways to put coherence on the glasses. **Pattern A (app-side) is th
 
 #### 4.7.1 App-side coherence — recommended (Mode A/B/C)
 
-The app computes coherence + the breathing pacer itself — the **Mode A/B/C engine** (Follow / Resonance / Standard) — from whatever HR source it has (Polar H10, Apple Watch, an app-internal PPG detector, or the earclip's own IBI notifications). The glasses are a **display**: the app **drives the lens by commanding the firmware's breathe / static program**, so the glasses still render the smooth waveform locally while the app owns the algorithm. This is the path the Narbis dashboard uses and the one new iOS / web clients should implement.
+The app computes coherence + the breathing pacer itself — the **Mode A/B/C engine** (A **Follow** · B **Static Pacer** · C **Settle & Find**, the resonance search) — from whatever HR source it has (Polar H10, Apple Watch, an app-internal PPG detector, or the earclip's own IBI notifications). The glasses are a **display**: the app **drives the lens by commanding the firmware's breathe / static program**, so the glasses still render the smooth waveform locally while the app owns the algorithm. This is the path the Narbis dashboard uses and the one new iOS / web clients should implement.
 
 - **How to drive the lens:** see [§4.8 "Driving the Edge lens"](#48-driving-the-edge-lens) — the breathe ops, the strobe ops, the duty→opacity floor, and the breath-phase sync rule.
 - **The algorithm to reproduce:** [`coherence-engine.md`](./coherence-engine.md) (architecture + the three modes) and [`coherence-algorithm-reference.md`](./coherence-algorithm-reference.md) (the verbatim pipeline: outlier gate, IBI ring, Lomb–Scargle / FFT, band integration, peak pick, EWMA, adaptive pacer).
@@ -1595,7 +1601,7 @@ function injectIbi(chCtrl, ibi_ms, conf = 100, flags = 0) {
 - **Use `.withoutResponse`** for per-beat writes — `.withResponse` adds a round-trip per beat and you don't need the ACK.
 - **You don't need to gate yourself.** The Edge silently drops beats with `confidence < g_coh_params.conf_threshold` (default 50) or `flags & ARTIFACT`. If your source has no confidence/quality signal, just pass `confidence = 100`.
 - **R-R interval bit width.** The doc's `ibi_ms` field is `u16` — values up to 65535 ms. Polar H10's `0x2A37` carries R-R in 1/1024-second units in a `u16`; convert before forwarding.
-- **Setting source = `1` (H10) pauses** the Edge's BLE central scan for the earclip — saves power, prevents the earclip pipeline from competing if both happen to be in range. Setting it back to `0` resumes the scan.
+- **Setting source = `1` (H10) pauses** the Edge's BLE central scan for the earclip — saves power, prevents the earclip pipeline from competing if both happen to be in range. Setting it back to `0` resumes the scan. (On stock builds this is moot — the central is compile-disabled entirely, [§4.6](#46-the-edge-as-relay-path-b).)
 - **Pulse-on-beat program (`0xB7 0`)** works with `0xCA` beats — the lens pulses each time your `0xCA` write lands. No earclip required.
 - **Coherence updates** arrive on `0xFF03` as `0xF2` frames once per second (see [§4.4.3](#443-coherence-packet-0xf2--18-b)). Byte 17 carries the current adaptive-pacer BPM if `0xB9` is enabled — useful for an in-app overlay.
 - **For tuning sliders / sensitivity presets**, see [§4.3.1 Edge-side algorithm tuning](#431-edge-side-algorithm-tuning). The `0xB8` difficulty preset (Easy/Medium/Hard/Expert) is the cheapest UX hook.
@@ -2012,7 +2018,7 @@ async function sendPageChunks(cD /* 0xFF02 */, pageData) {
 // Same state machine as the Swift above. Full impl (crc32 table, retries, MTU-safe chunking) in webapp/ota/index.html.
 ```
 
-> **Do NOT treat a 5–10 second silence on `0xFF03` mid-OTA as a stall.** When the Edge erases its update partition, the radio can be blocked for **up to 19 seconds**. The 20-second supervision timeout is set for exactly this reason. Don't call `cancelPeripheralConnection` until you've waited at least 25 s with no progress.
+> **Do NOT treat a 5–10 second silence on `0xFF03` mid-OTA as a stall.** When the Edge erases its update partition at OTA begin (an image-sized region), the radio can be blocked for **well past 19 seconds** on worn flash. The **32-second** supervision timeout (the BLE max) is set for exactly this reason. Don't call `cancelPeripheralConnection` until you've waited at least 35 s with no progress.
 
 ---
 
@@ -2044,7 +2050,7 @@ Neither device sends an explicit failure response for an out-of-range command �
 
 ### 7.6 Edge advertising teardown
 
-After 5 minutes of no client connection the Edge powers down its BLE radio entirely. Surface this in your UX: "Tap your glasses to wake them" rather than spinning a connect retry forever.
+After **2 minutes** of no client connection the Edge powers down its BLE radio entirely (was 5 minutes before fw main 2026-07). Surface this in your UX: "Tap your glasses to wake them" rather than spinning a connect retry forever.
 
 ### 7.7 Reconnection
 
@@ -2056,7 +2062,7 @@ If you build a background-scanning app, set `CBCentralManagerOptionRestoreIdenti
 
 ### 7.9 watchOS
 
-watchOS 6+ supports Core Bluetooth identically (you'll need the `bluetooth-central` background mode in your `WKExtension` plist). Connection parameter ranges are tighter on Apple Watch than iPhone — test on real hardware. Our supervision timeout of 20 s on Edge is well within watchOS limits.
+watchOS 6+ supports Core Bluetooth identically (you'll need the `bluetooth-central` background mode in your `WKExtension` plist). Connection parameter ranges are tighter on Apple Watch than iPhone — test on real hardware. Our supervision timeout of 32 s on Edge is well within watchOS limits.
 
 ### 7a. Web Bluetooth gotchas
 
@@ -2086,15 +2092,15 @@ button.addEventListener('click', async () => {
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Can't see Edge in scan | 5-minute idle teardown after disconnect | User taps the magnet on the glasses to re-arm advertising |
+| Can't see Edge in scan | 2-minute idle teardown after disconnect (radio fully powered down) | User taps the magnet on the glasses to re-arm advertising |
 | Both devices appear with the same service UUID | They share `0x00FF` for OTA | Disambiguate by `peripheral.name` |
 | OTA fails immediately on earclip with err `0x06` | Battery SoC < 30 % | Charge the earclip before retry |
 | OTA fails on earclip with err `0x07` | Wrong `.bin` (Edge image targeted at earclip) | Validate the chip-id field (offset `0x0C`) before sending |
-| Connection drops mid-OTA | iOS cancelled before partition erase finished | Don't call `cancelPeripheralConnection` for at least 25 s after last progress |
+| Connection drops mid-OTA | iOS cancelled before partition erase finished | Don't call `cancelPeripheralConnection` for at least 35 s after last progress |
 | MODE write succeeds but format unchanged | Wrote to the wrong characteristic UUID | Verify you're using `71db6de8-…` (earclip-only) — not `0xFF01` |
 | Notifications stop after a few seconds | Forgot to enable the CCCD | `peripheral.setNotifyValue(true, for: chr)` for every notify char |
 | Garbled CONFIG read | Skipped CRC verification | Validate the last 2 B with CRC-16-CCITT-FALSE; it should match a CRC over `data.count - 2` payload bytes (72 B for v4 / Path C, 48 B for v3 / Path B) |
-| Coherence packets always show `n_ibis_used = 0` | Edge isn't linked to the earclip | Check the latest `0xF6` relay-state frame on `0xFF03`; if `linked=0`, send `0xC1` and let the Edge re-pair, or get the earclip into range |
+| Coherence packets always show `n_ibis_used = 0` | Edge isn't receiving beats — on stock builds the earclip central is compile-disabled ([§4.6](#46-the-edge-as-relay-path-b)) | Feed beats via `0xCA` (§4.7.2). On a relay-enabled build: check the latest `0xF6` relay-state frame on `0xFF03`; if `linked=0`, send `0xC1` and let the Edge re-pair, or get the earclip into range |
 | `0xF4`/`0xF5` frames never arrive even with `0xF6 linked=1` | Earclip has no skin contact / no signal | Confirm with earclip BATTERY notify or SQI; raw stream needs `0xC4 1` to be enabled |
 | New iOS app gets stuck at BATCHED cadence even after writing PEER_ROLE | Wrote PEER_ROLE *after* enabling notifies | Re-order: write `[0x01]` to PEER_ROLE first, then `setNotifyValue(true, …)` on IBI |
 | Earclip CONFIG read returns 74 B but parser expects 50 B (or 58 B) | Parser stuck on an older `config_version` | Branch on `config_version` (offset 0): `≤2` legacy 56-B struct, `3` Path B 48-B struct, `4` Path C 72-B struct. The first 48 bytes of v3 and v4 are identical, so a v3-only parser can read everything it knows from a v4 frame by ignoring bytes 48..71 |
