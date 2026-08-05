@@ -56,9 +56,33 @@ import {
   type NarbisRuntimeConfig,
   type DiagnosticSample,
 } from './parsers';
-import { edgeDevice } from './edgeDevice';
+import { V2Session, detectV2 } from './v2/session';
+import {
+  V2_SENSOR_SVC,
+  STREAM_PPG, STREAM_IBI, STREAM_EVENT,
+  RATE_SPS, SPS_RATE_CODE,
+  AGC_APPLY_IR, AGC_APPLY_RED, AGC_APPLY_GAIN,
+  buildStreamStart, buildStreamStop, buildSetRate, buildAgcFreeze,
+  buildAgcManual, buildKnobSet, buildKnobGet, buildKnobSave, buildMarker,
+  parseKnobValue,
+  type V2Status, type V2PpgBatch, type V2IbiRecord,
+} from './v2/protocol';
 
 export type NarbisStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
+/* Which earclip generation we are talking to.
+ *   v1 — original MAX30102 board, protocol in ../../protocol/
+ *   v2 — V2.1 AFE4404 board, protocol in ./v2/protocol.ts
+ * Detected at connect time from the advertised GATT services; the user never
+ * has to say which board is in their hand. Both emit the SAME dashboard
+ * events (beatReceived / rawSampleReceived / batteryReceived / ...) so every
+ * chart, recorder and metric downstream is generation-agnostic. */
+export type NarbisProtocolVersion = 'v1' | 'v2' | null;
+
+/** Live V2 telemetry mirrored out of STATUS notifications, for the tuning UI. */
+export interface NarbisV2StatusEvent extends V2Status {
+  timestamp: number;
+}
 
 export interface NarbisBeatEvent {
   bpm: number;
@@ -127,9 +151,42 @@ export class NarbisDevice extends EventTarget {
   private _status: NarbisStatus = 'disconnected';
   private _deviceName: string | null = null;
   private lastSqi: number | null = null;
+  /* V2 (AFE4404) session — null while disconnected or when talking to a v1
+   * earclip. Its presence is the single source of truth for `isV2`. */
+  private v2Session: V2Session | null = null;
+  private _protocol: NarbisProtocolVersion = null;
+  private _v2Status: V2Status | null = null;
+  /* Device clock (µs since boot) of the first PPG sample we saw, paired with
+   * the host time at that moment. Lets us stamp every later sample on the
+   * host timeline without accumulating BLE jitter: batches carry an exact
+   * device t0, so we anchor once and add device deltas. */
+  private v2ClockAnchor: { devUs: number; hostMs: number } | null = null;
 
   get status(): NarbisStatus {
     return this._status;
+  }
+
+  /** Which earclip generation is connected (null when disconnected). */
+  get protocolVersion(): NarbisProtocolVersion {
+    return this._protocol;
+  }
+
+  /** True when the connected board is the V2.1 AFE4404 earclip. Drives which
+   * tuning UI the dashboard shows. */
+  get isV2(): boolean {
+    return this._protocol === 'v2';
+  }
+
+  /** Last STATUS frame from a V2 device (LED currents, TIA gain, rate, HR,
+   * battery, counters). Null on v1 or before the first notification. */
+  get v2Status(): V2Status | null {
+    return this._v2Status;
+  }
+
+  /** Sample rate the V2 device is currently running, in Hz. */
+  get v2SampleRate(): number {
+    const code = this._v2Status?.ppgRateCode;
+    return code !== undefined ? (RATE_SPS[code] ?? 100) : 100;
   }
 
   get deviceName(): string | null {
@@ -153,13 +210,26 @@ export class NarbisDevice extends EventTarget {
       // NARBIS_SVC_UUID is moved into optionalServices so the
       // post-connect getPrimaryService() call is permitted regardless
       // of which filter actually matched.
+      // Filters are an OR-set covering BOTH earclip generations:
+      //   v1 — custom service UUID, or name "Narbis Earclip <MAC suffix>"
+      //   v2 — Narbis Sensor Service, or name "Narbis Edge Earclip[ TEST]"
+      // Service-UUID matching is preferred (Linux/Android/macOS and many
+      // Windows configs); the name prefixes are the fallback for Windows
+      // builds whose WinRT stack strips 128-bit UUIDs from the
+      // advertisement before Chrome sees them. Note "Narbis Earclip" is
+      // NOT a prefix of "Narbis Edge Earclip", so v2 needs its own entry.
+      // Both services also go in optionalServices so the post-connect
+      // getPrimaryService() probe is permitted whichever filter matched.
       const device = await navigator.bluetooth.requestDevice({
         filters: [
           { services: [NARBIS_SVC_UUID] },
+          { services: [V2_SENSOR_SVC] },
           { namePrefix: 'Narbis Earclip' },
+          { namePrefix: 'Narbis Edge Earclip' },
         ],
         optionalServices: [
           NARBIS_SVC_UUID,
+          V2_SENSOR_SVC,
           HEART_RATE_SERVICE,
           BATTERY_SERVICE,
           DEVICE_INFO_SERVICE,
@@ -257,21 +327,16 @@ export class NarbisDevice extends EventTarget {
     }
   }
 
-  /** Write a runtime config to the earclip. Prefers the direct path if
-   * the dashboard holds an open earclip session; otherwise falls through
-   * to the glasses' relay (Path B Phase 1: 0xC3 forward). Throws only if
-   * neither path is available. */
+  /** Write a runtime config to a v1 earclip over the direct BLE session.
+   * (The glasses relay path was removed with the rest of the on-glasses
+   * support — the training dashboard talks to the earclip directly.)
+   * V2 devices configure through the knob registry instead; see v2KnobSet. */
   async writeConfig(cfg: NarbisRuntimeConfig): Promise<void> {
-    const blob = serializeConfig(cfg);
-    if (this.chConfigWrite) {
-      await this.chConfigWrite.writeValueWithResponse(toBufferSource(blob));
-      return;
+    if (this._protocol === 'v2') {
+      throw new Error('v1 config struct is not supported on a V2 earclip — use knobs');
     }
-    if (edgeDevice.isConnected) {
-      await edgeDevice.forwardEarclipConfigWrite(blob);
-      return;
-    }
-    throw new Error('not connected to earclip (direct or via glasses)');
+    if (!this.chConfigWrite) throw new Error('not connected to earclip');
+    await this.chConfigWrite.writeValueWithResponse(toBufferSource(serializeConfig(cfg)));
   }
 
   async writeMode(profile: number, format: number): Promise<void> {
@@ -284,6 +349,18 @@ export class NarbisDevice extends EventTarget {
     if (!this.device?.gatt) throw new Error('no GATT server');
     this.emitPhase('connecting-gatt');
     this.server = await this.device.gatt.connect();
+
+    /* Generation probe. The V2.1 board publishes the Narbis Sensor Service;
+     * the v1 board publishes the older custom service. Probing costs one
+     * getPrimaryService round-trip and removes any "which board is this?"
+     * question from the operator. */
+    this.emitPhase('detecting-protocol');
+    if (await detectV2(this.server)) {
+      this._protocol = 'v2';
+      await this.openV2Session();
+      return;
+    }
+    this._protocol = 'v1';
 
     this.emitPhase('discovering-services');
     let narbisSvc: BluetoothRemoteGATTService;
@@ -389,6 +466,148 @@ export class NarbisDevice extends EventTarget {
     } catch (err) {
       this.emitError(err, 'battery-svc-optional');
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* V2 (AFE4404) session                                                */
+  /* ------------------------------------------------------------------ */
+
+  /** Bring up a V2 earclip and translate its streams into the dashboard's
+   * existing event vocabulary, so nothing downstream needs to know which
+   * board generation produced the data. */
+  private async openV2Session(): Promise<void> {
+    if (!this.server) throw new Error('no GATT server');
+    this.v2ClockAnchor = null;
+
+    const session = new V2Session(this.server, {
+      onPpg: this.onV2Ppg,
+      onIbi: this.onV2Ibi,
+      onStatus: this.onV2Status,
+      onError: (err, phase) => this.emitError(err, phase),
+      onPhase: (p) => this.emitPhase(p),
+    });
+    await session.open();
+    this.v2Session = session;
+
+    /* Acquisition on this firmware is subscription-gated AND has explicit
+     * start/stop opcodes; subscribing alone is not enough to guarantee the
+     * engine runs, so ask for it. Without this the LEDs stay dark and the
+     * charts stay empty — the exact "dashboard looks dead" trap. */
+    this.emitPhase('v2-starting-streams');
+    try {
+      await session.controlOk(buildStreamStart(STREAM_PPG | STREAM_IBI | STREAM_EVENT));
+    } catch (err) {
+      this.emitError(err, 'v2-stream-start');
+    }
+  }
+
+  /** Map a device-clock microsecond stamp onto the host timeline. The first
+   * sample anchors the two clocks; later samples are placed by device delta
+   * so per-notification BLE jitter never shifts sample spacing. */
+  private v2HostTime(devUs: number): number {
+    if (!this.v2ClockAnchor) {
+      this.v2ClockAnchor = { devUs, hostMs: Date.now() };
+      return this.v2ClockAnchor.hostMs;
+    }
+    return this.v2ClockAnchor.hostMs + (devUs - this.v2ClockAnchor.devUs) / 1000;
+  }
+
+  private onV2Ppg = (b: V2PpgBatch): void => {
+    const sps = RATE_SPS[b.rateCode] ?? 100;
+    /* Re-shape into the v1 raw-PPG event so SignalChart/recording are
+     * generation-agnostic. V2 counts are signed 22-bit (ambient already
+     * subtracted on-device when amb_subtract is on). */
+    const samples = b.ir.map((ir, i) => ({ ir, red: b.red[i] ?? 0 }));
+    const detail: NarbisRawSampleEvent = {
+      sample_rate_hz: sps,
+      n_samples: samples.length,
+      samples,
+      timestamp: this.v2HostTime(b.t0Us),
+    };
+    this.dispatch('rawSampleReceived', detail);
+  };
+
+  private onV2Ibi = (records: V2IbiRecord[]): void => {
+    for (const r of records) {
+      if (r.ibiMs <= 0) continue;
+      const detail: NarbisBeatEvent = {
+        bpm: Math.round(60000 / r.ibiMs),
+        ibi_ms: r.ibiMs,
+        /* Both generations report confidence on a 0..100 scale — v1's field
+         * is NAMED confidence_x100 but is parsed from a single byte, and the
+         * engine's confThreshold (default 50) is on that same 0..100 scale.
+         * Pass V2's through unscaled so one threshold means one thing. */
+        confidence: r.confidence,
+        flags: r.flags,
+        sqi: this.lastSqi,
+        timestamp: this.v2HostTime(r.tBeatUs),
+      };
+      this.dispatch('beatReceived', detail);
+    }
+  };
+
+  private onV2Status = (s: V2Status): void => {
+    this._v2Status = s;
+    this.dispatch('v2StatusReceived', { ...s, timestamp: Date.now() } as NarbisV2StatusEvent);
+    this.dispatch('batteryReceived', {
+      soc_pct: s.battPct,
+      mv: s.battMv,
+      source: 'narbis',
+      timestamp: Date.now(),
+    } as NarbisBatteryEvent);
+  };
+
+  /* ---- V2 control surface (used by the tuning sidebar) ---- */
+
+  private requireV2(): V2Session {
+    if (!this.v2Session) throw new Error('not connected to a V2 earclip');
+    return this.v2Session;
+  }
+
+  async v2SetRate(sps: number): Promise<void> {
+    const code = SPS_RATE_CODE[sps];
+    if (code === undefined) throw new Error(`unsupported rate ${sps} sps`);
+    await this.requireV2().controlOk(buildSetRate(code));
+  }
+
+  /** Freeze/unfreeze the on-device AGC. Must be frozen before any manual LED
+   * or TIA write, otherwise the loop immediately overrides it. */
+  async v2SetAgcFrozen(frozen: boolean): Promise<void> {
+    await this.requireV2().controlOk(buildAgcFreeze(frozen));
+  }
+
+  /** Manual LED currents / TIA gain. Pass null to leave a field untouched. */
+  async v2SetManual(opts: { irMa?: number; redMa?: number; rfCode?: number }): Promise<void> {
+    let mask = 0;
+    if (opts.irMa !== undefined) mask |= AGC_APPLY_IR;
+    if (opts.redMa !== undefined) mask |= AGC_APPLY_RED;
+    if (opts.rfCode !== undefined) mask |= AGC_APPLY_GAIN;
+    if (mask === 0) return;
+    await this.requireV2().controlOk(
+      buildAgcManual(opts.irMa ?? 0, opts.redMa ?? 0, opts.rfCode ?? 0, mask),
+    );
+  }
+
+  async v2KnobSet(id: number, value: number): Promise<void> {
+    await this.requireV2().controlOk(buildKnobSet(id, value));
+  }
+
+  async v2KnobGet(id: number): Promise<number> {
+    const payload = await this.requireV2().controlOk(buildKnobGet(id));
+    return parseKnobValue(payload).value;
+  }
+
+  /** Persist current knob values to device NVS (they are RAM-only until this). */
+  async v2KnobSave(): Promise<void> {
+    await this.requireV2().controlOk(buildKnobSave());
+  }
+
+  async v2Marker(id: number): Promise<void> {
+    await this.requireV2().controlOk(buildMarker(id));
+  }
+
+  async v2SetStreams(mask: number, on: boolean): Promise<void> {
+    await this.requireV2().controlOk(on ? buildStreamStart(mask) : buildStreamStop(mask));
   }
 
   private attach(ch: BluetoothRemoteGATTCharacteristic, listener: (ev: Event) => void): void {
@@ -541,6 +760,16 @@ export class NarbisDevice extends EventTarget {
     this.chConfigWrite = null;
     this.chMode = null;
     this.lastSqi = null;
+    /* Tear the V2 session down before dropping the server: it holds
+     * characteristic listeners and may have CONTROL promises in flight,
+     * which close() rejects rather than leaving pending forever. */
+    if (this.v2Session) {
+      this.v2Session.close();
+      this.v2Session = null;
+    }
+    this._protocol = null;
+    this._v2Status = null;
+    this.v2ClockAnchor = null;
     if (!opts.keepDevice) {
       if (this.device) {
         this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);

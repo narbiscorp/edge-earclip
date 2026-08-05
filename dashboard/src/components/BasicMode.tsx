@@ -133,7 +133,7 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   /* When the app-side Coherence Engine (Mode A/B) is driving, the firmware 0xF2 frame
    * goes stale (we feed beats to the engine, not the firmware pipeline), so read coherence
    * / pacer / respiration from the engine's live status instead. Both are 0–100 / BPM. */
-  const engineActive = engineMode !== 'firmware' && !!engineStatus?.running;
+  const engineActive = !!engineStatus?.running;
   const coh = engineActive ? engineStatus!.coherence : (lastEdgeCoh?.coh ?? null);
   const respBpm = engineActive
     ? (engineStatus!.respHz > 0 ? engineStatus!.respHz * 60 : null)
@@ -210,8 +210,8 @@ export default function BasicMode({ mobile = false }: BasicModeProps = {}) {
   const zone = cohZone(coh);
   /* The breathing cue + chime only make sense when the app-side engine owns the breath clock
    * (Mode A/B). In Standard mode the firmware drives the lens on a phase the dashboard can't
-   * observe, so we hide them rather than show a cue that drifts out of sync with the glasses. */
-  const showBreathUi = engineMode !== 'firmware';
+   * The app-side engine always owns the pacer now, so the breath UI is always shown. */
+  const showBreathUi = true;
   const headerTitle = engineActive
     ? engineMode === 'modeA'
       ? 'Mode A · Follow'
@@ -703,7 +703,7 @@ function EngineModeStrip({
   edgeConnected: boolean;
   onPick: (m: EngineMode) => void;
 }) {
-  const active = mode !== 'firmware';
+  const active = true;
   const [infoMode, setInfoMode] = useState<EngineMode | null>(null);
   const info = infoMode != null ? ENGINE_MODE_INFO.find((x) => x.id === infoMode) ?? null : null;
   return (

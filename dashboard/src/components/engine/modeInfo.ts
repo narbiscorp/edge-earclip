@@ -18,14 +18,6 @@ export interface EngineModeInfo {
 
 export const ENGINE_MODE_INFO: EngineModeInfo[] = [
   {
-    id: 'firmware',
-    title: 'Standard',
-    sub: 'on-glasses',
-    desc: 'The glasses run their built-in coherence programs.',
-    details:
-      'The glasses do the coherence processing on-device. The dashboard just forwards your heartbeats and shows the readouts. Pick one of the Standard Programs (Heartbeat, Breathing Guide, Coherence Lens, Breath + Strobe) to choose what the lens does. This is the original behavior — nothing is computed in the app.',
-  },
-  {
     id: 'modeA',
     title: 'Mode A',
     sub: 'Follow',

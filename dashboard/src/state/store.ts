@@ -10,7 +10,10 @@ import {
   type NarbisDisconnectedDetail,
   type NarbisErrorDetail,
   type NarbisPhaseDetail,
+  type NarbisProtocolVersion,
+  type NarbisV2StatusEvent,
 } from '../ble/narbisDevice';
+import { PpgFilter, PPG_FILTER_DEFAULTS, type PpgFilterConfig } from '../ble/v2/ppgFilter';
 import {
   polarH10,
   type PolarStatus,
@@ -170,6 +173,20 @@ export interface DashboardState {
    * the wire is already uniform. Adds 150 ms of latency to the chart. */
   pcJitterSmoothing: boolean;
 
+  /** Host-side PPG filter settings (V2 earclip). The V2 board streams raw
+   * AFE counts — a big DC pedestal with a ~1 % pulsatile component — so the
+   * readable waveform and the peaks on the Filtered chart are produced here,
+   * in the app. Persisted to localStorage. */
+  ppgFilter: PpgFilterConfig;
+
+  /** Which earclip generation is connected ('v1' | 'v2' | null). Set at
+   * connect from the auto-detected GATT services; drives which tuning UI
+   * the Expert sidebar shows. */
+  earclipProtocol: NarbisProtocolVersion;
+  /** Latest V2 STATUS frame (LED currents actually applied, TIA gain, rate,
+   * HR, gate duty, drop counters). null on v1 / before first notify. */
+  v2Status: NarbisV2StatusEvent | null;
+
   /** Which heart-rate source drives the glasses' coherence pipeline.
    * 'earclip' (default): the glasses' BLE central pulls IBI from the
    * paired Narbis earclip — the original path. 'h10': the dashboard
@@ -219,10 +236,9 @@ export interface DashboardState {
    * etc. Persisted to localStorage. */
   uiMode: 'basic' | 'expert' | 'mobile';
 
-  /** App-side Coherence Engine mode. 'firmware' = the glasses' own coherence pipeline
-   * drives the lens (the existing behavior). 'modeA' (Follow) / 'modeB' (Find resonance)
-   * = the ported engine runs in the dashboard and streams lens duty over 0xA5. Mutually
-   * exclusive with activeProgram/standaloneMode. Persisted to localStorage. */
+  /** App-side Coherence Engine mode: 'modeA' (Follow) / 'modeB' (Static pacer) /
+   * 'modeC' (Settle & Find). The engine always runs in the dashboard and streams
+   * lens duty over 0xA5. Persisted to localStorage. */
   engineMode: EngineMode;
   /** Every Coherence Engine tunable (Mode A + Mode B). Persisted; saved/loaded as presets. */
   coherenceTunables: CoherenceTunables;
@@ -261,6 +277,8 @@ export interface DashboardState {
   edgeForgetEarclip: () => Promise<void>;
   clearBleLog: () => void;
   setPcJitterSmoothing: (enabled: boolean) => void;
+  /** Patch the host-side PPG filter (V2). Applied live; persisted. */
+  setPpgFilter: (patch: Partial<PpgFilterConfig>) => void;
   setHrSourceForGlasses: (source: 'earclip' | 'h10') => void;
   /** Updates the local params struct, persists it to localStorage, and
    * pushes it to the connected glasses via 0xE0. Returns the BLE write
@@ -455,13 +473,36 @@ function saveUiMode(mode: 'basic' | 'expert' | 'mobile'): void {
 
 // ---------- Coherence Engine (app-side Mode A / Mode B) persistence + lifecycle ----------
 
+/* ---------- Host-side PPG filter (V2 earclip) ---------- */
+const PPG_FILTER_KEY = 'ppgFilterConfig';
+function loadPpgFilter(): PpgFilterConfig {
+  try {
+    const raw = localStorage.getItem(PPG_FILTER_KEY);
+    if (!raw) return { ...PPG_FILTER_DEFAULTS };
+    /* Merge over defaults so a config saved by an older build that lacks a
+     * newer field still yields a complete, valid setting set. */
+    return { ...PPG_FILTER_DEFAULTS, ...(JSON.parse(raw) as Partial<PpgFilterConfig>) };
+  } catch {
+    return { ...PPG_FILTER_DEFAULTS };
+  }
+}
+function savePpgFilter(c: PpgFilterConfig): void {
+  try { localStorage.setItem(PPG_FILTER_KEY, JSON.stringify(c)); } catch { /* quota */ }
+}
+
+/* One filter instance per channel for the whole session. IR is the default
+ * IBI channel in firmware, so it is what we plot on the Filtered chart. */
+const ppgFilter = new PpgFilter(loadPpgFilter());
+
 const ENGINE_MODE_KEY = 'coherenceEngineMode';
 function loadEngineMode(): EngineMode {
   try {
     const v = localStorage.getItem(ENGINE_MODE_KEY);
-    return v === 'modeA' || v === 'modeB' || v === 'modeC' ? v : 'firmware';
+    // Any other stored value (including the removed 'firmware'
+    // on-glasses mode) migrates to Mode A.
+    return v === 'modeA' || v === 'modeB' || v === 'modeC' ? v : 'modeA';
   } catch {
-    return 'firmware';
+    return 'modeA';
   }
 }
 function saveEngineMode(m: EngineMode): void {
@@ -592,7 +633,6 @@ function scheduleAccStart(reason: string): void {
     accStartTimer = null;
     if (polarH10.status !== 'connected') return;
     if (!coherenceEngine.running) return;
-    if (useDashboardStore.getState().engineMode === 'firmware') return; // modeA + modeB + modeC all use ACC
     if (polarH10.isAccStreaming) return;
     appendBleLog('polar', 'info', `starting ACC stream (${reason})`);
     void polarH10.startAccStream().catch((err) => {
@@ -606,7 +646,7 @@ function scheduleAccStart(reason: string): void {
  * (the bug where Mode B showed no status until you toggled modes). Called once from App mount. */
 export function initCoherenceEngine(): void {
   const s = useDashboardStore.getState();
-  if (s.engineMode === 'firmware' || coherenceEngine.running) return;
+  if (coherenceEngine.running) return;
   if ((s.engineMode === 'modeB' || s.engineMode === 'modeC') && s.hrSourceForGlasses !== 'h10') {
     s.setHrSourceForGlasses('h10');
   }
@@ -634,6 +674,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   windowSec: 30,
   bleLog: [],
   pcJitterSmoothing: true,
+  ppgFilter: loadPpgFilter(),
+  earclipProtocol: null,
+  v2Status: null,
   hrSourceForGlasses: loadHrSourceForGlasses(),
   coherenceParams: loadCoherenceParams(),
   activeProgram: null,
@@ -707,6 +750,14 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     await edgeDevice.forgetEarclipPairing();
   },
   clearBleLog: () => set({ bleLog: [] }),
+  setPpgFilter: (patch) => {
+    const next = { ...useDashboardStore.getState().ppgFilter, ...patch };
+    set({ ppgFilter: next });
+    savePpgFilter(next);
+    /* Push the change into the live filter without clearing the trace —
+     * PpgFilter keeps its state unless the sample rate itself changed. */
+    ppgFilter.update(next);
+  },
   setPcJitterSmoothing: (enabled) => {
     set({ pcJitterSmoothing: enabled });
     // If disabling, drain whatever is buffered immediately so we don't
@@ -753,21 +804,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       set({ activeProgram: null });
     }
     if (p === null) return;
-    // App-side engine modes (A/B/C) render the program themselves — switch it live on the engine
-    // and do NOT send the firmware 0xB7 program-select (that's the firmware-coherence path).
-    if (useDashboardStore.getState().engineMode !== 'firmware') {
-      coherenceEngine.setProgram(p);
-      return;
-    }
-    // Standard (firmware) mode: select the on-glasses PPG program.
-    if (edgeDevice.isConnected) {
-      try {
-        await edgeDevice.setProgram(p);
-      } catch (err) {
-        appendBleLog('edge', 'error', `setProgram(${p}) failed: ${(err as Error).message}`);
-        throw err;
-      }
-    }
+    // The app-side engine always renders the program itself — switch it live
+    // on the engine. (The old on-glasses path sent a 0xB7 program-select here.)
+    coherenceEngine.setProgram(p);
   },
   setStandaloneMode: async (mode, dutyPct) => {
     if (mode !== null) {
@@ -805,26 +844,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
     // Re-selecting the active mode is a no-op ONLY if the engine is genuinely running for it.
     // On a fresh load the persisted mode is set but the engine isn't started yet, so allow the
     // click to start it (otherwise the readout never appears until you toggle to another mode).
-    if (mode === prev && (mode === 'firmware' || coherenceEngine.running)) return;
+    if (mode === prev && coherenceEngine.running) return;
     set({ engineMode: mode });
     saveEngineMode(mode);
-    if (mode === 'firmware') {
-      stopCoherenceEngine();
-      set({ engineStatus: null });
-      appendBleLog('system', 'info', 'coherence engine OFF — firmware drives the lens');
-      // Hand the lens back to firmware: re-send the currently-selected Standard program via 0xB7 so
-      // the glasses run it on-device (we now keep activeProgram across the engine, so the auto-start
-      // would otherwise skip it). Fall back to the default-program auto-start when none is selected.
-      const cur = useDashboardStore.getState().activeProgram;
-      if (cur != null && edgeDevice.isConnected) {
-        void edgeDevice.setProgram(cur).catch((err) =>
-          appendBleLog('edge', 'error', `setProgram(${cur}) failed: ${(err as Error).message}`),
-        );
-      } else {
-        scheduleAutoStartProgram('coherence engine off');
-      }
-      return;
-    }
     // Entering Mode A / Mode B / Mode C — the engine owns the lens and renders the selected Standard
     // program app-side. Keep the active program across the switch (default to Breathing Guide if none
     // was picked) so the strip stays meaningful and the engine has a program to render.
@@ -833,6 +855,9 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       // Mode B and Mode C need validated H10 RR + the independent ACC respiration channel.
       useDashboardStore.getState().setHrSourceForGlasses('h10');
     }
+    // Stop the outgoing engine first: it persists a converged Mode B
+    // resonance frequency for a warm restart and releases the ACC stream.
+    if (coherenceEngine.running) stopCoherenceEngine();
     startCoherenceEngine(mode);
     const label =
       mode === 'modeA' ? 'Mode A (Follow)' : mode === 'modeB' ? 'Mode B (Find resonance)' : 'Mode C (Settle & Find)';
@@ -1043,7 +1068,11 @@ narbisDevice.addEventListener('connected', (e) => {
       },
     },
   }));
-  appendBleLog('earclip', 'info', `connected to ${name}`);
+  setState(() => ({ earclipProtocol: narbisDevice.protocolVersion }));
+  appendBleLog(
+    'earclip', 'info',
+    `connected to ${name} (${narbisDevice.protocolVersion === 'v2' ? 'V2.1 AFE4404' : 'v1 MAX3010x'})`,
+  );
   /* If edge is already connected and the user hasn't picked a program,
    * schedule an auto-start now that we have a direct earclip beat source.
    * Covers the connect-order: earclip arrives after the glasses were already
@@ -1063,6 +1092,11 @@ narbisDevice.addEventListener('disconnected', (e) => {
     resetDiagnosticClock();
     lastRawTs = 0;
     flushJitterQueue();
+    /* Drop V2 session state and clear the filter's history so the next
+     * connection starts from a clean baseline instead of ringing on the
+     * last session's samples. */
+    setState(() => ({ earclipProtocol: null, v2Status: null }));
+    ppgFilter.reset();
   }
   setState((s) => ({
     connection: {
@@ -1195,8 +1229,29 @@ function processRawBatch(raw: NarbisRawSampleEvent): void {
   let firstTs = Math.max(continueFirst, arrivalFirst);
   if (continueFirst < arrivalFirst - 2 * n * periodMs) firstTs = arrivalFirst;
 
+  /* V2 streams raw AFE counts with no on-device filtered/diagnostic
+   * channel, so the readable waveform is produced here: DC-removal +
+   * band-pass, then pushed into the SAME `filtered` buffer the v1
+   * diagnostic stream feeds. That keeps FilteredChart (and the recorder)
+   * generation-agnostic. v1 keeps using its firmware diagnostic stream. */
+  const v2 = narbisDevice.isV2;
+  if (v2 && ppgFilter.config.sampleRate !== raw.sample_rate_hz) {
+    /* Rate changed on the device (or first batch) — re-derive coefficients.
+     * PpgFilter resets its state when the rate changes, so the trace
+     * restarts cleanly instead of ringing on stale history. */
+    ppgFilter.update({ sampleRate: raw.sample_rate_hz });
+  }
+
   for (let i = 0; i < n; i++) {
-    liveBuffers.rawPpg.push(firstTs + i * periodMs, raw.samples[i]);
+    const ts = firstTs + i * periodMs;
+    liveBuffers.rawPpg.push(ts, raw.samples[i]);
+    if (v2) {
+      liveBuffers.filtered.push(ts, {
+        kind: 'filtered',
+        value: ppgFilter.push(raw.samples[i].ir),
+        timestamp: ts,
+      });
+    }
   }
   lastRawTs = firstTs + (n - 1) * periodMs;
 
@@ -1253,6 +1308,10 @@ function feedRawBatch(raw: NarbisRawSampleEvent): void {
 
 narbisDevice.addEventListener('rawSampleReceived', (e) => {
   feedRawBatch((e as CustomEvent<NarbisRawSampleEvent>).detail);
+});
+
+narbisDevice.addEventListener('v2StatusReceived', (e) => {
+  setState(() => ({ v2Status: (e as CustomEvent<NarbisV2StatusEvent>).detail }));
 });
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
@@ -1336,10 +1395,10 @@ function scheduleAutoStartProgram(reason: string): void {
   autoStartTimer = setTimeout(() => {
     autoStartTimer = null;
     if (!edgeDevice.isConnected) return;
-    if (useDashboardStore.getState().engineMode !== 'firmware') {
-      appendBleLog('system', 'info', 'auto-start skipped — coherence engine is driving the lens');
-      return;
-    }
+    // The app-side engine always drives the lens now, so the firmware
+    // program auto-start never applies.
+    appendBleLog('system', 'info', 'auto-start skipped — coherence engine is driving the lens');
+    return;
     const s = useDashboardStore.getState();
     /* Honor user intent: if they've clicked a program or standalone
      * during the delay window, leave them alone. */
@@ -1381,7 +1440,7 @@ polarH10.addEventListener('connected', (e) => {
   autoSelectHrSourceIfApplicable('h10 connected');
   // If an app-side engine (Mode A, B, or C) is already running (H10 reconnected mid-session), (re)start
   // the ACC stream — deferred so a reconnect storm doesn't hammer the fragile post-connect link.
-  if (coherenceEngine.running && useDashboardStore.getState().engineMode !== 'firmware') {
+  if (coherenceEngine.running) {
     scheduleAccStart('h10 connected');
   }
 });
@@ -1701,7 +1760,7 @@ edgeDevice.addEventListener('edgeCoherence', (e) => {
    * diverge over a session, so the zigzag grows). Drop it here in engine mode; in Standard/firmware
    * mode the engine is stopped and 0xF2 owns these channels as before. */
   const s = useDashboardStore.getState();
-  if (s.engineMode !== 'firmware' && s.engineStatus?.running) return;
+  if (s.engineStatus?.running) return;
   edgeCoherenceBuffers.live.push(f.timestamp, {
     coh: f.coh,
     respMhz: f.respMhz,

@@ -48,16 +48,14 @@ export default function CoherenceEnginePanel() {
     <div className="rounded border border-slate-800 bg-slate-900/50 p-3 flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <div className="text-[12px] font-medium text-slate-200">Coherence Engine</div>
-        {engineMode !== 'firmware' ? (
-          <button
-            type="button"
-            onClick={() => setCoherenceTunables({ ...DEFAULT_TUNABLES })}
-            className="text-[10px] rounded bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-slate-300"
-            title="Reset every tunable to factory defaults"
-          >
-            reset all
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={() => setCoherenceTunables({ ...DEFAULT_TUNABLES })}
+          className="text-[10px] rounded bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-slate-300"
+          title="Reset every tunable to factory defaults"
+        >
+          reset all
+        </button>
       </div>
 
       {/* Mode selector — 4 modes total. Each has an (i) info popover. */}
@@ -93,13 +91,7 @@ export default function CoherenceEnginePanel() {
         })}
       </div>
 
-      {engineMode === 'firmware' ? (
-        <div className="text-[10px] text-slate-500">
-          The glasses firmware drives the lens (the existing behavior). Select Mode A or Mode B to run
-          the app-side engine — it computes coherence from the live signal and streams the lens duty
-          (0xA5) to the glasses.
-        </div>
-      ) : (
+      {(
         <>
           {!edgeConnected ? (
             <div className="rounded border border-amber-700/40 bg-amber-900/10 px-2 py-1 text-[10px] text-amber-300">

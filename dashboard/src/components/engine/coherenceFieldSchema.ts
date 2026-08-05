@@ -256,7 +256,6 @@ export function cohFieldFor(key: CoherenceTunableKey): CohNumericField {
  * Mode A and Mode B are unaffected (plain membership).
  */
 function appliesTo(modes: ActiveEngineMode[], mode: EngineMode): boolean {
-  if (mode === 'firmware') return false;
   if (mode === 'modeC') {
     return modes.includes('modeA') || modes.includes('modeB') || modes.includes('modeC');
   }

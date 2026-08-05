@@ -5,6 +5,7 @@ import FilteredChart from './components/FilteredChart';
 import BeatChart from './components/BeatChart';
 import MetricsChart from './components/MetricsChart';
 import ConfigPanel from './components/ConfigPanel';
+import V2TuningPanel from './components/V2TuningPanel';
 import PresetBar from './components/PresetBar';
 import RecordingControls from './components/RecordingControls';
 import ReplayControls from './components/ReplayControls';
@@ -164,6 +165,7 @@ export default function App() {
               <ChimeControls />
               <EdgeControls />
               <GlassesLog />
+              <V2TuningPanel />
               <ConfigPanel />
               <PresetBar />
               <BleEventLog />

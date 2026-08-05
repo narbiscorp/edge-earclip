@@ -17,7 +17,6 @@ export default function BreathChime() {
   const exhaleVoice = useDashboardStore((s) => s.chimeExhale);
   const engineRunning = useDashboardStore((s) => !!s.engineStatus?.running);
   const settling = useDashboardStore((s) => !!s.engineStatus?.settling);
-  const engineMode = useDashboardStore((s) => s.engineMode);
   const activeProgram = useDashboardStore((s) => s.activeProgram);
   const standalone = useDashboardStore((s) => s.standaloneMode);
   const breath = useBreathPhase();
@@ -29,7 +28,7 @@ export default function BreathChime() {
   // Suppress in Standard/firmware mode — the glasses drive the breath cycle there on a phase we
   // can't observe, so a chime would drift. The chime plays only when the engine owns the clock (A/B).
   // Also suppress during the Mode B/C quiet settling — no audio pacing until the search starts.
-  const active = enabled && pacerActive && engineMode !== 'firmware' && !settling;
+  const active = enabled && pacerActive && !settling;
 
   useEffect(() => {
     if (!active) {

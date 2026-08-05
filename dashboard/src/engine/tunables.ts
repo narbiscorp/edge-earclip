@@ -15,10 +15,12 @@
  */
 
 /** Which engine drives the lens. `firmware` = the glasses' own coherence pipeline
- * (the existing on-glasses behavior); `modeA`/`modeB`/`modeC` = the ported app-side engine.
+ * `modeA`/`modeB`/`modeC` = the app-side coherence engine. (The former 'firmware'
+ * mode — the glasses' own on-device pipeline — was removed; the app always
+ * computes coherence now.)
  * `modeC` (Settle & Find) = Mode A warm-up until a stability + ACC gate passes, then the exact
  * Mode B resonance search seeded at the settled rate. */
-export type EngineMode = 'firmware' | 'modeA' | 'modeB' | 'modeC';
+export type EngineMode = 'modeA' | 'modeB' | 'modeC';
 
 export interface CoherenceTunables {
   // --- Ingest / artifact ---

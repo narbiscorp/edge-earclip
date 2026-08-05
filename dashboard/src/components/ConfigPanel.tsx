@@ -7,6 +7,11 @@ import ConfigSection from './config/ConfigSection';
 import { BUILT_IN_DEFAULT } from './config/presetStore';
 
 export default function ConfigPanel() {
+  /* This panel edits the v1 earclip's runtime-config struct. The V2.1 board
+   * has no such struct — it exposes a knob registry instead — so when a V2
+   * device is connected V2TuningPanel owns the sidebar and this renders
+   * nothing. (Hooks below still run: bail-out happens at render.) */
+  const isV2 = useDashboardStore((s) => s.earclipProtocol === 'v2');
   const narbisState  = useDashboardStore((s) => s.connection.narbis.state);
   const edgeState    = useDashboardStore((s) => s.connection.edge.state);
   const earclipRelay = useDashboardStore((s) => s.connection.edge.earclipRelay);
@@ -34,6 +39,8 @@ export default function ConfigPanel() {
       console.error('requestEarclipConfigRead failed', err);
     });
   };
+
+  if (isV2) return null;
 
   if (!writer.draft) {
     return (

@@ -82,7 +82,7 @@ export default function CoherencePresetBar() {
         id: existing?.id,
         name: trimmed,
         tunables,
-        mode: engineMode === 'firmware' ? undefined : engineMode,
+        mode: engineMode,
       });
       setShowSaveModal(false);
       setSaveName('');
@@ -205,7 +205,7 @@ export default function CoherencePresetBar() {
               placeholder="Preset name"
               className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" />
             <div className="text-[10px] text-slate-500">
-              Saves all tunables (Mode A + Mode B){engineMode !== 'firmware' ? ` and the current mode (${engineMode})` : ''}. Existing names overwrite with confirmation.
+              Saves all tunables (Mode A + Mode B) and the current mode ({engineMode}). Existing names overwrite with confirmation.
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" onClick={() => setShowSaveModal(false)}
