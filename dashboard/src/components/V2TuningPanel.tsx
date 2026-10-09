@@ -68,9 +68,23 @@ function Row({ label, children, title }: { label: string; children: React.ReactN
   );
 }
 
+/** One link-health cell: value turns amber (or red for `bad`) when non-zero. */
+function Health({
+  label, value, warn, bad = false, title,
+}: { label: string; value: string | number; warn: boolean; bad?: boolean; title: string }) {
+  const tone = !warn ? 'text-slate-200' : bad ? 'text-red-400' : 'text-amber-400';
+  return (
+    <span title={title}>
+      {label} <span className={tone}>{value}</span>
+    </span>
+  );
+}
+
 export default function V2TuningPanel() {
   const isV2 = useDashboardStore((s) => s.earclipProtocol === 'v2');
   const st = useDashboardStore((s) => s.v2Status);
+  const link = useDashboardStore((s) => s.v2LinkStats);
+  const fw = useDashboardStore((s) => s.earclipFirmware);
   const filter = useDashboardStore((s) => s.ppgFilter);
   const setFilter = useDashboardStore((s) => s.setPpgFilter);
 
@@ -119,9 +133,16 @@ export default function V2TuningPanel() {
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 p-3 flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <div className="text-[12px] font-medium text-slate-200">
-          Earclip V2.1 tuning
-          <span className="ml-2 text-[9px] font-mono text-emerald-400 align-middle">AFE4404</span>
+        <div className="min-w-0">
+          <div className="text-[12px] font-medium text-slate-200">
+            Earclip V2.1 tuning
+            <span className="ml-2 text-[9px] font-mono text-emerald-400 align-middle">AFE4404</span>
+          </div>
+          {fw ? (
+            <div className="truncate text-[9px] font-mono text-slate-500" title={`Firmware revision reported by the earclip (Device Information): ${fw}`}>
+              fw {fw}
+            </div>
+          ) : null}
         </div>
         <button
           type="button"
@@ -151,9 +172,15 @@ export default function V2TuningPanel() {
           <span title="Percentage of recent time the artifact gate was active">
             gate <span className="text-slate-200">{(st.gateDutyX100 / 100).toFixed(0)}</span>%
           </span>
-          <span title="Notifications the device could not deliver">
-            drops <span className={st.notifDropCount > 0 ? 'text-amber-400' : 'text-slate-200'}>
-              {st.notifDropCount}</span>
+          {/* Device uptime, not the since-boot drop counter: that one also
+              counts drops from earlier clients (see "dev drops" below for
+              this connection). A reset uptime means the earclip rebooted. */}
+          <span title="Earclip uptime since boot — if this resets, the earclip rebooted">
+            up <span className="text-slate-200">
+              {st.uptimeS >= 3600
+                ? `${Math.floor(st.uptimeS / 3600)}h${String(Math.floor((st.uptimeS % 3600) / 60)).padStart(2, '0')}`
+                : `${Math.floor(st.uptimeS / 60)}m${String(st.uptimeS % 60).padStart(2, '0')}`}
+            </span>
           </span>
           <span title="Battery">
             {(st.battMv / 1000).toFixed(2)}V <span className="text-slate-200">{st.battPct}%</span>
@@ -162,6 +189,58 @@ export default function V2TuningPanel() {
       ) : (
         <div className="text-[10px] text-slate-500">waiting for status…</div>
       )}
+
+      {/* Link health since connect — is the data complete and trustworthy? */}
+      {link ? (
+        <div className="flex flex-col gap-1 rounded border border-slate-800 px-1.5 py-1">
+          <div className="text-[9px] uppercase tracking-wide text-slate-500">link health since connect</div>
+          <div className="grid grid-cols-3 gap-1 text-[9px] font-mono text-slate-400">
+            <Health
+              label="lost" value={link.ppgLostBatches} warn={link.ppgLostBatches > 0}
+              title={`PPG batches missing between sequence numbers (BLE or device drops). ${link.ppgBatches} received, ${link.ppgSeqRestarts} stream restart(s).`}
+            />
+            <Health
+              label="clipped" value={link.clippedBatches} warn={link.clippedBatches > 0}
+              title="Batches the device flagged CLIPPED — the ADC hit full scale (too much light or gain). Lower LED current or TIA gain."
+            />
+            <Health
+              label="rate"
+              value={link.measuredSps !== null ? link.measuredSps.toFixed(1) : '—'}
+              warn={link.measuredSps !== null && link.nominalSps !== null &&
+                Math.abs(link.measuredSps - link.nominalSps) > link.nominalSps * 0.01}
+              title={`Sample rate implied by the device's own clock (nominal ${link.nominalSps ?? '?'} sps).`}
+            />
+            <Health
+              label="dev drops"
+              value={link.deviceDrops !== null && link.deviceDropsStart !== null
+                ? link.deviceDrops - link.deviceDropsStart : '—'}
+              warn={link.deviceDrops !== null && link.deviceDropsStart !== null &&
+                link.deviceDrops > link.deviceDropsStart}
+              title="Notifications the device dropped from its own send queues since connect (any stream, including ones this app does not subscribe to)."
+            />
+            <Health
+              label="decode err" value={link.parseErrors} warn={link.parseErrors > 0} bad
+              title={link.lastParseError
+                ? `Frames this app could not decode — a dashboard/firmware layout mismatch. Last: ${link.lastParseError}`
+                : 'Frames this app could not decode (layout mismatch). Should stay 0.'}
+            />
+            <Health
+              label="i2c err"
+              value={link.i2cErrors !== null && link.i2cErrorsStart !== null
+                ? link.i2cErrors - link.i2cErrorsStart : '—'}
+              warn={link.i2cErrors !== null && link.i2cErrorsStart !== null &&
+                link.i2cErrors > link.i2cErrorsStart}
+              title="Device I²C errors since connect (sensor bus)."
+            />
+          </div>
+          <div className="text-[9px] leading-snug text-slate-500">
+            Raw capture: press <span className="text-slate-300">● Record</span> — the zip's
+            <span className="font-mono text-slate-300"> v2/</span> folder holds every sample
+            (ir, red, amb, seq, flags), every beat, status frame and device event, plus a
+            README and <span className="font-mono text-slate-300">ble_log.txt</span>.
+          </div>
+        </div>
+      ) : null}
 
       {err ? (
         <div className="rounded border border-red-700/40 bg-red-900/20 px-2 py-1 text-[10px] text-red-300">

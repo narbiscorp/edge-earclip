@@ -5,6 +5,7 @@ import type {
   DiagnosticSample,
 } from '../ble/parsers';
 import type { NarbisBeatEvent } from '../ble/narbisDevice';
+import type { V2Status } from '../ble/v2/protocol';
 import type { PolarBeatRecord } from '../state/store';
 import type { MetricsSnapshot } from '../state/metricsBuffer';
 
@@ -110,6 +111,75 @@ export interface FilteredRecord {
   sample: DiagnosticSample;
 }
 
+/** One V2.1 (AFE4404) PPG notification, stored whole and expanded to one row
+ * per sample only at export. Device fields are verbatim from the firmware;
+ * `hostFirstMs` is sample 0 on the host timeline (device-clock anchored, the
+ * same anchor the beats use, so PPG and beats line up exactly). */
+export interface V2PpgBatchRecord {
+  hostFirstMs: number;
+  periodMs: number;
+  seq: number;
+  t0Us: number;
+  rateCode: number;
+  flags: number;
+  ir: number[];
+  red: number[];
+  amb: number[] | null;
+  /** Drive state from the latest STATUS (≤1 s stale — exact AGC step times
+   * are in the events stream). Null until the first STATUS arrives. */
+  ledIrMa: number | null;
+  ledRedMa: number | null;
+  tiaGainCode: number | null;
+}
+
+export interface V2StatusRecord extends V2Status {
+  timestamp: number;
+}
+
+/** One V2.1 accelerometer notification (raw LIS2DH12 counts), stored whole. */
+export interface V2AccelBatchRecord {
+  hostFirstMs: number;
+  periodMs: number;
+  seq: number;
+  t0Us: number;
+  odrCode: number;
+  flags: number;
+  x: number[];
+  y: number[];
+  z: number[];
+}
+
+export interface V2IbiRecordTimed {
+  /** Host ms of the beat (device-clock anchored). */
+  timestamp: number;
+  seq: number;
+  tBeatUs: number;
+  ibiMs: number;
+  confidence: number;
+  flags: number;
+}
+
+export interface V2EventRecordTimed {
+  /** Device-anchored host ms when known, otherwise the arrival time. */
+  timestamp: number;
+  arrivalMs: number;
+  seq: number;
+  type: number;
+  typeName: string;
+  tUs: number | null;
+  fields: Record<string, number>;
+  rawHex: string;
+}
+
+/** BLE/system log lines captured during the recording (connects, errors,
+ * lost-batch warnings) so a capture explains its own gaps. */
+export interface BleLogRecord {
+  timestamp: number;
+  source: string;
+  level: string;
+  message: string;
+}
+
 export interface RecordingChunk {
   sessionId: string;
   chunkSeq: number;
@@ -125,6 +195,12 @@ export interface RecordingChunk {
   metrics?: MetricsRecord[];
   annotations?: Annotation[];
   configEvents?: ConfigChangeEntry[];
+  v2Ppg?: V2PpgBatchRecord[];
+  v2Accel?: V2AccelBatchRecord[];
+  v2Status?: V2StatusRecord[];
+  v2Ibi?: V2IbiRecordTimed[];
+  v2Events?: V2EventRecordTimed[];
+  bleLog?: BleLogRecord[];
 }
 
 export type SessionStatus = 'recording' | 'finalizing' | 'complete' | 'aborted';

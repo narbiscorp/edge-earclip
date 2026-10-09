@@ -36,10 +36,41 @@ export const PPGF_AMB = 0x10;
 export const PPGF_WEAR_OFF = 0x20;
 export const PPGF_CLIPPED = 0x40;
 
+/* ---- ACCEL batch flags + rates ---- */
+export const ACCF_FS_MASK = 0x03;
+export const ACCF_FIFO_OVERRUN = 0x04;
+export const ACC_ODR_HZ: Record<number, number> = { 0: 10, 1: 25, 2: 50, 3: 100, 4: 200, 5: 400 };
+/** Full-scale range in g per fs code (LIS2DH12). */
+export const ACC_FS_G: Record<number, number> = { 0: 2, 1: 4, 2: 8, 3: 16 };
+
+/** Counts per g. Wire samples are RIGHT-justified 12-bit HR digits (the
+ * firmware FIFO drain shifts >>4), so this is the datasheet digits/g. */
+export function accelCountsPerG(fsCode: number): number {
+  return [1000, 500, 250, 1000 / 12][fsCode & ACCF_FS_MASK];
+}
+
 /* ---- IBI record flags ---- */
 export const IBIF_GATED = 0x01;
 export const IBIF_AGC_SETTLING = 0x02;
 export const IBIF_INTERPOLATED = 0x04;
+export const IBIF_FIRST_AFTER_GAP = 0x08;
+
+/* ---- EVENT batch: [u32 seq][u8 n] + n × {u8 type, u8 len, payload[len]};
+ * every payload starts with the event's u64 device time (µs). ---- */
+export const EVENT_HDR_SIZE = 5;
+export const EV_AGC_STEP = 1;
+export const EV_GATE = 2;
+export const EV_WEAR = 3;
+export const EV_MARKER = 4;
+export const EV_ERROR = 5;
+export const EV_RATE_CHANGE = 6;
+export const EV_AGC_OFFDAC = 7;
+export const EV_SELFTEST_DONE = 8;
+const EV_NAME: Record<number, string> = {
+  [EV_AGC_STEP]: 'AGC_STEP', [EV_GATE]: 'GATE', [EV_WEAR]: 'WEAR',
+  [EV_MARKER]: 'MARKER', [EV_ERROR]: 'ERROR', [EV_RATE_CHANGE]: 'RATE_CHANGE',
+  [EV_AGC_OFFDAC]: 'AGC_OFFDAC', [EV_SELFTEST_DONE]: 'SELFTEST_DONE',
+};
 
 /* ---- stream mask (STREAM_START / STREAM_STOP payload) ---- */
 export const STREAM_PPG = 1;
@@ -129,6 +160,17 @@ export interface V2PpgBatch {
   amb: number[] | null;
 }
 
+export interface V2AccelBatch {
+  seq: number;
+  /** Device time of the FIRST sample (µs since boot). */
+  t0Us: number;
+  odrCode: number;
+  flags: number;
+  x: number[];
+  y: number[];
+  z: number[];
+}
+
 export interface V2IbiRecord {
   tBeatUs: number;
   ibiMs: number;
@@ -187,6 +229,140 @@ export function parseV2Ppg(buf: DataView | ArrayBuffer): V2PpgBatch {
     if (amb) amb[i] = d.getInt32(off + 8, true);
   }
   return { seq, t0Us, rateCode, flags, ir, red, amb };
+}
+
+/** ACCEL batch: [u32 seq][u64 t0_us][u8 odr][u8 n][u8 flags] + n × {i16 x,y,z}. */
+export function parseV2Accel(buf: DataView | ArrayBuffer): V2AccelBatch {
+  const d = dv(buf);
+  if (d.byteLength < ACCEL_HDR_SIZE) throw new Error(`ACCEL too short: ${d.byteLength}`);
+  const n = d.getUint8(13);
+  if (d.byteLength !== ACCEL_HDR_SIZE + n * 6) {
+    throw new Error(`ACCEL len ${d.byteLength} != ${ACCEL_HDR_SIZE + n * 6}`);
+  }
+  const x: number[] = new Array(n);
+  const y: number[] = new Array(n);
+  const z: number[] = new Array(n);
+  for (let i = 0, off = ACCEL_HDR_SIZE; i < n; i++, off += 6) {
+    x[i] = d.getInt16(off, true);
+    y[i] = d.getInt16(off + 2, true);
+    z[i] = d.getInt16(off + 4, true);
+  }
+  return {
+    seq: d.getUint32(0, true), t0Us: u64(d, 4), odrCode: d.getUint8(12),
+    flags: d.getUint8(14), x, y, z,
+  };
+}
+
+/** Device-clock spacing between accel samples at this ODR code. */
+export function accelPeriodUs(odrCode: number): number {
+  return 1e6 / (ACC_ODR_HZ[odrCode] ?? 50);
+}
+
+/** Device-clock spacing between consecutive samples at this rate code. */
+export function ppgPeriodUs(rateCode: number): number {
+  return 1e6 / (RATE_SPS[rateCode] ?? 100);
+}
+
+/** Device time of sample `i` in a batch. `t0Us` is the FIRST sample's time
+ * (firmware nc_ppg_batch_add stamps t0 on the first add after reset). */
+export function ppgSampleUs(b: Pick<V2PpgBatch, 't0Us' | 'rateCode'>, i: number): number {
+  return b.t0Us + i * ppgPeriodUs(b.rateCode);
+}
+
+/** Device time of the newest sample — the instant the v1-style raw event
+ * timestamp means everywhere downstream (charts, recorder). */
+export function ppgNewestUs(b: Pick<V2PpgBatch, 't0Us' | 'rateCode' | 'ir'>): number {
+  return ppgSampleUs(b, Math.max(0, b.ir.length - 1));
+}
+
+function flagNames(flags: number, table: Array<[number, string]>): string {
+  return table.filter(([bit]) => (flags & bit) !== 0).map(([, name]) => name).join('|');
+}
+
+/** "AGC_SETTLING|CLIPPED" style decoding of a PPG batch's flags byte. */
+export function ppgFlagNames(flags: number): string {
+  return flagNames(flags, [
+    [PPGF_GATE, 'GATE'], [PPGF_AGC_SETTLING, 'AGC_SETTLING'],
+    [PPGF_USB_PRESENT, 'USB'], [PPGF_RATE_CHANGED, 'RATE_CHANGED'],
+    [PPGF_AMB, 'AMB'], [PPGF_WEAR_OFF, 'WEAR_OFF'], [PPGF_CLIPPED, 'CLIPPED'],
+  ]);
+}
+
+export function ibiFlagNames(flags: number): string {
+  return flagNames(flags, [
+    [IBIF_GATED, 'GATED'], [IBIF_AGC_SETTLING, 'AGC_SETTLING'],
+    [IBIF_INTERPOLATED, 'INTERPOLATED'], [IBIF_FIRST_AFTER_GAP, 'FIRST_AFTER_GAP'],
+  ]);
+}
+
+export interface V2Event {
+  type: number;
+  typeName: string;
+  /** Device time of the event (µs since boot); null for a payload < 8 bytes. */
+  tUs: number | null;
+  /** Decoded type-specific fields; empty when the type/length is unknown. */
+  fields: Record<string, number>;
+  /** Payload bytes (after the 2-byte record header) as lowercase hex. */
+  rawHex: string;
+}
+
+function hex(bytes: Uint8Array): string {
+  let s = '';
+  for (const b of bytes) s += b.toString(16).padStart(2, '0');
+  return s;
+}
+
+/* Payload length per known type, mirrored from proto_consts.js EVLEN_*. A
+ * length mismatch leaves `fields` empty rather than misreading bytes. */
+const EV_LEN: Record<number, number> = {
+  [EV_AGC_STEP]: 13, [EV_GATE]: 10, [EV_WEAR]: 9, [EV_MARKER]: 11,
+  [EV_ERROR]: 14, [EV_RATE_CHANGE]: 10, [EV_AGC_OFFDAC]: 11, [EV_SELFTEST_DONE]: 10,
+};
+
+function decodeEventFields(type: number, d: DataView): Record<string, number> {
+  if (EV_LEN[type] !== d.byteLength) return {};
+  switch (type) {
+    case EV_AGC_STEP:
+      return { led: d.getUint8(8), oldMa: d.getUint8(9), newMa: d.getUint8(10),
+               oldRf: d.getUint8(11), newRf: d.getUint8(12) };
+    case EV_GATE: return { state: d.getUint8(8), reasonMask: d.getUint8(9) };
+    case EV_WEAR: return { worn: d.getUint8(8) };
+    case EV_MARKER: return { source: d.getUint8(8), markerId: d.getUint16(9, true) };
+    case EV_ERROR: return { code: d.getUint16(8, true), arg: d.getUint32(10, true) };
+    case EV_RATE_CHANGE: return { oldCode: d.getUint8(8), newCode: d.getUint8(9) };
+    case EV_AGC_OFFDAC:
+      return { phase: d.getUint8(8), oldCode: d.getUint8(9), newCode: d.getUint8(10) };
+    case EV_SELFTEST_DONE: return { passCount: d.getUint8(8), failCount: d.getUint8(9) };
+    default: return {};
+  }
+}
+
+export function parseV2EventBatch(buf: DataView | ArrayBuffer): { seq: number; events: V2Event[] } {
+  const d = dv(buf);
+  if (d.byteLength < EVENT_HDR_SIZE) throw new Error(`EVENT too short: ${d.byteLength}`);
+  const bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  const seq = d.getUint32(0, true);
+  const n = d.getUint8(4);
+  const events: V2Event[] = [];
+  let off = EVENT_HDR_SIZE;
+  for (let i = 0; i < n; i++) {
+    if (off + 2 > bytes.length) throw new Error('EVENT truncated record header');
+    const type = bytes[off];
+    const len = bytes[off + 1];
+    off += 2;
+    if (off + len > bytes.length) throw new Error('EVENT truncated record payload');
+    const pd = new DataView(d.buffer, d.byteOffset + off, len);
+    events.push({
+      type,
+      typeName: EV_NAME[type] ?? `TYPE_${type}`,
+      tUs: len >= 8 ? u64(pd, 0) : null,
+      fields: decodeEventFields(type, pd),
+      rawHex: hex(bytes.subarray(off, off + len)),
+    });
+    off += len;
+  }
+  if (off !== bytes.length) throw new Error(`EVENT trailing bytes after ${n} records`);
+  return { seq, events };
 }
 
 export function parseV2Ibi(buf: DataView | ArrayBuffer): { seq: number; records: V2IbiRecord[] } {

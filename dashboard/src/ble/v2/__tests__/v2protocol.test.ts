@@ -4,6 +4,10 @@ import {
   buildAgcManual, buildKnobSet, buildSetRate, parseKnobValue,
   PPG_HDR_SIZE, IBI_HDR_SIZE, IBI_REC_SIZE, STATUS_SIZE, PPGF_AMB,
   LED_IR_MAX_MA, LED_RED_MAX_MA, OP_AGC_MANUAL, OP_KNOB_SET,
+  parseV2EventBatch, ppgNewestUs, ppgSampleUs, ppgPeriodUs, ppgFlagNames, ibiFlagNames,
+  EV_AGC_STEP, EV_MARKER, EVENT_HDR_SIZE, PPGF_AGC_SETTLING, PPGF_CLIPPED,
+  IBIF_INTERPOLATED, IBIF_FIRST_AFTER_GAP,
+  parseV2Accel, accelPeriodUs, accelCountsPerG, ACCF_FS_MASK, ACCF_FIFO_OVERRUN,
 } from '../protocol';
 import { PpgFilter } from '../ppgFilter';
 
@@ -182,5 +186,130 @@ describe('PpgFilter', () => {
     let v = 0;
     for (let i = 0; i < 500; i++) v = f.push(1_000_000);
     expect(Number.isFinite(v)).toBe(true);
+  });
+});
+
+describe('V2 PPG sample timing', () => {
+  /* firmware nc_ppg_batch_add stamps t0 on the FIRST sample of a batch */
+  const b = { t0Us: 1_000_000, rateCode: 1, ir: new Array(10).fill(0) };
+
+  it('places each sample one period after the previous, from t0', () => {
+    expect(ppgPeriodUs(1)).toBe(10_000);
+    expect(ppgPeriodUs(4)).toBe(2_000);
+    expect(ppgSampleUs(b, 0)).toBe(1_000_000);
+    expect(ppgSampleUs(b, 3)).toBe(1_030_000);
+  });
+
+  it('reports the NEWEST sample time, which downstream treats as the batch stamp', () => {
+    expect(ppgNewestUs(b)).toBe(1_090_000);
+    expect(ppgNewestUs({ ...b, ir: [0] })).toBe(1_000_000);
+  });
+
+  it('names flag bits', () => {
+    expect(ppgFlagNames(PPGF_AGC_SETTLING | PPGF_AMB | PPGF_CLIPPED)).toBe('AGC_SETTLING|AMB|CLIPPED');
+    expect(ppgFlagNames(0)).toBe('');
+    expect(ibiFlagNames(IBIF_INTERPOLATED | IBIF_FIRST_AFTER_GAP)).toBe('INTERPOLATED|FIRST_AFTER_GAP');
+  });
+});
+
+/* EVENT batch per proto.h: [u32 seq][u8 n] + n × {u8 type, u8 len, payload};
+ * every payload starts with a u64 device time. */
+function eventFrame(seq: number, recs: Array<{ type: number; payload: number[] }>) {
+  const len = EVENT_HDR_SIZE + recs.reduce((a, r) => a + 2 + r.payload.length, 0);
+  const b = new Uint8Array(len);
+  const d = new DataView(b.buffer);
+  d.setUint32(0, seq, true);
+  d.setUint8(4, recs.length);
+  let off = EVENT_HDR_SIZE;
+  for (const r of recs) {
+    b[off] = r.type; b[off + 1] = r.payload.length;
+    b.set(r.payload, off + 2);
+    off += 2 + r.payload.length;
+  }
+  return new DataView(b.buffer);
+}
+
+function u64le(v: number): number[] {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setUint32(0, v >>> 0, true);
+  new DataView(out.buffer).setUint32(4, Math.floor(v / 4294967296), true);
+  return [...out];
+}
+
+describe('V2 EVENT parsing', () => {
+  it('decodes an AGC step and a marker, keeping device time and raw bytes', () => {
+    const agc = [...u64le(12_345_678), 0, 5, 9, 2, 3];            /* 13 bytes */
+    const marker = [...u64le(20_000_000), 1, 0x34, 0x12];          /* 11 bytes */
+    const { seq, events } = parseV2EventBatch(eventFrame(77, [
+      { type: EV_AGC_STEP, payload: agc },
+      { type: EV_MARKER, payload: marker },
+    ]));
+    expect(seq).toBe(77);
+    expect(events).toHaveLength(2);
+    expect(events[0].typeName).toBe('AGC_STEP');
+    expect(events[0].tUs).toBe(12_345_678);
+    expect(events[0].fields).toEqual({ led: 0, oldMa: 5, newMa: 9, oldRf: 2, newRf: 3 });
+    expect(events[1].typeName).toBe('MARKER');
+    expect(events[1].fields).toEqual({ source: 1, markerId: 0x1234 });
+    expect(events[1].rawHex.startsWith('002d3101')).toBe(true);   /* 20e6 LE */
+  });
+
+  it('keeps an unknown or mis-sized record as raw bytes instead of guessing', () => {
+    const { events } = parseV2EventBatch(eventFrame(1, [
+      { type: 99, payload: [1, 2, 3] },
+      { type: EV_AGC_STEP, payload: [...u64le(1), 0] },            /* wrong length */
+    ]));
+    expect(events[0].typeName).toBe('TYPE_99');
+    expect(events[0].tUs).toBeNull();
+    expect(events[0].rawHex).toBe('010203');
+    expect(events[1].fields).toEqual({});
+    expect(events[1].tUs).toBe(1);
+  });
+
+  it('rejects truncated and over-long batches', () => {
+    const good = eventFrame(1, [{ type: EV_MARKER, payload: [...u64le(5), 0, 1, 0] }]);
+    expect(() => parseV2EventBatch(new DataView(good.buffer.slice(0, good.byteLength - 2))))
+      .toThrow(/truncated/);
+    const long = new Uint8Array(good.byteLength + 1);
+    long.set(new Uint8Array(good.buffer));
+    expect(() => parseV2EventBatch(new DataView(long.buffer))).toThrow(/trailing/);
+  });
+});
+
+describe('V2 ACCEL parsing', () => {
+  /* [u32 seq][u64 t0_us][u8 odr][u8 n][u8 flags] + n × {i16 x, y, z} */
+  function accelFrame(samples: Array<[number, number, number]>, flags: number) {
+    const b = new Uint8Array(15 + samples.length * 6);
+    const d = new DataView(b.buffer);
+    d.setUint32(0, 12, true);
+    d.setUint32(4, 3_000_000, true);
+    d.setUint8(12, 2);                       /* 50 Hz */
+    d.setUint8(13, samples.length);
+    d.setUint8(14, flags);
+    samples.forEach(([x, y, z], i) => {
+      d.setInt16(15 + i * 6, x, true);
+      d.setInt16(15 + i * 6 + 2, y, true);
+      d.setInt16(15 + i * 6 + 4, z, true);
+    });
+    return new DataView(b.buffer);
+  }
+
+  it('decodes axes, rate and the fs / overrun flags', () => {
+    const a = parseV2Accel(accelFrame([[500, -500, 1000], [1, 2, 3]], 0x05));
+    expect(a.seq).toBe(12);
+    expect(a.t0Us).toBe(3_000_000);
+    expect(a.x).toEqual([500, 1]);
+    expect(a.y).toEqual([-500, 2]);
+    expect(a.z).toEqual([1000, 3]);
+    expect(a.flags & ACCF_FS_MASK).toBe(1);
+    expect(a.flags & ACCF_FIFO_OVERRUN).toBe(ACCF_FIFO_OVERRUN);
+    expect(accelPeriodUs(a.odrCode)).toBe(20_000);
+    expect(accelCountsPerG(1)).toBe(500);    /* ±4 g, 2 mg/digit */
+  });
+
+  it('rejects a length that does not match n', () => {
+    const good = accelFrame([[1, 2, 3]], 0);
+    expect(() => parseV2Accel(new DataView(good.buffer.slice(0, good.byteLength - 1))))
+      .toThrow(/ACCEL len/);
   });
 });

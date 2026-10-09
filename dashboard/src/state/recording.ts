@@ -6,7 +6,13 @@ import {
   type NarbisSqiEvent,
   type NarbisBatteryEvent,
   type NarbisDiagnosticEvent,
+  type NarbisV2PpgEvent,
+  type NarbisV2AccelEvent,
+  type NarbisV2IbiEvent,
+  type NarbisV2EventsEvent,
+  type NarbisV2StatusEvent,
 } from '../ble/narbisDevice';
+import type { V2Status } from '../ble/v2/protocol';
 import { edgeDevice, type RelayedBattery } from '../ble/edgeDevice';
 import { polarH10, type PolarBeatEvent, type PolarAccEvent } from '../ble/polarH10';
 import {
@@ -24,7 +30,7 @@ import {
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
   type NarbisRuntimeConfig,
 } from '../ble/parsers';
-import { useDashboardStore, setRecordingState } from './store';
+import { useDashboardStore, setRecordingState, type BleLogEntry } from './store';
 import {
   getDb,
   STORE_RECORDING_SESSIONS,
@@ -40,6 +46,7 @@ import type {
   AnnotationEventType,
   BatteryRecord,
   BeatRecord,
+  BleLogRecord,
   ConfigChangeEntry,
   FilteredRecord,
   ManifestSummary,
@@ -52,6 +59,11 @@ import type {
   RecordingSessionRow,
   SessionStatus,
   SqiRecord,
+  V2AccelBatchRecord,
+  V2EventRecordTimed,
+  V2IbiRecordTimed,
+  V2PpgBatchRecord,
+  V2StatusRecord,
 } from '../recording/types';
 import { deleteChunks } from '../recording/aggregator';
 import { exportSession } from '../recording/export';
@@ -145,6 +157,12 @@ class SessionAccumulator {
   metrics: MetricsRecord[] = [];
   annotations: Annotation[] = [];
   configEvents: ConfigChangeEntry[] = [];
+  v2Ppg: V2PpgBatchRecord[] = [];
+  v2Accel: V2AccelBatchRecord[] = [];
+  v2Status: V2StatusRecord[] = [];
+  v2Ibi: V2IbiRecordTimed[] = [];
+  v2Events: V2EventRecordTimed[] = [];
+  bleLog: BleLogRecord[] = [];
 
   isEmpty(): boolean {
     return (
@@ -157,7 +175,13 @@ class SessionAccumulator {
       this.accPackets.length === 0 &&
       this.metrics.length === 0 &&
       this.annotations.length === 0 &&
-      this.configEvents.length === 0
+      this.configEvents.length === 0 &&
+      this.v2Ppg.length === 0 &&
+      this.v2Accel.length === 0 &&
+      this.v2Status.length === 0 &&
+      this.v2Ibi.length === 0 &&
+      this.v2Events.length === 0 &&
+      this.bleLog.length === 0
     );
   }
 
@@ -172,6 +196,12 @@ class SessionAccumulator {
     this.metrics = [];
     this.annotations = [];
     this.configEvents = [];
+    this.v2Ppg = [];
+    this.v2Accel = [];
+    this.v2Status = [];
+    this.v2Ibi = [];
+    this.v2Events = [];
+    this.bleLog = [];
   }
 }
 
@@ -189,7 +219,16 @@ interface RecorderRuntime {
   channelUsed: string;
   recentSqiX100: Array<{ timestamp: number; sqi_x100: number }>; // for sqi_avg per metric
   byteEstimate: number;
+  /** Latest V2 STATUS — stamps each stored PPG batch with the drive state. */
+  lastV2Status: V2Status | null;
+  lastBleLogId: number;
+  bleLogUnsub: (() => void) | null;
   // listener references for tear-down
+  onV2Ppg: (e: Event) => void;
+  onV2Accel: (e: Event) => void;
+  onV2Status: (e: Event) => void;
+  onV2Ibi: (e: Event) => void;
+  onV2Event: (e: Event) => void;
   onBeat: (e: Event) => void;
   onRaw: (e: Event) => void;
   onSqi: (e: Event) => void;
@@ -322,7 +361,8 @@ export const useRecordingStore = create<RecordingStoreState>((set, get) => ({
       status: 'recording',
       schemaVersion: RECORDING_SCHEMA_VERSION,
       configInitial: initialConfig,
-      fwVersion: null,
+      /* V2 boards report it via Device Information at connect. */
+      fwVersion: narbisDevice.firmwareRevision,
       dashboardVersion: DASHBOARD_VERSION,
       streams: meta.streams,
       summary: null,
@@ -549,6 +589,14 @@ function createRuntime(
     channelUsed: 'ir',
     recentSqiX100: [],
     byteEstimate: 0,
+    lastV2Status: narbisDevice.v2Status,
+    lastBleLogId: 0,
+    bleLogUnsub: null,
+    onV2Ppg: () => {},
+    onV2Accel: () => {},
+    onV2Status: () => {},
+    onV2Ibi: () => {},
+    onV2Event: () => {},
     onBeat: () => {},
     onRaw: () => {},
     onSqi: () => {},
@@ -570,10 +618,45 @@ function createRuntime(
   r.onPolar = makeOnPolar(r);
   r.onAcc = makeOnAcc(r);
   r.onMetric = makeOnMetric(r);
+  r.onV2Ppg = makeOnV2Ppg(r);
+  r.onV2Accel = makeOnV2Accel(r);
+  r.onV2Status = makeOnV2Status(r);
+  r.onV2Ibi = makeOnV2Ibi(r);
+  r.onV2Event = makeOnV2Event(r);
   return r;
 }
 
+/* BLE log lines leading up to the recording are kept too, so the capture
+ * says which firmware it came from (the connect line) and why it may
+ * start mid-reconnect. */
+const BLE_LOG_LOOKBACK_MS = 5 * 60 * 1000;
+
+function captureBleLog(r: RecorderRuntime, entries: BleLogEntry[], since = 0): void {
+  for (const e of entries) {
+    if (e.id <= r.lastBleLogId) continue;
+    r.lastBleLogId = e.id;
+    if (e.timestamp < since) continue;
+    r.acc.bleLog.push({
+      timestamp: e.timestamp, source: e.source, level: e.level, message: e.message,
+    });
+    bump(r, null, 64 + e.message.length);
+  }
+}
+
 function attachListeners(r: RecorderRuntime): void {
+  /* V2.1 full-fidelity streams. STATUS is always kept (1 Hz, tiny) — the
+   * PPG rows are stamped with the drive state it carries. */
+  narbisDevice.addEventListener('v2StatusReceived', r.onV2Status);
+  if (r.meta.streams.raw) {
+    narbisDevice.addEventListener('v2PpgReceived', r.onV2Ppg);
+    narbisDevice.addEventListener('v2AccelReceived', r.onV2Accel);
+    narbisDevice.addEventListener('v2EventReceived', r.onV2Event);
+  }
+  if (r.meta.streams.beats) narbisDevice.addEventListener('v2IbiReceived', r.onV2Ibi);
+  captureBleLog(r, useDashboardStore.getState().bleLog, r.startedAt - BLE_LOG_LOOKBACK_MS);
+  r.bleLogUnsub = useDashboardStore.subscribe((s, prev) => {
+    if (s.bleLog !== prev.bleLog) captureBleLog(r, s.bleLog);
+  });
   if (r.meta.streams.beats) narbisDevice.addEventListener('beatReceived', r.onBeat);
   if (r.meta.streams.raw) narbisDevice.addEventListener('rawSampleReceived', r.onRaw);
   if (r.meta.streams.sqi) narbisDevice.addEventListener('sqiReceived', r.onSqi);
@@ -590,6 +673,17 @@ function attachListeners(r: RecorderRuntime): void {
 }
 
 function detachListeners(r: RecorderRuntime): void {
+  narbisDevice.removeEventListener('v2StatusReceived', r.onV2Status);
+  narbisDevice.removeEventListener('v2PpgReceived', r.onV2Ppg);
+  narbisDevice.removeEventListener('v2AccelReceived', r.onV2Accel);
+  narbisDevice.removeEventListener('v2EventReceived', r.onV2Event);
+  narbisDevice.removeEventListener('v2IbiReceived', r.onV2Ibi);
+  if (r.bleLogUnsub) {
+    /* last lines (e.g. the stop-time disconnect) before tearing down */
+    captureBleLog(r, useDashboardStore.getState().bleLog);
+    r.bleLogUnsub();
+    r.bleLogUnsub = null;
+  }
   narbisDevice.removeEventListener('beatReceived', r.onBeat);
   narbisDevice.removeEventListener('rawSampleReceived', r.onRaw);
   narbisDevice.removeEventListener('sqiReceived', r.onSqi);
@@ -639,6 +733,70 @@ function makeOnRaw(r: RecorderRuntime) {
       });
     }
     bump(r, 'raw', 80 * raw.samples.length);
+  };
+}
+
+function makeOnV2Ppg(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { batch: b, hostFirstMs, periodMs } = (ev as CustomEvent<NarbisV2PpgEvent>).detail;
+    const st = r.lastV2Status;
+    r.acc.v2Ppg.push({
+      hostFirstMs, periodMs,
+      seq: b.seq, t0Us: b.t0Us, rateCode: b.rateCode, flags: b.flags,
+      ir: b.ir, red: b.red, amb: b.amb,
+      ledIrMa: st ? st.ledIrMa : null,
+      ledRedMa: st ? st.ledRedMa : null,
+      tiaGainCode: st ? st.tiaGainCode : null,
+    });
+    /* sample counts already go through onRaw (rawSampleReceived fires too) */
+    bump(r, null, 48 + b.ir.length * 24);
+  };
+}
+
+function makeOnV2Accel(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { batch: b, hostFirstMs, periodMs } = (ev as CustomEvent<NarbisV2AccelEvent>).detail;
+    r.acc.v2Accel.push({
+      hostFirstMs, periodMs,
+      seq: b.seq, t0Us: b.t0Us, odrCode: b.odrCode, flags: b.flags,
+      x: b.x, y: b.y, z: b.z,
+    });
+    bump(r, null, 48 + b.x.length * 18);
+  };
+}
+
+function makeOnV2Status(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const s = (ev as CustomEvent<NarbisV2StatusEvent>).detail;
+    r.lastV2Status = s;
+    r.acc.v2Status.push({ ...s });
+    bump(r, null, 160);
+  };
+}
+
+function makeOnV2Ibi(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { seq, records } = (ev as CustomEvent<NarbisV2IbiEvent>).detail;
+    for (const rec of records) {
+      r.acc.v2Ibi.push({
+        timestamp: rec.hostMs, seq, tBeatUs: rec.tBeatUs,
+        ibiMs: rec.ibiMs, confidence: rec.confidence, flags: rec.flags,
+      });
+    }
+    bump(r, null, 48 * records.length);
+  };
+}
+
+function makeOnV2Event(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { seq, events, timestamp } = (ev as CustomEvent<NarbisV2EventsEvent>).detail;
+    for (const e of events) {
+      r.acc.v2Events.push({
+        timestamp: e.hostMs ?? timestamp, arrivalMs: timestamp, seq,
+        type: e.type, typeName: e.typeName, tUs: e.tUs, fields: e.fields, rawHex: e.rawHex,
+      });
+    }
+    bump(r, null, 96 * events.length);
   };
 }
 
@@ -820,6 +978,12 @@ async function flushChunk(): Promise<void> {
   if (r.acc.metrics.length) chunk.metrics = r.acc.metrics;
   if (r.acc.annotations.length) chunk.annotations = r.acc.annotations;
   if (r.acc.configEvents.length) chunk.configEvents = r.acc.configEvents;
+  if (r.acc.v2Ppg.length) chunk.v2Ppg = r.acc.v2Ppg;
+  if (r.acc.v2Accel.length) chunk.v2Accel = r.acc.v2Accel;
+  if (r.acc.v2Status.length) chunk.v2Status = r.acc.v2Status;
+  if (r.acc.v2Ibi.length) chunk.v2Ibi = r.acc.v2Ibi;
+  if (r.acc.v2Events.length) chunk.v2Events = r.acc.v2Events;
+  if (r.acc.bleLog.length) chunk.bleLog = r.acc.bleLog;
   // Reset before await so events arriving during the write go into the next chunk.
   r.acc.reset();
   try {
@@ -843,6 +1007,11 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.metrics[0]?.timestamp,
     acc.annotations[0]?.timestamp,
     acc.configEvents[0]?.timestamp,
+    acc.v2Ppg[0]?.hostFirstMs,
+    acc.v2Accel[0]?.hostFirstMs,
+    acc.v2Status[0]?.timestamp,
+    acc.v2Ibi[0]?.timestamp,
+    acc.v2Events[0]?.timestamp,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
   return Math.min(...candidates);
@@ -860,6 +1029,11 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.metrics)?.timestamp,
     last(acc.annotations)?.timestamp,
     last(acc.configEvents)?.timestamp,
+    last(acc.v2Ppg)?.hostFirstMs,
+    last(acc.v2Accel)?.hostFirstMs,
+    last(acc.v2Status)?.timestamp,
+    last(acc.v2Ibi)?.timestamp,
+    last(acc.v2Events)?.timestamp,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
   return Math.max(...candidates);

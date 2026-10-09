@@ -16,9 +16,9 @@
 import {
   V2_SENSOR_SVC, V2_CHR_PPG, V2_CHR_ACCEL, V2_CHR_IBI, V2_CHR_EVENT,
   V2_CHR_STATUS, V2_CHR_CONTROL,
-  parseV2Ppg, parseV2Ibi, parseV2Status, parseV2CtrlResponse,
+  parseV2Ppg, parseV2Ibi, parseV2Status, parseV2CtrlResponse, parseV2Accel,
   CTRL_STATUS_NAME,
-  type V2PpgBatch, type V2IbiRecord, type V2Status,
+  type V2PpgBatch, type V2IbiRecord, type V2Status, type V2AccelBatch,
 } from './protocol';
 
 const CTRL_TIMEOUT_MS = 6000;
@@ -28,6 +28,7 @@ export interface V2SessionCallbacks {
   onIbi?: (records: V2IbiRecord[], seq: number) => void;
   onStatus?: (s: V2Status) => void;
   onEvent?: (raw: Uint8Array) => void;
+  onAccel?: (b: V2AccelBatch) => void;
   onError?: (err: unknown, phase: string) => void;
   onPhase?: (phase: string) => void;
 }
@@ -99,13 +100,18 @@ export class V2Session {
     } catch (err) {
       this.cb.onError?.(err, 'v2-event-optional');
     }
-    /* ACCEL is subscribed only so the firmware's subscription-gated
-     * acquisition sees a consumer if we later ask for accel; we do not
-     * parse it here (respiration has its own path). */
+    /* ACCEL: the firmware batches accel whenever PPG runs (the artifact
+     * gate needs it) and, with no subscriber, discards each packet via
+     * drop-oldest — counted in STATUS notif_drop, so an unsubscribed
+     * client sees that counter climb ~1/s for nothing. Subscribing makes
+     * the counter mean real loss again and gives the raw capture motion
+     * data to explain PPG artifacts. Optional: absent on some builds. */
     try {
-      await svc.getCharacteristic(V2_CHR_ACCEL);
-    } catch {
-      /* absent on some builds — harmless */
+      const chAccel = await svc.getCharacteristic(V2_CHR_ACCEL);
+      this.attach(chAccel, this.onAccelNotify);
+      await chAccel.startNotifications();
+    } catch (err) {
+      this.cb.onError?.(err, 'v2-accel-optional');
     }
   }
 
@@ -229,5 +235,12 @@ export class V2Session {
     const v = this.valueOf(ev);
     if (!v) return;
     this.cb.onEvent?.(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+  };
+
+  private onAccelNotify = (ev: Event): void => {
+    const v = this.valueOf(ev);
+    if (!v) return;
+    try { this.cb.onAccel?.(parseV2Accel(v)); }
+    catch (err) { this.cb.onError?.(err, 'v2-accel-parse'); }
   };
 }

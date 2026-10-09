@@ -8,10 +8,12 @@ import {
 } from './aggregator';
 import {
   FILE_NAMES,
+  V2_README,
   writeAccSamplesCSV,
   writeAnnotationsCSV,
   writeBatteryCSV,
   writeBeatsCSV,
+  writeBleLogTxt,
   writeComparisonCSV,
   writeConfigHistoryJSON,
   writeH10BeatsCSV,
@@ -20,6 +22,12 @@ import {
   writeMetricsCSV,
   writeRawSamplesCSV,
   writeReplayJSON,
+  writeV2AccelRawCSV,
+  writeV2EventsCSV,
+  writeV2IbiCSV,
+  writeV2LinkStatsJSON,
+  writeV2PpgRawCSV,
+  writeV2StatusCSV,
 } from './format';
 import { buildManifest, sessionFolderName, summarize } from './manifest';
 import type {
@@ -98,6 +106,28 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
   if (session.streams.acc && accPackets.length > 0) {
     add(FILE_NAMES.accSamples, writeAccSamplesCSV(accPackets));
   }
+
+  /* V2.1 (AFE4404) full-fidelity capture — only present when a V2 board
+   * streamed during the recording. */
+  const v2Ppg = concatStream(chunks, 'v2Ppg');
+  const v2Accel = concatStream(chunks, 'v2Accel');
+  const v2Status = concatStream(chunks, 'v2Status');
+  const v2Ibi = concatStream(chunks, 'v2Ibi');
+  const v2Events = concatStream(chunks, 'v2Events');
+  if (v2Ppg.length > 0 || v2Ibi.length > 0 || v2Status.length > 0) {
+    if (v2Ppg.length > 0) add(FILE_NAMES.v2PpgRaw, writeV2PpgRawCSV(v2Ppg));
+    if (v2Accel.length > 0) add(FILE_NAMES.v2AccelRaw, writeV2AccelRawCSV(v2Accel));
+    if (v2Status.length > 0) add(FILE_NAMES.v2Status, writeV2StatusCSV(v2Status));
+    if (v2Ibi.length > 0) add(FILE_NAMES.v2Ibi, writeV2IbiCSV(v2Ibi));
+    if (v2Events.length > 0) add(FILE_NAMES.v2Events, writeV2EventsCSV(v2Events));
+    add(FILE_NAMES.v2LinkStats, writeV2LinkStatsJSON({
+      fwVersion: session.fwVersion,
+      batches: v2Ppg, accel: v2Accel, ibis: v2Ibi, statuses: v2Status, events: v2Events,
+    }));
+    add(FILE_NAMES.v2Readme, V2_README);
+  }
+  const bleLog = concatStream(chunks, 'bleLog');
+  if (bleLog.length > 0) add(FILE_NAMES.bleLog, writeBleLogTxt(bleLog));
 
   const endedAt = session.endedAt ?? Date.now();
 

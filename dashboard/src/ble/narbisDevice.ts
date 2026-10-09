@@ -64,9 +64,10 @@ import {
   AGC_APPLY_IR, AGC_APPLY_RED, AGC_APPLY_GAIN,
   buildStreamStart, buildStreamStop, buildSetRate, buildAgcFreeze,
   buildAgcManual, buildKnobSet, buildKnobGet, buildKnobSave, buildMarker,
-  parseKnobValue,
-  type V2Status, type V2PpgBatch, type V2IbiRecord,
+  parseKnobValue, parseV2EventBatch, ppgNewestUs, ppgPeriodUs, accelPeriodUs,
+  type V2Status, type V2PpgBatch, type V2IbiRecord, type V2Event, type V2AccelBatch,
 } from './v2/protocol';
+import { V2LinkStats, type V2LinkStatsSnapshot } from './v2/linkStats';
 
 export type NarbisStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -81,6 +82,38 @@ export type NarbisProtocolVersion = 'v1' | 'v2' | null;
 
 /** Live V2 telemetry mirrored out of STATUS notifications, for the tuning UI. */
 export interface NarbisV2StatusEvent extends V2Status {
+  timestamp: number;
+}
+
+/** One V2 PPG notification at full fidelity — ambient, seq, flags, device
+ * clock — for the raw recorder. `hostFirstMs` puts sample 0 on the host
+ * timeline through the same device-clock anchor the beats use. */
+export interface NarbisV2PpgEvent {
+  batch: V2PpgBatch;
+  hostFirstMs: number;
+  periodMs: number;
+}
+
+export interface NarbisV2IbiEvent {
+  seq: number;
+  records: Array<V2IbiRecord & { hostMs: number }>;
+}
+
+/** One V2 accelerometer notification (raw counts), on the shared clock. */
+export interface NarbisV2AccelEvent {
+  batch: V2AccelBatch;
+  hostFirstMs: number;
+  periodMs: number;
+}
+
+export interface NarbisV2EventsEvent {
+  seq: number;
+  events: Array<V2Event & { hostMs: number | null }>;
+  /** Host arrival time of the notification. */
+  timestamp: number;
+}
+
+export interface NarbisV2LinkStatsEvent extends V2LinkStatsSnapshot {
   timestamp: number;
 }
 
@@ -161,6 +194,8 @@ export class NarbisDevice extends EventTarget {
    * host timeline without accumulating BLE jitter: batches carry an exact
    * device t0, so we anchor once and add device deltas. */
   private v2ClockAnchor: { devUs: number; hostMs: number } | null = null;
+  private v2Stats = new V2LinkStats();
+  private _firmwareRevision: string | null = null;
 
   get status(): NarbisStatus {
     return this._status;
@@ -191,6 +226,16 @@ export class NarbisDevice extends EventTarget {
 
   get deviceName(): string | null {
     return this._deviceName;
+  }
+
+  /** Device Information "Firmware Revision" (V2 boards; null until read). */
+  get firmwareRevision(): string | null {
+    return this._firmwareRevision;
+  }
+
+  /** Link health since this V2 connection opened (null on v1 / disconnected). */
+  get v2LinkStats(): V2LinkStatsSnapshot | null {
+    return this.isV2 ? this.v2Stats.snapshot() : null;
   }
 
   async connect(): Promise<void> {
@@ -250,16 +295,21 @@ export class NarbisDevice extends EventTarget {
       this.emitPhase('ready');
       this.dispatch('connected', { name: this._deviceName });
     } catch (err) {
+      /* Read before cleanupConnection() nulls it: a device was picked, so
+       * the failure happened opening GATT rather than in the chooser. */
+      const devicePicked = this.device !== null;
       this.setStatus('disconnected');
       this.cleanupConnection();
-      // Multi-central earclip rejects new connects when both slots are full.
-      // Web Bluetooth surfaces this as a generic GATT connect failure on
-      // the second peer; rewrap so the UI can show a useful hint.
+      // A full earclip rejects new connects: v1 has two central slots
+      // (dashboard + glasses), V2.1 has ONE. Web Bluetooth surfaces this as
+      // a generic GATT connect failure; rewrap so the UI shows the fix.
       if (err instanceof Error &&
           /failed|gatt|connection/i.test(err.message) &&
-          this.device !== null) {
+          devicePicked) {
         throw new Error(
-          'earclip is already paired with two devices — disconnect glasses or another browser tab and retry',
+          'could not open the earclip connection — it may already be connected elsewhere. ' +
+          'A V2.1 earclip accepts ONE connection (close the functest page or any other tab using it); ' +
+          `a v1 earclip accepts two (dashboard + glasses). Then retry. (${err.message})`,
         );
       }
       throw err;
@@ -478,12 +528,23 @@ export class NarbisDevice extends EventTarget {
   private async openV2Session(): Promise<void> {
     if (!this.server) throw new Error('no GATT server');
     this.v2ClockAnchor = null;
+    this.v2Stats.reset(Date.now());
+    await this.readDeviceInfo();
 
     const session = new V2Session(this.server, {
       onPpg: this.onV2Ppg,
       onIbi: this.onV2Ibi,
       onStatus: this.onV2Status,
-      onError: (err, phase) => this.emitError(err, phase),
+      onEvent: this.onV2Event,
+      onAccel: this.onV2Accel,
+      onError: (err, phase) => {
+        /* Decode failures are link-health data, not just log lines: a
+         * dashboard/firmware layout drift shows up as a climbing counter. */
+        if (phase.endsWith('-parse')) {
+          this.v2Stats.onParseError(phase, err instanceof Error ? err.message : String(err));
+        }
+        this.emitError(err, phase);
+      },
       onPhase: (p) => this.emitPhase(p),
     });
     await session.open();
@@ -512,8 +573,30 @@ export class NarbisDevice extends EventTarget {
     return this.v2ClockAnchor.hostMs + (devUs - this.v2ClockAnchor.devUs) / 1000;
   }
 
+  /** Device Information firmware revision, so the UI, the BLE log and every
+   * recording say which firmware produced the data. Optional: a build
+   * without DIS must still connect. */
+  private async readDeviceInfo(): Promise<void> {
+    if (!this.server) return;
+    try {
+      const dis = await this.server.getPrimaryService(DEVICE_INFO_SERVICE);
+      const ch = await dis.getCharacteristic(0x2a26);
+      this._firmwareRevision = new TextDecoder()
+        .decode(await ch.readValue()).replace(/\0+$/, '').trim() || null;
+    } catch (err) {
+      this.emitError(err, 'v2-device-info-optional');
+    }
+  }
+
   private onV2Ppg = (b: V2PpgBatch): void => {
     const sps = RATE_SPS[b.rateCode] ?? 100;
+    this.v2Stats.onPpg(b);
+    /* Downstream (processRawBatch, the recorder) reads a raw event's
+     * timestamp as its NEWEST sample, but the firmware stamps t0 on the
+     * FIRST sample — anchor on the newest or every sample lands one batch
+     * (~0.1–0.3 s) early against the beats. */
+    const newestMs = this.v2HostTime(ppgNewestUs(b));
+    const periodMs = ppgPeriodUs(b.rateCode) / 1000;
     /* Re-shape into the v1 raw-PPG event so SignalChart/recording are
      * generation-agnostic. V2 counts are signed 22-bit (ambient already
      * subtracted on-device when amb_subtract is on). */
@@ -522,13 +605,22 @@ export class NarbisDevice extends EventTarget {
       sample_rate_hz: sps,
       n_samples: samples.length,
       samples,
-      timestamp: this.v2HostTime(b.t0Us),
+      timestamp: newestMs,
     };
     this.dispatch('rawSampleReceived', detail);
+    this.dispatch('v2PpgReceived', {
+      batch: b,
+      hostFirstMs: newestMs - (b.ir.length - 1) * periodMs,
+      periodMs,
+    } as NarbisV2PpgEvent);
   };
 
-  private onV2Ibi = (records: V2IbiRecord[]): void => {
+  private onV2Ibi = (records: V2IbiRecord[], seq: number): void => {
+    this.v2Stats.onIbi(seq, records.length);
+    const timed: NarbisV2IbiEvent['records'] = [];
     for (const r of records) {
+      const hostMs = this.v2HostTime(r.tBeatUs);
+      timed.push({ ...r, hostMs });
       if (r.ibiMs <= 0) continue;
       const detail: NarbisBeatEvent = {
         bpm: Math.round(60000 / r.ibiMs),
@@ -540,20 +632,62 @@ export class NarbisDevice extends EventTarget {
         confidence: r.confidence,
         flags: r.flags,
         sqi: this.lastSqi,
-        timestamp: this.v2HostTime(r.tBeatUs),
+        timestamp: hostMs,
       };
       this.dispatch('beatReceived', detail);
+    }
+    this.dispatch('v2IbiReceived', { seq, records: timed } as NarbisV2IbiEvent);
+  };
+
+  private onV2Accel = (b: V2AccelBatch): void => {
+    this.v2Stats.onAccel(b);
+    const n = b.x.length;
+    if (n === 0) return;
+    const periodUs = accelPeriodUs(b.odrCode);
+    /* Same newest-sample anchoring as PPG, so either stream may arrive first. */
+    const newestMs = this.v2HostTime(b.t0Us + (n - 1) * periodUs);
+    this.dispatch('v2AccelReceived', {
+      batch: b,
+      hostFirstMs: newestMs - (n - 1) * (periodUs / 1000),
+      periodMs: periodUs / 1000,
+    } as NarbisV2AccelEvent);
+  };
+
+  private onV2Event = (raw: Uint8Array): void => {
+    try {
+      const { seq, events } = parseV2EventBatch(
+        new DataView(raw.buffer, raw.byteOffset, raw.byteLength),
+      );
+      this.v2Stats.onEvent();
+      this.dispatch('v2EventReceived', {
+        seq,
+        /* Only map onto the host timeline once a sample stream (PPG or
+         * accel) has anchored the clocks; anchoring on an event would skew
+         * every later sample. */
+        events: events.map((e) => ({
+          ...e,
+          hostMs: e.tUs !== null && this.v2ClockAnchor ? this.v2HostTime(e.tUs) : null,
+        })),
+        timestamp: Date.now(),
+      } as NarbisV2EventsEvent);
+    } catch (err) {
+      this.v2Stats.onParseError('v2-event-parse', err instanceof Error ? err.message : String(err));
+      this.emitError(err, 'v2-event-parse');
     }
   };
 
   private onV2Status = (s: V2Status): void => {
     this._v2Status = s;
-    this.dispatch('v2StatusReceived', { ...s, timestamp: Date.now() } as NarbisV2StatusEvent);
+    this.v2Stats.onStatus(s);
+    const now = Date.now();
+    this.dispatch('v2StatusReceived', { ...s, timestamp: now } as NarbisV2StatusEvent);
+    /* STATUS is the 1 Hz heartbeat — a natural cadence for the health HUD. */
+    this.dispatch('v2LinkStats', { ...this.v2Stats.snapshot(), timestamp: now } as NarbisV2LinkStatsEvent);
     this.dispatch('batteryReceived', {
       soc_pct: s.battPct,
       mv: s.battMv,
       source: 'narbis',
-      timestamp: Date.now(),
+      timestamp: now,
     } as NarbisBatteryEvent);
   };
 
@@ -770,6 +904,7 @@ export class NarbisDevice extends EventTarget {
     this._protocol = null;
     this._v2Status = null;
     this.v2ClockAnchor = null;
+    this._firmwareRevision = null;
     if (!opts.keepDevice) {
       if (this.device) {
         this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);

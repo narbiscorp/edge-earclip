@@ -3,13 +3,24 @@ import type {
   Annotation,
   BatteryRecord,
   BeatRecord,
+  BleLogRecord,
   ConfigChangeEntry,
   MetricsRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
   RecordingManifest,
   ReplayEvent,
+  V2AccelBatchRecord,
+  V2EventRecordTimed,
+  V2IbiRecordTimed,
+  V2PpgBatchRecord,
+  V2StatusRecord,
 } from './types';
+import {
+  ACC_FS_G, ACC_ODR_HZ, ACCF_FIFO_OVERRUN, ACCF_FS_MASK, RATE_SPS, TIA_RF_OHMS,
+  accelCountsPerG, accelPeriodUs, ibiFlagNames, ppgFlagNames, ppgPeriodUs,
+} from '../ble/v2/protocol';
+import { V2LinkStats } from '../ble/v2/linkStats';
 
 const RAW_HEADER = [
   'timestamp_ms',
@@ -259,6 +270,253 @@ export function writeComparisonCSV(rows: ComparisonRow[]): string {
   return lines.join('\n') + '\n';
 }
 
+/* ------------------------------------------------------------------ */
+/* V2.1 (AFE4404) full-fidelity capture                                */
+/* ------------------------------------------------------------------ */
+
+const V2_PPG_HEADER = [
+  'host_ms', 'dev_us', 'seq', 'i', 'n', 'rate_sps', 'flags', 'flag_names',
+  'ir', 'red', 'amb', 'led_ir_ma', 'led_red_ma', 'tia_rf_kohm',
+];
+
+const V2_ACCEL_HEADER = [
+  'host_ms', 'dev_us', 'seq', 'i', 'n', 'odr_hz', 'fs_g', 'fifo_overrun',
+  'x', 'y', 'z', 'x_g', 'y_g', 'z_g',
+];
+
+const V2_STATUS_HEADER = [
+  'host_ms', 'uptime_s', 'sys_state', 'flags', 'batt_mv', 'batt_pct', 'rate_sps',
+  'led_ir_ma', 'led_red_ma', 'tia_rf_kohm', 'tia_cf_code', 'gate_duty_pct',
+  'notif_drops', 'i2c_errors', 'ibi_last_ms', 'hr_bpm', 'btn_pressed',
+];
+
+const V2_IBI_HEADER = [
+  'host_ms', 'dev_t_beat_us', 'seq', 'ibi_ms', 'bpm', 'confidence', 'flags', 'flag_names',
+];
+
+const V2_EVENT_HEADER = [
+  'host_ms', 'arrival_ms', 'seq', 'type', 'type_name', 'dev_t_us', 'fields', 'raw_hex',
+];
+
+function hex8(v: number): string {
+  return '0x' + (v & 0xff).toString(16).padStart(2, '0');
+}
+
+function rfKohm(code: number | null | undefined): number | null {
+  if (code === null || code === undefined) return null;
+  const ohms = TIA_RF_OHMS[code];
+  return ohms !== undefined ? ohms / 1000 : null;
+}
+
+/** One row per sample, verbatim device values. `seq` is +1 per notification:
+ * a jump means lost batches, a drop to 0 means acquisition restarted. */
+export function writeV2PpgRawCSV(batches: V2PpgBatchRecord[]): string {
+  const lines: string[] = [V2_PPG_HEADER.join(',')];
+  for (const b of batches) {
+    const n = b.ir.length;
+    const sps = RATE_SPS[b.rateCode] ?? null;
+    const periodUs = ppgPeriodUs(b.rateCode);
+    const flags = hex8(b.flags);
+    const names = ppgFlagNames(b.flags);
+    const rf = rfKohm(b.tiaGainCode);
+    for (let i = 0; i < n; i++) {
+      lines.push(csvRow([
+        fmtNum(b.hostFirstMs + i * b.periodMs, 3),
+        Math.round(b.t0Us + i * periodUs),
+        b.seq, i, n, sps, flags, names,
+        b.ir[i], b.red[i], b.amb ? b.amb[i] : null,
+        b.ledIrMa, b.ledRedMa, rf,
+      ]));
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** One row per accelerometer sample: raw counts plus the same in g. */
+export function writeV2AccelRawCSV(batches: V2AccelBatchRecord[]): string {
+  const lines: string[] = [V2_ACCEL_HEADER.join(',')];
+  for (const b of batches) {
+    const n = b.x.length;
+    const fsCode = b.flags & ACCF_FS_MASK;
+    const perG = accelCountsPerG(fsCode);
+    const periodUs = accelPeriodUs(b.odrCode);
+    const overrun = (b.flags & ACCF_FIFO_OVERRUN) !== 0;
+    for (let i = 0; i < n; i++) {
+      lines.push(csvRow([
+        fmtNum(b.hostFirstMs + i * b.periodMs, 3),
+        Math.round(b.t0Us + i * periodUs),
+        b.seq, i, n, ACC_ODR_HZ[b.odrCode] ?? null, ACC_FS_G[fsCode] ?? null, overrun,
+        b.x[i], b.y[i], b.z[i],
+        fmtNum(b.x[i] / perG, 4), fmtNum(b.y[i] / perG, 4), fmtNum(b.z[i] / perG, 4),
+      ]));
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeV2StatusCSV(statuses: V2StatusRecord[]): string {
+  const lines: string[] = [V2_STATUS_HEADER.join(',')];
+  for (const s of statuses) {
+    lines.push(csvRow([
+      s.timestamp, s.uptimeS, s.sysState, hex8(s.flags), s.battMv, s.battPct,
+      RATE_SPS[s.ppgRateCode] ?? null, s.ledIrMa, s.ledRedMa, rfKohm(s.tiaGainCode),
+      s.tiaCfCode, fmtNum(s.gateDutyX100 / 100, 2), s.notifDropCount, s.i2cErrCount,
+      s.ibiLastMs, s.hrBpm, s.btnPressed,
+    ]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeV2IbiCSV(ibis: V2IbiRecordTimed[]): string {
+  const lines: string[] = [V2_IBI_HEADER.join(',')];
+  for (const r of ibis) {
+    lines.push(csvRow([
+      fmtNum(r.timestamp, 3), r.tBeatUs, r.seq, r.ibiMs,
+      r.ibiMs > 0 ? fmtNum(60000 / r.ibiMs, 1) : null,
+      r.confidence, hex8(r.flags), ibiFlagNames(r.flags),
+    ]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeV2EventsCSV(events: V2EventRecordTimed[]): string {
+  const lines: string[] = [V2_EVENT_HEADER.join(',')];
+  for (const e of events) {
+    const fields = Object.entries(e.fields).map(([k, v]) => `${k}=${v}`).join(';');
+    lines.push(csvRow([
+      fmtNum(e.timestamp, 3), e.arrivalMs, e.seq, e.type, e.typeName, e.tUs, fields, e.rawHex,
+    ]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** Records that share a seq arrived in one notification — count packets. */
+function packetSeqs<T extends { seq: number }>(rows: T[]): Array<{ seq: number; n: number }> {
+  const out: Array<{ seq: number; n: number }> = [];
+  for (const r of rows) {
+    const last = out[out.length - 1];
+    if (last && last.seq === r.seq) last.n += 1;
+    else out.push({ seq: r.seq, n: 1 });
+  }
+  return out;
+}
+
+/** Link health recomputed from the recorded data itself, so the summary
+ * describes exactly what is in the zip (not the live session counters). */
+export function writeV2LinkStatsJSON(input: {
+  fwVersion: string | null;
+  batches: V2PpgBatchRecord[];
+  accel?: V2AccelBatchRecord[];
+  ibis: V2IbiRecordTimed[];
+  statuses: V2StatusRecord[];
+  events: V2EventRecordTimed[];
+}): string {
+  const { batches } = input;
+  const stats = new V2LinkStats(batches[0]?.hostFirstMs ?? 0);
+  for (const b of batches) stats.onPpg(b);
+  for (const a of input.accel ?? []) stats.onAccel(a);
+  for (const p of packetSeqs(input.ibis)) stats.onIbi(p.seq, p.n);
+  const eventPackets = packetSeqs(input.events).length;
+  for (let i = 0; i < eventPackets; i++) stats.onEvent();
+  for (const s of input.statuses) stats.onStatus(s);
+  const snap = stats.snapshot();
+  const first = batches[0];
+  const last = batches[batches.length - 1];
+  const lastSampleMs = last ? last.hostFirstMs + (last.ir.length - 1) * last.periodMs : null;
+  return JSON.stringify({
+    firmware: input.fwVersion,
+    computed_from: 'the data in this zip (v2/ppg_raw.csv, ibi.csv, status.csv, events.csv)',
+    first_sample_host_ms: first ? first.hostFirstMs : null,
+    last_sample_host_ms: lastSampleMs,
+    duration_s: first && lastSampleMs !== null ? (lastSampleMs - first.hostFirstMs) / 1000 : 0,
+    ppg_batches: snap.ppgBatches,
+    ppg_samples: snap.ppgSamples,
+    ppg_lost_batches: snap.ppgLostBatches,
+    ppg_seq_restarts: snap.ppgSeqRestarts,
+    clipped_batches: snap.clippedBatches,
+    agc_settling_batches: snap.agcSettlingBatches,
+    wear_off_batches: snap.wearOffBatches,
+    gated_batches: snap.gatedBatches,
+    nominal_sps: snap.nominalSps,
+    measured_sps_device_clock: snap.measuredSps !== null ? Number(snap.measuredSps.toFixed(3)) : null,
+    ibi_packets: snap.ibiPackets,
+    ibi_records: snap.ibiRecords,
+    ibi_lost_packets: snap.ibiLostPackets,
+    accel_batches: snap.accelBatches,
+    accel_samples: snap.accelSamples,
+    accel_lost_batches: snap.accelLostBatches,
+    accel_fifo_overrun_batches: snap.accelFifoOverruns,
+    event_packets: snap.eventPackets,
+    status_frames: snap.statusFrames,
+    device_notif_drops_delta:
+      snap.deviceDrops !== null && snap.deviceDropsStart !== null
+        ? snap.deviceDrops - snap.deviceDropsStart : null,
+    device_i2c_errors_delta:
+      snap.i2cErrors !== null && snap.i2cErrorsStart !== null
+        ? snap.i2cErrors - snap.i2cErrorsStart : null,
+  }, null, 2);
+}
+
+export function writeBleLogTxt(entries: BleLogRecord[]): string {
+  return entries
+    .map((e) => `${new Date(e.timestamp).toISOString()} [${e.source}] ${e.level.toUpperCase()} ${e.message}`)
+    .join('\n') + '\n';
+}
+
+export const V2_README = `V2.1 earclip (AFE4404) raw capture
+==================================
+Everything the earclip sent while recording, verbatim. All host_ms columns
+share one clock anchored to the device's own microsecond clock, so PPG
+samples, beats and events line up exactly (BLE jitter does not move them).
+
+ppg_raw.csv — one row per PPG sample
+  host_ms      sample time on the host clock (ms since 1970, device-anchored)
+  dev_us       device clock, microseconds since boot (exact)
+  seq          batch number, +1 per BLE notification. A jump = lost batches;
+               a drop to 0 = the device restarted acquisition
+  i, n         index within the batch, batch size
+  rate_sps     sample rate of this batch
+  flags        batch flags byte, decoded in flag_names:
+                 GATE          artifact gate active
+                 AGC_SETTLING  AGC just moved LED current / TIA gain (expect a step)
+                 USB           board on USB power
+                 RATE_CHANGED  first batch after a rate change
+                 AMB           amb column is valid for this batch
+                 WEAR_OFF      off-ear detected
+                 CLIPPED       ADC hit full scale (too much light or gain)
+  ir, red      raw AFE counts (signed 22-bit; ambient-subtracted on the device
+               when the amb_subtract knob is on)
+  amb          ambient-phase counts (blank when the batch carried none)
+  led_ir_ma, led_red_ma, tia_rf_kohm
+               drive state from the latest STATUS (up to 1 s stale; exact
+               AGC step times are in events.csv)
+
+accel_raw.csv — one row per accelerometer sample (LIS2DH12): raw counts
+  x, y, z and the same in g (x_g, y_g, z_g), output rate odr_hz, range fs_g,
+  fifo_overrun (the sensor FIFO filled before the firmware drained it).
+  Use it to explain PPG artifacts: motion shows here first.
+
+status.csv — every 1 Hz STATUS frame: battery, rate, LED currents, TIA gain,
+  gate duty, notif_drops (device-side BLE queue drops, cumulative),
+  i2c_errors (cumulative), hr_bpm
+
+ibi.csv — every beat from the on-device detector: device beat time, IBI,
+  confidence (0..100), flags (GATED, AGC_SETTLING, INTERPOLATED,
+  FIRST_AFTER_GAP)
+
+events.csv — device events: AGC_STEP (led, oldMa->newMa, oldRf->newRf codes),
+  GATE, WEAR, MARKER, ERROR, RATE_CHANGE, AGC_OFFDAC; raw_hex is the payload
+
+link_stats.json — computed from the files above: lost batches, restarts,
+  clipped / AGC-settling batch counts, the sample rate implied by the device
+  clock, and how far the device's drop / I2C error counters moved
+
+../ble_log.txt — connection log: connects (with firmware version),
+  disconnects, decode errors, lost-batch warnings
+
+TIA RF codes: 0=500k 1=250k 2=100k 3=50k 4=25k 5=10k 6=1M 7=2M (not monotonic)
+`;
+
 export const UNSUPPORTED_COLUMN_NOTES: string[] = [
   'raw_samples.green: not supported by protocol v1 (MAX30101 green channel not exposed).',
   'raw_samples.dc_red, dc_ir: forward-filled from SQI cadence (not per-sample).',
@@ -282,4 +540,12 @@ export const FILE_NAMES = {
   h10Metrics: 'reference_h10/h10_metrics_1hz.csv',
   accSamples: 'reference_h10/acc_samples.csv',
   comparison: 'comparison.csv',
+  v2PpgRaw: 'v2/ppg_raw.csv',
+  v2AccelRaw: 'v2/accel_raw.csv',
+  v2Status: 'v2/status.csv',
+  v2Ibi: 'v2/ibi.csv',
+  v2Events: 'v2/events.csv',
+  v2LinkStats: 'v2/link_stats.json',
+  v2Readme: 'v2/README.txt',
+  bleLog: 'ble_log.txt',
 } as const;

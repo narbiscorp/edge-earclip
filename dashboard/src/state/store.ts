@@ -12,6 +12,7 @@ import {
   type NarbisPhaseDetail,
   type NarbisProtocolVersion,
   type NarbisV2StatusEvent,
+  type NarbisV2LinkStatsEvent,
 } from '../ble/narbisDevice';
 import { PpgFilter, PPG_FILTER_DEFAULTS, type PpgFilterConfig } from '../ble/v2/ppgFilter';
 import {
@@ -186,6 +187,11 @@ export interface DashboardState {
   /** Latest V2 STATUS frame (LED currents actually applied, TIA gain, rate,
    * HR, gate duty, drop counters). null on v1 / before first notify. */
   v2Status: NarbisV2StatusEvent | null;
+  /** V2 link health since connect (lost batches, clipping, decode errors,
+   * device-clock rate, device drop counters). Refreshed with each STATUS. */
+  v2LinkStats: NarbisV2LinkStatsEvent | null;
+  /** DIS firmware revision of the connected V2 earclip (null on v1). */
+  earclipFirmware: string | null;
 
   /** Which heart-rate source drives the glasses' coherence pipeline.
    * 'earclip' (default): the glasses' BLE central pulls IBI from the
@@ -677,6 +683,8 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   ppgFilter: loadPpgFilter(),
   earclipProtocol: null,
   v2Status: null,
+  v2LinkStats: null,
+  earclipFirmware: null,
   hrSourceForGlasses: loadHrSourceForGlasses(),
   coherenceParams: loadCoherenceParams(),
   activeProgram: null,
@@ -1068,10 +1076,15 @@ narbisDevice.addEventListener('connected', (e) => {
       },
     },
   }));
-  setState(() => ({ earclipProtocol: narbisDevice.protocolVersion }));
+  setState(() => ({
+    earclipProtocol: narbisDevice.protocolVersion,
+    earclipFirmware: narbisDevice.firmwareRevision,
+  }));
+  const fw = narbisDevice.firmwareRevision;
   appendBleLog(
     'earclip', 'info',
-    `connected to ${name} (${narbisDevice.protocolVersion === 'v2' ? 'V2.1 AFE4404' : 'v1 MAX3010x'})`,
+    `connected to ${name} (${narbisDevice.protocolVersion === 'v2' ? 'V2.1 AFE4404' : 'v1 MAX3010x'}` +
+    `${fw ? `, fw ${fw}` : ''})`,
   );
   /* If edge is already connected and the user hasn't picked a program,
    * schedule an auto-start now that we have a direct earclip beat source.
@@ -1095,7 +1108,9 @@ narbisDevice.addEventListener('disconnected', (e) => {
     /* Drop V2 session state and clear the filter's history so the next
      * connection starts from a clean baseline instead of ringing on the
      * last session's samples. */
-    setState(() => ({ earclipProtocol: null, v2Status: null }));
+    setState(() => ({
+      earclipProtocol: null, v2Status: null, v2LinkStats: null, earclipFirmware: null,
+    }));
     ppgFilter.reset();
   }
   setState((s) => ({
@@ -1312,6 +1327,25 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
 
 narbisDevice.addEventListener('v2StatusReceived', (e) => {
   setState(() => ({ v2Status: (e as CustomEvent<NarbisV2StatusEvent>).detail }));
+});
+
+let lastLoggedLost = 0;
+let lastLoggedSince = -1;
+narbisDevice.addEventListener('v2LinkStats', (e) => {
+  const st = (e as CustomEvent<NarbisV2LinkStatsEvent>).detail;
+  setState(() => ({ v2LinkStats: st }));
+  /* Log each NEW batch loss once, so the BLE log (and the recording's
+   * ble_log.txt) says when data went missing, not just how much. */
+  if (st.since !== lastLoggedSince) {             /* stats restart per connection */
+    lastLoggedSince = st.since;
+    lastLoggedLost = 0;
+  }
+  if (st.ppgLostBatches > lastLoggedLost) {
+    appendBleLog('earclip', 'warn',
+      `PPG: ${st.ppgLostBatches - lastLoggedLost} batch(es) lost (seq gap), ` +
+      `${st.ppgLostBatches} total since connect`);
+    lastLoggedLost = st.ppgLostBatches;
+  }
 });
 
 narbisDevice.addEventListener('batteryReceived', (e) => {
