@@ -9,6 +9,7 @@ on:
       - 'docs/**'
       - 'index.html'
       - 'functest/**'
+      - 'protocol/guided/**'    # bundled by dashboard/src/guided
       - '.github/workflows/dashboard-deploy.yml'
   workflow_dispatch:
 

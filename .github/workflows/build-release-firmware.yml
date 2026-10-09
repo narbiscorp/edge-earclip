@@ -25,12 +25,14 @@ on:
     paths:
       - 'firmware/**'
       - 'protocol/**'
+      - '!protocol/guided/**'   # app-side recording protocols, not compiled into the firmware
       - '.github/workflows/build-release-firmware.yml'
   pull_request:
     branches: [main]
     paths:
       - 'firmware/**'
       - 'protocol/**'
+      - '!protocol/guided/**'   # app-side recording protocols, not compiled into the firmware
       - '.github/workflows/build-release-firmware.yml'
   workflow_dispatch:
 
