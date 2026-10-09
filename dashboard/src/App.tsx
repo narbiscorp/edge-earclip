@@ -8,6 +8,7 @@ import ConfigPanel from './components/ConfigPanel';
 import V2TuningPanel from './components/V2TuningPanel';
 import PresetBar from './components/PresetBar';
 import RecordingControls from './components/RecordingControls';
+import { GuidedRecordingButton } from './components/GuidedRecordingModal';
 import ReplayControls from './components/ReplayControls';
 import RecoveryBanner from './components/RecoveryBanner';
 import DebugPanel from './components/DebugPanel';
@@ -174,6 +175,7 @@ export default function App() {
 
           <footer className="flex items-center gap-3 px-4 py-2 border-t border-slate-800 shrink-0">
             <RecordingControls />
+            <GuidedRecordingButton />
             <ReplayControls />
             <div className="ml-auto"><DebugPanel /></div>
           </footer>

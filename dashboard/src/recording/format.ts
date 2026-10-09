@@ -17,7 +17,7 @@ import type {
   V2StatusRecord,
 } from './types';
 import {
-  ACC_FS_G, ACC_ODR_HZ, ACCF_FIFO_OVERRUN, ACCF_FS_MASK, RATE_SPS, TIA_RF_OHMS,
+  ACC_FS_G, ACC_ODR_HZ, ACCF_FIFO_OVERRUN, ACCF_FS_MASK, AGC_STATE_NAME, RATE_SPS, TIA_RF_OHMS,
   accelCountsPerG, accelPeriodUs, ibiFlagNames, ppgFlagNames, ppgPeriodUs,
 } from '../ble/v2/protocol';
 import { V2LinkStats } from '../ble/v2/linkStats';
@@ -288,6 +288,7 @@ const V2_STATUS_HEADER = [
   'host_ms', 'uptime_s', 'sys_state', 'flags', 'batt_mv', 'batt_pct', 'rate_sps',
   'led_ir_ma', 'led_red_ma', 'tia_rf_kohm', 'tia_cf_code', 'gate_duty_pct',
   'notif_drops', 'i2c_errors', 'ibi_last_ms', 'hr_bpm', 'btn_pressed',
+  'agc_state', 'agc_reacq_count',
 ];
 
 const V2_IBI_HEADER = [
@@ -362,6 +363,7 @@ export function writeV2StatusCSV(statuses: V2StatusRecord[]): string {
       RATE_SPS[s.ppgRateCode] ?? null, s.ledIrMa, s.ledRedMa, rfKohm(s.tiaGainCode),
       s.tiaCfCode, fmtNum(s.gateDutyX100 / 100, 2), s.notifDropCount, s.i2cErrCount,
       s.ibiLastMs, s.hrBpm, s.btnPressed,
+      AGC_STATE_NAME[s.agcState] ?? s.agcState, s.agcReacqCount,
     ]));
   }
   return lines.join('\n') + '\n';
@@ -496,9 +498,10 @@ accel_raw.csv — one row per accelerometer sample (LIS2DH12): raw counts
   fifo_overrun (the sensor FIFO filled before the firmware drained it).
   Use it to explain PPG artifacts: motion shows here first.
 
-status.csv — every 1 Hz STATUS frame: battery, rate, LED currents, TIA gain,
-  gate duty, notif_drops (device-side BLE queue drops, cumulative),
-  i2c_errors (cumulative), hr_bpm
+status.csv — every STATUS frame (1 Hz + on change): battery, rate, LED
+  currents, TIA gain, gate duty, notif_drops (device-side BLE queue drops,
+  cumulative), i2c_errors (cumulative), hr_bpm, agc_state (OFF / ACQUIRE /
+  LOCKED; firmware proto 1.2+, older firmware reads OFF) and agc_reacq_count
 
 ibi.csv — every beat from the on-device detector: device beat time, IBI,
   confidence (0..100), flags (GATED, AGC_SETTLING, INTERPOLATED,
@@ -548,4 +551,8 @@ export const FILE_NAMES = {
   v2LinkStats: 'v2/link_stats.json',
   v2Readme: 'v2/README.txt',
   bleLog: 'ble_log.txt',
+  protocolJson: 'protocol/protocol.json',
+  protocolBlocks: 'protocol/blocks.csv',
+  protocolCues: 'protocol/cues.csv',
+  protocolReadme: 'protocol/README.txt',
 } as const;

@@ -13,8 +13,10 @@ import {
   type NarbisProtocolVersion,
   type NarbisV2StatusEvent,
   type NarbisV2LinkStatsEvent,
+  type NarbisV2EventsEvent,
 } from '../ble/narbisDevice';
 import { PpgFilter, PPG_FILTER_DEFAULTS, type PpgFilterConfig } from '../ble/v2/ppgFilter';
+import { AGC_REASON_NAME, AGC_STATE_NAME } from '../ble/v2/protocol';
 import {
   polarH10,
   type PolarStatus,
@@ -192,6 +194,11 @@ export interface DashboardState {
   v2LinkStats: NarbisV2LinkStatsEvent | null;
   /** DIS firmware revision of the connected V2 earclip (null on v1). */
   earclipFirmware: string | null;
+  /** V2 wire protocol version (0x0102 = 1.2); decides whether STATUS
+   * carries the AGC state. null until read / on v1. */
+  earclipProtoVer: number | null;
+  /** Reason code of the last AGC_STATE event (AGC_REASON_NAME). */
+  v2AgcReason: number | null;
 
   /** Which heart-rate source drives the glasses' coherence pipeline.
    * 'earclip' (default): the glasses' BLE central pulls IBI from the
@@ -685,6 +692,8 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   v2Status: null,
   v2LinkStats: null,
   earclipFirmware: null,
+  earclipProtoVer: null,
+  v2AgcReason: null,
   hrSourceForGlasses: loadHrSourceForGlasses(),
   coherenceParams: loadCoherenceParams(),
   activeProgram: null,
@@ -1079,6 +1088,7 @@ narbisDevice.addEventListener('connected', (e) => {
   setState(() => ({
     earclipProtocol: narbisDevice.protocolVersion,
     earclipFirmware: narbisDevice.firmwareRevision,
+    earclipProtoVer: narbisDevice.v2ProtoVersion,
   }));
   const fw = narbisDevice.firmwareRevision;
   appendBleLog(
@@ -1110,6 +1120,7 @@ narbisDevice.addEventListener('disconnected', (e) => {
      * last session's samples. */
     setState(() => ({
       earclipProtocol: null, v2Status: null, v2LinkStats: null, earclipFirmware: null,
+      earclipProtoVer: null, v2AgcReason: null,
     }));
     ppgFilter.reset();
   }
@@ -1327,6 +1338,19 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
 
 narbisDevice.addEventListener('v2StatusReceived', (e) => {
   setState(() => ({ v2Status: (e as CustomEvent<NarbisV2StatusEvent>).detail }));
+});
+
+/* AGC transitions: keep the reason for the panel, and log each one so the
+ * BLE log (and a recording's ble_log.txt) shows when the gain locked. */
+narbisDevice.addEventListener('v2EventReceived', (e) => {
+  for (const ev of (e as CustomEvent<NarbisV2EventsEvent>).detail.events) {
+    if (ev.typeName !== 'AGC_STATE') continue;
+    const { state, reason, reacqCount } = ev.fields;
+    setState(() => ({ v2AgcReason: reason }));
+    appendBleLog('earclip', 'info',
+      `AGC ${AGC_STATE_NAME[state] ?? state} (${AGC_REASON_NAME[reason] ?? reason}` +
+      `${reacqCount ? `, re-acquired ${reacqCount}x` : ''})`);
+  }
 });
 
 let lastLoggedLost = 0;

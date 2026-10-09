@@ -6,6 +6,7 @@ import type {
 } from '../ble/parsers';
 import type { NarbisBeatEvent } from '../ble/narbisDevice';
 import type { V2Status } from '../ble/v2/protocol';
+import type { GuidedEventDetail } from '../guided/bus';
 import type { PolarBeatRecord } from '../state/store';
 import type { MetricsSnapshot } from '../state/metricsBuffer';
 
@@ -180,6 +181,10 @@ export interface BleLogRecord {
   message: string;
 }
 
+/** One guided-protocol event (block start/end, cue, pause, session start/end)
+ * as the session published it; session_start carries the whole protocol. */
+export type ProtocolEventRecord = GuidedEventDetail;
+
 export interface RecordingChunk {
   sessionId: string;
   chunkSeq: number;
@@ -201,6 +206,7 @@ export interface RecordingChunk {
   v2Ibi?: V2IbiRecordTimed[];
   v2Events?: V2EventRecordTimed[];
   bleLog?: BleLogRecord[];
+  protocolEvents?: ProtocolEventRecord[];
 }
 
 export type SessionStatus = 'recording' | 'finalizing' | 'complete' | 'aborted';

@@ -15,7 +15,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from '../state/store';
 import { narbisDevice } from '../ble/narbisDevice';
-import { KNOB, TIA_RF_OHMS, LED_IR_MAX_MA, LED_RED_MAX_MA } from '../ble/v2/protocol';
+import {
+  KNOB, TIA_RF_OHMS, LED_IR_MAX_MA, LED_RED_MAX_MA,
+  AGC_ST_ACQUIRE, AGC_ST_LOCKED, AGC_STATE_NAME, AGC_REASON_NAME, PROTO_VER_AGC_STATE,
+} from '../ble/v2/protocol';
 import { PPG_FILTER_DEFAULTS } from '../ble/v2/ppgFilter';
 
 const WRITE_DEBOUNCE_MS = 180;
@@ -85,6 +88,15 @@ export default function V2TuningPanel() {
   const st = useDashboardStore((s) => s.v2Status);
   const link = useDashboardStore((s) => s.v2LinkStats);
   const fw = useDashboardStore((s) => s.earclipFirmware);
+  const protoVer = useDashboardStore((s) => s.earclipProtoVer);
+  const agcReason = useDashboardStore((s) => s.v2AgcReason);
+  const agcKnown = protoVer !== null && protoVer >= PROTO_VER_AGC_STATE;
+  /* Gain-lock knobs: firmware defaults until read from the device. */
+  const [lock, setLock] = useState({
+    mode: 1, beats: 6, stableS: 8, bandPct: 38, satS: 3, driftS: 15, minS: 30,
+  });
+  const [reacqBusy, setReacqBusy] = useState(false);
+  const lockSeeded = useRef(false);
   const filter = useDashboardStore((s) => s.ppgFilter);
   const setFilter = useDashboardStore((s) => s.setPpgFilter);
 
@@ -125,6 +137,31 @@ export default function V2TuningPanel() {
     await narbisDevice.v2SetAgcFrozen(true);
     setAgcFrozen(true);
   }, [agcFrozen]);
+
+  /* Read what the device is actually using, once per connection. */
+  useEffect(() => {
+    if (!isV2 || !agcKnown || lockSeeded.current) return;
+    lockSeeded.current = true;
+    void (async () => {
+      try {
+        const g = (id: number) => narbisDevice.v2KnobGet(id);
+        const mode = await g(KNOB.AGC_MODE);
+        const beats = await g(KNOB.AGC_LOCK_BEATS);
+        const stable = await g(KNOB.AGC_LOCK_STABLE_MS);
+        const band = await g(KNOB.AGC_LOCK_BAND_PCT);
+        const sat = await g(KNOB.AGC_REACQ_SAT_MS);
+        const drift = await g(KNOB.AGC_REACQ_DRIFT_MS);
+        const min = await g(KNOB.AGC_REACQ_MIN_S);
+        setLock({
+          mode, beats, stableS: stable / 1000, bandPct: band,
+          satS: sat / 1000, driftS: drift / 1000, minS: min,
+        });
+      } catch {
+        /* keep the defaults shown */
+      }
+    })();
+  }, [isV2, agcKnown]);
+  useEffect(() => { if (!isV2) lockSeeded.current = false; }, [isV2]);
 
   if (!isV2) return null;
 
@@ -316,6 +353,100 @@ export default function V2TuningPanel() {
             ))}
           </select>
         </Row>
+      </Section>
+
+      {/* ---------------- Gain lock (firmware AGC policy) ---------------- */}
+      <Section title="Gain lock (AGC)" hint="adjust at first, then hold still" defaultOpen>
+        {agcKnown && st ? (
+          <div className="flex items-center justify-between text-[10px]">
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono ${
+                st.agcState === AGC_ST_LOCKED ? 'bg-emerald-900/50 text-emerald-300'
+                  : st.agcState === AGC_ST_ACQUIRE ? 'bg-amber-900/40 text-amber-300'
+                    : 'bg-slate-800 text-slate-400'}`}
+              title="ACQUIRE: the AGC is adjusting LED current / gain. LOCKED: no more adjustments, so the raw trace has no gain steps."
+            >
+              {AGC_STATE_NAME[st.agcState] ?? st.agcState}
+            </span>
+            <span className="text-slate-500">
+              {agcReason !== null ? (AGC_REASON_NAME[agcReason] ?? `reason ${agcReason}`) : ''}
+              {st.agcReacqCount ? ` · re-acquired ${st.agcReacqCount}×` : ''}
+            </span>
+            <button
+              type="button"
+              disabled={busy || reacqBusy}
+              onClick={() => void run(async () => {
+                setReacqBusy(true);
+                try {
+                  await narbisDevice.v2AgcReacquire();
+                  setAgcFrozen(false);
+                } finally {
+                  setReacqBusy(false);
+                }
+              })}
+              className="rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-2 py-0.5 text-slate-300"
+              title="Adjust the gain again now (e.g. after re-seating the clip), then lock"
+            >
+              {reacqBusy ? 're-acquiring…' : 're-acquire now'}
+            </button>
+          </div>
+        ) : (
+          <div className="text-[9px] leading-snug text-amber-400/90">
+            This firmware predates the gain lock (protocol{' '}
+            {protoVer !== null ? `${protoVer >> 8}.${protoVer & 0xff}` : '?'}): the AGC may step the
+            LEDs every couple of seconds. Update to v0.3.0-25 or later.
+          </div>
+        )}
+        <div className="text-[9px] leading-snug text-slate-500">
+          Every gain adjustment is a step in the raw signal. In lock mode the earclip adjusts only
+          until it finds clean beats (or a steady level), then holds; it re-adjusts only after
+          sustained clipping, or a level that drifted away with no beats left.
+        </div>
+        <Row label="Mode" title="Lock: adjust at first, then hold. Continuous: the old behaviour, adjusts whenever the level leaves the band.">
+          <select
+            value={lock.mode}
+            disabled={!agcKnown}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setLock((l) => ({ ...l, mode: v }));
+              knob(KNOB.AGC_MODE, v);
+            }}
+            className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-slate-200 disabled:opacity-40"
+          >
+            <option value={1}>lock after acquire</option>
+            <option value={0}>continuous (legacy)</option>
+          </select>
+        </Row>
+        <Slider
+          label="Lock after clean beats" value={lock.beats} min={1} max={30} unit="beats"
+          title="Consecutive clean (ungated, uninterpolated) beats that lock the gain."
+          onChange={(v) => { setLock((l) => ({ ...l, beats: v })); knob(KNOB.AGC_LOCK_BEATS, v); }}
+        />
+        <Slider
+          label="…or a steady level for" value={lock.stableS} min={1} max={60} unit="s"
+          title="Also lock when the level has sat in the target band needing no change this long — covers a pulse too weak for the beat detector."
+          onChange={(v) => { setLock((l) => ({ ...l, stableS: v })); knob(KNOB.AGC_LOCK_STABLE_MS, v * 1000); }}
+        />
+        <Slider
+          label="Hold while within" value={lock.bandPct} min={10} max={50} unit="% FS of target"
+          title="While locked, a level inside target ± this is left alone. Wider = fewer re-adjustments."
+          onChange={(v) => { setLock((l) => ({ ...l, bandPct: v })); knob(KNOB.AGC_LOCK_BAND_PCT, v); }}
+        />
+        <Slider
+          label="Re-adjust after clipping for" value={lock.satS} min={0.5} max={30} step={0.5} unit="s"
+          title="Clipped samples are lost data: re-adjust if the ADC stays clipped this long."
+          onChange={(v) => { setLock((l) => ({ ...l, satS: v })); knob(KNOB.AGC_REACQ_SAT_MS, Math.round(v * 1000)); }}
+        />
+        <Slider
+          label="Re-adjust after drift with no beats for" value={lock.driftS} min={1} max={60} unit="s"
+          title="If the level leaves the hold band AND no clean beats arrive for this long, re-adjust. While beats keep coming it never does."
+          onChange={(v) => { setLock((l) => ({ ...l, driftS: v })); knob(KNOB.AGC_REACQ_DRIFT_MS, v * 1000); }}
+        />
+        <Slider
+          label="Never re-adjust sooner than" value={lock.minS} min={5} max={600} step={5} unit="s after a lock"
+          title="Hard limit on how often the gain may change once locked."
+          onChange={(v) => { setLock((l) => ({ ...l, minS: v })); knob(KNOB.AGC_REACQ_MIN_S, v); }}
+        />
       </Section>
 
       {/* ---------------- 2. Filtering (host-side) ---------------- */}

@@ -128,10 +128,21 @@ export class V2Session {
     this.chControl = null;
   }
 
+  /* The firmware handles ONE outstanding CONTROL request (proto.h: else
+   * NC_ST_BUSY). Guided-protocol markers, tuning writes and stream ops can
+   * all fire at once, so requests queue here and go out one at a time. */
+  private ctrlChain: Promise<unknown> = Promise.resolve();
+
   /** Send a CONTROL request and resolve with its correlated response.
    * `req` must be a builder output from protocol.ts; byte 1 (tid) is
    * overwritten here so callers never manage transaction ids. */
-  async control(req: Uint8Array): Promise<{ status: number; payload: Uint8Array }> {
+  control(req: Uint8Array): Promise<{ status: number; payload: Uint8Array }> {
+    const run = this.ctrlChain.then(() => this.controlNow(req));
+    this.ctrlChain = run.catch(() => undefined);   /* a failure must not jam the queue */
+    return run;
+  }
+
+  private async controlNow(req: Uint8Array): Promise<{ status: number; payload: Uint8Array }> {
     if (!this.chControl) throw new Error('V2 CONTROL not available');
     const tid = this.allocTid();
     const frame = req.slice();

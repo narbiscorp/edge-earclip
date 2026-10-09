@@ -31,6 +31,7 @@ import {
   type NarbisRuntimeConfig,
 } from '../ble/parsers';
 import { useDashboardStore, setRecordingState, type BleLogEntry } from './store';
+import { GUIDED_EVENT, guidedBus, type GuidedEventDetail } from '../guided/bus';
 import {
   getDb,
   STORE_RECORDING_SESSIONS,
@@ -48,6 +49,7 @@ import type {
   BeatRecord,
   BleLogRecord,
   ConfigChangeEntry,
+  ProtocolEventRecord,
   FilteredRecord,
   ManifestSummary,
   MetricsRecord,
@@ -163,6 +165,7 @@ class SessionAccumulator {
   v2Ibi: V2IbiRecordTimed[] = [];
   v2Events: V2EventRecordTimed[] = [];
   bleLog: BleLogRecord[] = [];
+  protocolEvents: ProtocolEventRecord[] = [];
 
   isEmpty(): boolean {
     return (
@@ -181,7 +184,8 @@ class SessionAccumulator {
       this.v2Status.length === 0 &&
       this.v2Ibi.length === 0 &&
       this.v2Events.length === 0 &&
-      this.bleLog.length === 0
+      this.bleLog.length === 0 &&
+      this.protocolEvents.length === 0
     );
   }
 
@@ -202,6 +206,7 @@ class SessionAccumulator {
     this.v2Ibi = [];
     this.v2Events = [];
     this.bleLog = [];
+    this.protocolEvents = [];
   }
 }
 
@@ -229,6 +234,7 @@ interface RecorderRuntime {
   onV2Status: (e: Event) => void;
   onV2Ibi: (e: Event) => void;
   onV2Event: (e: Event) => void;
+  onGuided: (e: Event) => void;
   onBeat: (e: Event) => void;
   onRaw: (e: Event) => void;
   onSqi: (e: Event) => void;
@@ -597,6 +603,7 @@ function createRuntime(
     onV2Status: () => {},
     onV2Ibi: () => {},
     onV2Event: () => {},
+    onGuided: () => {},
     onBeat: () => {},
     onRaw: () => {},
     onSqi: () => {},
@@ -623,6 +630,7 @@ function createRuntime(
   r.onV2Status = makeOnV2Status(r);
   r.onV2Ibi = makeOnV2Ibi(r);
   r.onV2Event = makeOnV2Event(r);
+  r.onGuided = makeOnGuided(r);
   return r;
 }
 
@@ -653,6 +661,9 @@ function attachListeners(r: RecorderRuntime): void {
     narbisDevice.addEventListener('v2EventReceived', r.onV2Event);
   }
   if (r.meta.streams.beats) narbisDevice.addEventListener('v2IbiReceived', r.onV2Ibi);
+  /* Guided protocols label the recording; always on, it only fires while
+   * a guided session runs. */
+  guidedBus.addEventListener(GUIDED_EVENT, r.onGuided);
   captureBleLog(r, useDashboardStore.getState().bleLog, r.startedAt - BLE_LOG_LOOKBACK_MS);
   r.bleLogUnsub = useDashboardStore.subscribe((s, prev) => {
     if (s.bleLog !== prev.bleLog) captureBleLog(r, s.bleLog);
@@ -678,6 +689,7 @@ function detachListeners(r: RecorderRuntime): void {
   narbisDevice.removeEventListener('v2AccelReceived', r.onV2Accel);
   narbisDevice.removeEventListener('v2EventReceived', r.onV2Event);
   narbisDevice.removeEventListener('v2IbiReceived', r.onV2Ibi);
+  guidedBus.removeEventListener(GUIDED_EVENT, r.onGuided);
   if (r.bleLogUnsub) {
     /* last lines (e.g. the stop-time disconnect) before tearing down */
     captureBleLog(r, useDashboardStore.getState().bleLog);
@@ -762,6 +774,25 @@ function makeOnV2Accel(r: RecorderRuntime) {
       x: b.x, y: b.y, z: b.z,
     });
     bump(r, null, 48 + b.x.length * 18);
+  };
+}
+
+function makeOnGuided(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const d = (ev as CustomEvent<GuidedEventDetail>).detail;
+    r.acc.protocolEvents.push(d);
+    /* Labelled block starts double as annotations, so the existing
+     * replay and annotations.csv show where each condition began. */
+    if (d.kind === 'block_start' && (d.blockKind === 'state' || d.blockKind === 'cued')) {
+      r.acc.annotations.push({
+        timestamp: d.hostMs,
+        text: `${d.label} (block ${d.blockIndex}${(d.attempt ?? 1) > 1 ? `, attempt ${d.attempt}` : ''})`,
+        eventType: 'mark',
+        source: 'user',
+      });
+      bump(r, 'annotations', 64);
+    }
+    bump(r, null, d.payload ? 4096 : 160);
   };
 }
 
@@ -984,6 +1015,7 @@ async function flushChunk(): Promise<void> {
   if (r.acc.v2Ibi.length) chunk.v2Ibi = r.acc.v2Ibi;
   if (r.acc.v2Events.length) chunk.v2Events = r.acc.v2Events;
   if (r.acc.bleLog.length) chunk.bleLog = r.acc.bleLog;
+  if (r.acc.protocolEvents.length) chunk.protocolEvents = r.acc.protocolEvents;
   // Reset before await so events arriving during the write go into the next chunk.
   r.acc.reset();
   try {
@@ -1012,6 +1044,7 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.v2Status[0]?.timestamp,
     acc.v2Ibi[0]?.timestamp,
     acc.v2Events[0]?.timestamp,
+    acc.protocolEvents[0]?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
   return Math.min(...candidates);
@@ -1034,6 +1067,7 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.v2Status)?.timestamp,
     last(acc.v2Ibi)?.timestamp,
     last(acc.v2Events)?.timestamp,
+    last(acc.protocolEvents)?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
   return Math.max(...candidates);

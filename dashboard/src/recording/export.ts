@@ -30,6 +30,15 @@ import {
   writeV2StatusCSV,
 } from './format';
 import { buildManifest, sessionFolderName, summarize } from './manifest';
+import {
+  PROTOCOL_README,
+  buildBlockRows,
+  markerDeviceTimes,
+  protocolOf,
+  writeProtocolBlocksCSV,
+  writeProtocolCuesCSV,
+  writeProtocolJSON,
+} from './protocolFormat';
 import type {
   AccPacketRecord,
   Annotation,
@@ -125,6 +134,17 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
       batches: v2Ppg, accel: v2Accel, ibis: v2Ibi, statuses: v2Status, events: v2Events,
     }));
     add(FILE_NAMES.v2Readme, V2_README);
+  }
+  /* Guided protocol labels — present when the recording ran a protocol. */
+  const protocolEvents = concatStream(chunks, 'protocolEvents');
+  if (protocolEvents.length > 0) {
+    const devTimes = markerDeviceTimes(protocolEvents, v2Events);
+    const def = protocolOf(protocolEvents);
+    const rows = buildBlockRows(protocolEvents, devTimes, def);
+    add(FILE_NAMES.protocolJson, writeProtocolJSON(protocolEvents, rows, devTimes));
+    add(FILE_NAMES.protocolBlocks, writeProtocolBlocksCSV(rows));
+    add(FILE_NAMES.protocolCues, writeProtocolCuesCSV(protocolEvents, devTimes, def));
+    add(FILE_NAMES.protocolReadme, PROTOCOL_README);
   }
   const bleLog = concatStream(chunks, 'bleLog');
   if (bleLog.length > 0) add(FILE_NAMES.bleLog, writeBleLogTxt(bleLog));

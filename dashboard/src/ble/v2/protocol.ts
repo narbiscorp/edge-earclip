@@ -66,11 +66,30 @@ export const EV_ERROR = 5;
 export const EV_RATE_CHANGE = 6;
 export const EV_AGC_OFFDAC = 7;
 export const EV_SELFTEST_DONE = 8;
+export const EV_AGC_STATE = 9;     /* proto 1.2: {state, reason, reacq_count} */
 const EV_NAME: Record<number, string> = {
   [EV_AGC_STEP]: 'AGC_STEP', [EV_GATE]: 'GATE', [EV_WEAR]: 'WEAR',
   [EV_MARKER]: 'MARKER', [EV_ERROR]: 'ERROR', [EV_RATE_CHANGE]: 'RATE_CHANGE',
   [EV_AGC_OFFDAC]: 'AGC_OFFDAC', [EV_SELFTEST_DONE]: 'SELFTEST_DONE',
+  [EV_AGC_STATE]: 'AGC_STATE',
 };
+export const MARKER_SRC_BUTTON = 0;
+export const MARKER_SRC_HOST = 1;
+
+/* ---- AGC acquire -> lock (firmware nc_agc.h, proto 1.2) ---- */
+export const AGC_ST_OFF = 0;       /* stream stopped, AGC disabled, or frozen */
+export const AGC_ST_ACQUIRE = 1;   /* ladder adjusting toward the target band */
+export const AGC_ST_LOCKED = 2;    /* no adjustments: raw signal is step-free */
+export const AGC_STATE_NAME: Record<number, string> = {
+  [AGC_ST_OFF]: 'OFF', [AGC_ST_ACQUIRE]: 'ACQUIRE', [AGC_ST_LOCKED]: 'LOCKED',
+};
+/** Why the AGC entered its current state (EV_AGC_STATE reason). */
+export const AGC_REASON_NAME: Record<number, string> = {
+  0: 'start', 1: 'clean beats', 2: 'stable level', 3: 'sustained clipping',
+  4: 'drift, no beats', 5: 'put on', 6: 'host', 7: 'mode change',
+};
+/** First protocol version whose STATUS carries agc_state (bytes 28/29). */
+export const PROTO_VER_AGC_STATE = 0x0102;
 
 /* ---- stream mask (STREAM_START / STREAM_STOP payload) ---- */
 export const STREAM_PPG = 1;
@@ -133,6 +152,15 @@ export const KNOB = {
   AGC_MAX_MA_RED: 0x0409,
   AGC_SETTLE_MS: 0x040a,
   AGC_HOLD_MS: 0x040b,
+  AGC_OFFDAC_EN: 0x040c,
+  /* acquire -> lock (proto 1.2 firmware; older firmware answers BAD_PARAM) */
+  AGC_MODE: 0x040d,            /* 0 continuous (legacy), 1 acquire then lock */
+  AGC_LOCK_BEATS: 0x040e,      /* consecutive clean beats that lock (6)      */
+  AGC_LOCK_STABLE_MS: 0x040f,  /* in band + idle this long also locks (8000) */
+  AGC_LOCK_BAND_PCT: 0x0410,   /* lock band = target ± this % of FS (38)     */
+  AGC_REACQ_SAT_MS: 0x0411,    /* clipping this long re-acquires (3000)      */
+  AGC_REACQ_DRIFT_MS: 0x0412,  /* out of band + no beats this long (15000)   */
+  AGC_REACQ_MIN_S: 0x0413,     /* never re-acquire sooner after a lock (30)  */
   HP_FC_X100: 0x0501,
   BP_LO_X100: 0x0502,
   BP_HI_X100: 0x0503,
@@ -195,6 +223,11 @@ export interface V2Status {
   ibiLastMs: number;
   hrBpm: number;
   btnPressed: number;
+  /** AGC_ST_* — proto 1.2; reads 0 (OFF) on older firmware, whose byte 28
+   * is reserved, so gate any display on the protocol version. */
+  agcState: number;
+  /** Re-acquisitions since stream start (proto 1.2). */
+  agcReacqCount: number;
 }
 
 function dv(v: DataView | ArrayBuffer): DataView {
@@ -317,6 +350,7 @@ function hex(bytes: Uint8Array): string {
 const EV_LEN: Record<number, number> = {
   [EV_AGC_STEP]: 13, [EV_GATE]: 10, [EV_WEAR]: 9, [EV_MARKER]: 11,
   [EV_ERROR]: 14, [EV_RATE_CHANGE]: 10, [EV_AGC_OFFDAC]: 11, [EV_SELFTEST_DONE]: 10,
+  [EV_AGC_STATE]: 11,
 };
 
 function decodeEventFields(type: number, d: DataView): Record<string, number> {
@@ -333,6 +367,8 @@ function decodeEventFields(type: number, d: DataView): Record<string, number> {
     case EV_AGC_OFFDAC:
       return { phase: d.getUint8(8), oldCode: d.getUint8(9), newCode: d.getUint8(10) };
     case EV_SELFTEST_DONE: return { passCount: d.getUint8(8), failCount: d.getUint8(9) };
+    case EV_AGC_STATE:
+      return { state: d.getUint8(8), reason: d.getUint8(9), reacqCount: d.getUint8(10) };
     default: return {};
   }
 }
@@ -405,6 +441,8 @@ export function parseV2Status(buf: DataView | ArrayBuffer): V2Status {
     ibiLastMs: d.getUint16(24, true),
     hrBpm: d.getUint8(26),
     btnPressed: d.byteLength > 27 ? d.getUint8(27) : 0,
+    agcState: d.getUint8(28),
+    agcReacqCount: d.getUint8(29),
   };
 }
 

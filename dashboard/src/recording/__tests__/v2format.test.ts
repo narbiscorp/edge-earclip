@@ -29,6 +29,7 @@ function status(over: Partial<V2StatusRecord> = {}): V2StatusRecord {
     timestamp: 2000, sysState: 3, flags: 0x04, battMv: 4100, battPct: 92, ppgRateCode: 1,
     ledIrMa: 12, ledRedMa: 8, tiaGainCode: 6, tiaCfCode: 1, gateDutyX100: 1250,
     notifDropCount: 3, i2cErrCount: 0, uptimeS: 120, ibiLastMs: 850, hrBpm: 71, btnPressed: 0,
+    agcState: 2, agcReacqCount: 1,
     ...over,
   };
 }
@@ -80,6 +81,8 @@ describe('v2 status / ibi / events CSVs', () => {
     expect(col('gate_duty_pct')).toBe('12.50');
     expect(col('notif_drops')).toBe('3');
     expect(col('flags')).toBe('0x04');
+    expect(col('agc_state')).toBe('LOCKED');
+    expect(col('agc_reacq_count')).toBe('1');
   });
 
   it('writes beats with device time, bpm and flag names', () => {

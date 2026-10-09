@@ -58,7 +58,7 @@ import {
 } from './parsers';
 import { V2Session, detectV2 } from './v2/session';
 import {
-  V2_SENSOR_SVC,
+  V2_SENSOR_SVC, V2_CHR_PROTO_VER, KNOB,
   STREAM_PPG, STREAM_IBI, STREAM_EVENT,
   RATE_SPS, SPS_RATE_CODE,
   AGC_APPLY_IR, AGC_APPLY_RED, AGC_APPLY_GAIN,
@@ -196,6 +196,7 @@ export class NarbisDevice extends EventTarget {
   private v2ClockAnchor: { devUs: number; hostMs: number } | null = null;
   private v2Stats = new V2LinkStats();
   private _firmwareRevision: string | null = null;
+  private _v2ProtoVer: number | null = null;
 
   get status(): NarbisStatus {
     return this._status;
@@ -231,6 +232,12 @@ export class NarbisDevice extends EventTarget {
   /** Device Information "Firmware Revision" (V2 boards; null until read). */
   get firmwareRevision(): string | null {
     return this._firmwareRevision;
+  }
+
+  /** V2 wire protocol version, major << 8 | minor (0x0102 = 1.2); null
+   * until read or on v1. */
+  get v2ProtoVersion(): number | null {
+    return this._v2ProtoVer;
   }
 
   /** Link health since this V2 connection opened (null on v1 / disconnected). */
@@ -586,6 +593,15 @@ export class NarbisDevice extends EventTarget {
     } catch (err) {
       this.emitError(err, 'v2-device-info-optional');
     }
+    /* Wire protocol version (u16 LE, major << 8 | minor): decides whether
+     * STATUS byte 28 is the AGC state (1.2+) or a reserved zero. */
+    try {
+      const svc = await this.server.getPrimaryService(V2_SENSOR_SVC);
+      const pv = await (await svc.getCharacteristic(V2_CHR_PROTO_VER)).readValue();
+      this._v2ProtoVer = pv.byteLength >= 2 ? pv.getUint16(0, true) : null;
+    } catch (err) {
+      this.emitError(err, 'v2-proto-version-optional');
+    }
   }
 
   private onV2Ppg = (b: V2PpgBatch): void => {
@@ -708,6 +724,17 @@ export class NarbisDevice extends EventTarget {
    * or TIA write, otherwise the loop immediately overrides it. */
   async v2SetAgcFrozen(frozen: boolean): Promise<void> {
     await this.requireV2().controlOk(buildAgcFreeze(frozen));
+  }
+
+  /** Make a LOCKED AGC acquire again (e.g. after re-seating the clip).
+   * The firmware re-acquires on unfreeze, but it samples the freeze flag
+   * only once per agc_period_ms — a freeze shorter than that is never
+   * seen — so the freeze is held for 1.5 periods before releasing. */
+  async v2AgcReacquire(): Promise<void> {
+    const period = await this.v2KnobGet(KNOB.AGC_PERIOD_MS).catch(() => 500);
+    await this.v2SetAgcFrozen(true);
+    await sleep(Math.round(period * 1.5) + 100);
+    await this.v2SetAgcFrozen(false);
   }
 
   /** Manual LED currents / TIA gain. Pass null to leave a field untouched. */
@@ -905,6 +932,7 @@ export class NarbisDevice extends EventTarget {
     this._v2Status = null;
     this.v2ClockAnchor = null;
     this._firmwareRevision = null;
+    this._v2ProtoVer = null;
     if (!opts.keepDevice) {
       if (this.device) {
         this.device.removeEventListener('gattserverdisconnected', this.onGattDisconnected);
