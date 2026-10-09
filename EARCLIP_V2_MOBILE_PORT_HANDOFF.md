@@ -5,12 +5,14 @@
 | | repo @ commit | what to read |
 |---|---|---|
 | Reference implementation (TypeScript) | `narbiscorp/edge-earclip` @ `5c25b41` | `dashboard/src/ble/v2/*`, `dashboard/src/ble/narbisDevice.ts` (V2 parts), `dashboard/src/recording/*`, `dashboard/src/guided/*` |
-| Wire truth (firmware, protocol 1.2) | `narbiscorp/narbis-earclip-fw` @ `4415ccd` | `firmware/components/narbis_core/include/narbis/proto.h`, `nc_types.h`, `knob_list.h`, `nc_agc.h` |
+| Wire truth (firmware, protocol 1.2) | `narbiscorp/narbis-earclip-fw` @ `6786cc7` | `firmware/components/narbis_core/include/narbis/proto.h`, `nc_types.h`, `knob_list.h`, `nc_agc.h` |
 | Shared guided protocols | `edge-earclip/protocol/guided/` | `ppg_artifact_protocols.json`, `README.md` |
 
 **Status at writing:** the boards in hand run functest `v0.3.0-22` (protocol 1.1, AGC adjusting
-continuously). The gain-lock firmware `4415ccd` (protocol 1.2) passes its host tests but has not
-run on hardware or been pushed yet. Until it is, take its constants from
+continuously). The gain-lock firmware (protocol 1.2) is `4415ccd` plus the fix `6786cc7`
+(functest `v0.3.0-26`), which makes the lock count beats flagged `INTERPOLATED`. It passes its
+host tests and has streamed from a board, but it has not been checked locking on a real ear,
+and it has not been pushed. Until then, take its constants from
 `dashboard/src/ble/v2/protocol.ts`, which already carries them. Phase 1 does not depend on it:
 gate everything that is 1.2-only on PROTO_VER (trap 7).
 
@@ -100,8 +102,9 @@ CONTROL: **one outstanding request at a time** (else `BUSY`) — queue them
   (Android `CoherenceEngine.kt:776-780`, iOS `CoherenceEngine.swift:859-860`).
 - Skip `ibi_ms == 0` (`FIRST_AFTER_GAP`: a valid beat time with no interval).
 - Confidence is already 0..100 — pass it unscaled (`narbisDevice.onV2Ibi` explains why).
-- Keep the flags with the beat; `GATED`, `AGC_SETTLING`, `INTERPOLATED` beats are the ones an
-  artifact gate should distrust.
+- Keep the flags with the beat; `GATED` and `AGC_SETTLING` beats are the ones an artifact gate
+  should distrust. `INTERPOLATED` is NOT an artifact flag: it means the peak time was refined
+  to sub-sample precision, which happens on nearly every good beat.
 - **Timestamp = when the beat occurred**, not when the notification arrived (the apps' own rule):
   anchor the device clock to the host clock once, on the first PPG batch's NEWEST sample
   (`t0_us + (n-1) * period`), then map every `t_beat_us` through that anchor
@@ -198,6 +201,6 @@ marker ids `(block + 1) * 1000 + offset`, audio modes). Write the `protocol/` fo
 
 1. **Show the output.** For the link: a session on a real phone with a real earclip — logs, beat
    counts, a recorded block. Not a green tick.
-2. Port the TypeScript 1:1, cite `5c25b41` / `4415ccd`; log divergences in the PARITY files.
+2. Port the TypeScript 1:1, cite `5c25b41` / `6786cc7`; log divergences in the PARITY files.
 3. Saved enum identifiers are append-only; every new record field needs a default.
 4. No health data in logs: opcodes, states and counts only.

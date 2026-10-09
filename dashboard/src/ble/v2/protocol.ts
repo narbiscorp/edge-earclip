@@ -52,6 +52,7 @@ export function accelCountsPerG(fsCode: number): number {
 /* ---- IBI record flags ---- */
 export const IBIF_GATED = 0x01;
 export const IBIF_AGC_SETTLING = 0x02;
+/** Peak time refined to sub-sample precision. Normal — set on nearly every good beat; NOT an artifact flag. */
 export const IBIF_INTERPOLATED = 0x04;
 export const IBIF_FIRST_AFTER_GAP = 0x08;
 

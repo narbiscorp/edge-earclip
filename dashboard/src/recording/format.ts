@@ -505,7 +505,9 @@ status.csv — every STATUS frame (1 Hz + on change): battery, rate, LED
 
 ibi.csv — every beat from the on-device detector: device beat time, IBI,
   confidence (0..100), flags (GATED, AGC_SETTLING, INTERPOLATED,
-  FIRST_AFTER_GAP)
+  FIRST_AFTER_GAP). INTERPOLATED only means the peak time was refined to
+  sub-sample precision, as it is on nearly every good beat; it is not an
+  artifact flag
 
 events.csv — device events: AGC_STEP (led, oldMa->newMa, oldRf->newRf codes),
   GATE, WEAR, MARKER, ERROR, RATE_CHANGE, AGC_OFFDAC; raw_hex is the payload

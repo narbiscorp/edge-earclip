@@ -394,7 +394,7 @@ export default function V2TuningPanel() {
           <div className="text-[9px] leading-snug text-amber-400/90">
             This firmware predates the gain lock (protocol{' '}
             {protoVer !== null ? `${protoVer >> 8}.${protoVer & 0xff}` : '?'}): the AGC may step the
-            LEDs every couple of seconds. Update to v0.3.0-25 or later.
+            LEDs every couple of seconds. Update to v0.3.0-26 or later.
           </div>
         )}
         <div className="text-[9px] leading-snug text-slate-500">
@@ -419,7 +419,7 @@ export default function V2TuningPanel() {
         </Row>
         <Slider
           label="Lock after clean beats" value={lock.beats} min={1} max={30} unit="beats"
-          title="Consecutive clean (ungated, uninterpolated) beats that lock the gain."
+          title="Consecutive clean beats (not gated, not during a gain change, not the first after a gap) that lock the gain."
           onChange={(v) => { setLock((l) => ({ ...l, beats: v })); knob(KNOB.AGC_LOCK_BEATS, v); }}
         />
         <Slider
