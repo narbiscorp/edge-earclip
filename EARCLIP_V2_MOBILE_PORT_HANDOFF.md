@@ -1,15 +1,15 @@
 # Handoff: Narbis V2.1 earclip → iOS (spec) and Android
 
 **This document doubles as the prompt.** Hand it to an agent whole. Written 2026-10-09; updated
-the same day for firmware v0.3.0-38 / protocol 1.3.
+through 2026-10-10 for firmware v0.3.0-40 / protocol 1.3.
 
 | | repo @ commit | what to read |
 |---|---|---|
 | Reference implementation (TypeScript) | `narbiscorp/edge-earclip` @ `0bff73d` | `dashboard/src/ble/v2/*`, `dashboard/src/ble/narbisDevice.ts` (V2 parts), `dashboard/src/recording/*`, `dashboard/src/guided/*`, `dashboard/src/metrics/windowing.ts` (which beats HRV trusts) |
-| Wire truth (firmware, protocol 1.3) | `narbiscorp/narbis-earclip-fw` @ `6db9ec3` | `firmware/components/narbis_core/include/narbis/proto.h`, `nc_types.h`, `knob_list.h`, `nc_agc.h`, `nc_ibi.h` |
+| Wire truth (firmware, protocol 1.3) | `narbiscorp/narbis-earclip-fw` @ `63b209e` | `firmware/components/narbis_core/include/narbis/proto.h`, `nc_types.h`, `knob_list.h`, `nc_agc.h`, `nc_ibi.h` |
 | Shared guided protocols | `edge-earclip/protocol/guided/` | `ppg_artifact_protocols.json`, `README.md` |
 
-**Status at writing:** firmware v0.3.0-38 (`a92c7cb`, image committed as `6db9ec3`, protocol
+**Status at writing:** firmware v0.3.0-40 (`fb7ae91`, image committed as `63b209e`, protocol
 1.3) is pushed. Board `58:E6:C5:15:A9:74` runs it; board `A0:F2:62:85:9F:C0` runs v0.3.0-34
 (protocol 1.3, no step compensation / radio fix). Verified on real hardware, on an earlobe:
 - The optimizer AGC locks: it picked 28/19 mA at 25k and locked, with beats ~80 bpm at
@@ -197,7 +197,11 @@ CONTROL: **one outstanding request at a time** (else `BUSY`) — queue them
     of ours is disconnected after 15 s (`idle_kick_s`; OTA exempt). It exists because a phone or
     PC that bonded once reconnects in the background, subscribes nothing, and with one connection
     slot locks the real app out. Every client of ours subscribes within a second; an app that
-    connects "just to read the battery" must subscribe or expect the kick.
+    connects "just to read the battery" must subscribe or expect the kick. A NEW phone that is
+    still pairing (no bond yet, link not encrypted — the user is reading the OS prompt) gets 60 s
+    instead (`idle_kick_pair_s`, v0.3.0-40), and the 15 s restarts once pairing completes: on
+    firmware before v0.3.0-40, a slow tap on "Pair" got the link cut, which reads as a refused
+    bond.
 
 ---
 
@@ -253,6 +257,6 @@ marker ids `(block + 1) * 1000 + offset`, audio modes). Write the `protocol/` fo
 
 1. **Show the output.** For the link: a session on a real phone with a real earclip — logs, beat
    counts, a recorded block. Not a green tick.
-2. Port the TypeScript 1:1, cite `0bff73d` / `6db9ec3`; log divergences in the PARITY files.
+2. Port the TypeScript 1:1, cite `0bff73d` / `63b209e`; log divergences in the PARITY files.
 3. Saved enum identifiers are append-only; every new record field needs a default.
 4. No health data in logs: opcodes, states and counts only.
