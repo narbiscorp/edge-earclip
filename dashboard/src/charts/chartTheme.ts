@@ -9,6 +9,8 @@ export const CHART_COLORS = {
   earclip: '#22d3ee',
   polar: '#f472b6',
   artifact: '#fb7185',
+  /* Earclip beats HRV leaves out (isArtifactBeat): kept visible, greyed. */
+  flaggedBeat: '#94a3b8',
   rmssd: '#34d399',
   sdnn: '#a78bfa',
   hr: '#f87171',

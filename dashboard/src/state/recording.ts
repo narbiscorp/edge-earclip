@@ -12,7 +12,7 @@ import {
   type NarbisV2EventsEvent,
   type NarbisV2StatusEvent,
 } from '../ble/narbisDevice';
-import type { V2Status } from '../ble/v2/protocol';
+import { ibiFlagNames, type V2Status } from '../ble/v2/protocol';
 import { edgeDevice, type RelayedBattery } from '../ble/edgeDevice';
 import { polarH10, type PolarBeatEvent, type PolarAccEvent } from '../ble/polarH10';
 import {
@@ -714,7 +714,10 @@ function makeOnBeat(r: RecorderRuntime) {
     const rec: BeatRecord = {
       ...beat,
       is_artifact: isArtifactBeat(beat),
-      rejection_reason: flagsToReason(beat.flags),
+      /* A V2 beat's flags use the V2 layout (GATED, ..., ARTIFACT), so name
+       * them with it; v1 names would call a GATED beat "ARTIFACT" and miss
+       * V2's own ARTIFACT bit entirely. */
+      rejection_reason: narbisDevice.isV2 ? ibiFlagNames(beat.flags) : flagsToReason(beat.flags),
       channel_used: r.channelUsed,
     };
     r.acc.beats.push(rec);

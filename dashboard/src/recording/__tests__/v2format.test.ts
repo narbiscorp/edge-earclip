@@ -93,6 +93,14 @@ describe('v2 status / ibi / events CSVs', () => {
     expect(r[1]).toEqual(['3000.250', '7777000', '9', '800', '75.0', '88', '0x04', 'INTERPOLATED']);
   });
 
+  it('names the proto 1.3 ARTIFACT flag in ibi.csv', () => {
+    const ibi: V2IbiRecordTimed = {
+      timestamp: 3000, seq: 10, tBeatUs: 8_000_000, ibiMs: 1500, confidence: 20, flags: 0x14,
+    };
+    const r = rows(writeV2IbiCSV([ibi]));
+    expect(r[1].slice(6)).toEqual(['0x14', 'INTERPOLATED|ARTIFACT']);
+  });
+
   it('writes events with k=v fields', () => {
     const e: V2EventRecordTimed = {
       timestamp: 4000, arrivalMs: 4050, seq: 2, type: 1, typeName: 'AGC_STEP', tUs: 9_000_000,
@@ -150,6 +158,12 @@ describe('capture bundle docs', () => {
       expect(V2_README).toContain(f.replace('v2/', ''));
     }
     expect(V2_README).toContain('ble_log.txt');
+  });
+
+  it('documents every ibi.csv flag, including ARTIFACT', () => {
+    for (const f of ['GATED', 'AGC_SETTLING', 'INTERPOLATED', 'FIRST_AFTER_GAP', 'ARTIFACT']) {
+      expect(V2_README).toContain(f);
+    }
   });
 
   it('writes the BLE log one line per entry', () => {

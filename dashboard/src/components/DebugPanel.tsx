@@ -5,8 +5,11 @@ import {
   NARBIS_BEAT_FLAG_INTERPOLATED,
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
 } from '../ble/parsers';
+import { ibiFlagNames } from '../ble/v2/protocol';
 
-function decodeFlags(flags: number): string {
+function decodeFlags(flags: number, v2: boolean): string {
+  /* A V2 earclip's beats carry the V2 flag layout (GATED, ..., ARTIFACT). */
+  if (v2) return ibiFlagNames(flags).toLowerCase().split('|').join(',') || 'clean';
   const parts: string[] = [];
   if (flags & NARBIS_BEAT_FLAG_ARTIFACT) parts.push('artifact');
   if (flags & NARBIS_BEAT_FLAG_LOW_SQI) parts.push('low_sqi');
@@ -18,6 +21,7 @@ function decodeFlags(flags: number): string {
 export default function DebugPanel() {
   const counters = useDashboardStore((s) => s.counters);
   const lastBeat = useDashboardStore((s) => s.lastBeat);
+  const isV2 = useDashboardStore((s) => s.earclipProtocol === 'v2');
   const lastSqi = useDashboardStore((s) => s.lastSqi);
   const battery = useDashboardStore((s) => s.connection.narbis.battery);
 
@@ -42,7 +46,7 @@ export default function DebugPanel() {
       />
       <Stat
         label="flags"
-        value={lastBeat ? decodeFlags(lastBeat.flags) : '—'}
+        value={lastBeat ? decodeFlags(lastBeat.flags, isV2) : '—'}
       />
       <Stat
         label="batt"

@@ -505,11 +505,15 @@ status.csv — every STATUS frame (1 Hz + on change): battery, rate, LED
 
 ibi.csv — every beat from the on-device detector: device beat time, IBI,
   confidence (0..100), flags (GATED, AGC_SETTLING, INTERPOLATED,
-  FIRST_AFTER_GAP). INTERPOLATED only means the peak time was refined to
-  sub-sample precision, as it is on nearly every good beat; it is not an
-  artifact flag
+  FIRST_AFTER_GAP, ARTIFACT). INTERPOLATED only means the peak time was
+  refined to sub-sample precision, as it is on nearly every good beat; it is
+  not an artifact flag. ARTIFACT (firmware protocol 1.3+): the interval failed
+  the on-device plausibility check (more than 15 % off both the median of the
+  last 5 accepted intervals and the previous one); the beat is still sent,
+  and the dashboard keeps it out of HRV like a GATED one
 
 events.csv — device events: AGC_STEP (led, oldMa->newMa, oldRf->newRf codes),
+  AGC_STATE (state, reason, reacqCount: each gain-protocol acquire / lock),
   GATE, WEAR, MARKER, ERROR, RATE_CHANGE, AGC_OFFDAC; raw_hex is the payload
 
 link_stats.json — computed from the files above: lost batches, restarts,

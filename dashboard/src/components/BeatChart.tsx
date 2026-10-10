@@ -3,6 +3,7 @@ import type { Data, Layout } from 'plotly.js';
 import { getActiveBuffers, useDashboardStore } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
+import { isArtifactBeat } from '../metrics/windowing';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
 
@@ -104,19 +105,31 @@ export default function BeatChart({
 
       const ecX: number[] = [];
       const ecY: number[] = [];
-      // Filter ONLY on physiological plausibility, not on the artifact
+      const flagX: number[] = [];
+      const flagY: number[] = [];
+      // Drop ONLY on physiological plausibility, never on the artifact
       // flag. Reasoning: when elgendi misses one beat, the next beat's
-      // IBI is ~2× normal (e.g. 1500 ms at HR 80). beat_validator's
-      // delta-from-median check flags that as ARTIFACT, but the IBI
-      // itself is perfectly plottable — dropping it cascades one
-      // elgendi miss into two missing tach points (the missed beat AND
-      // the spans-it beat). The HARD bounds catch the real outliers
-      // (state-reset spans of 4-6 s); leave the rest to render.
+      // IBI is ~2× normal (e.g. 1500 ms at HR 80). The validator flags
+      // that as ARTIFACT, but the IBI itself is perfectly plottable —
+      // dropping it cascades one elgendi miss into two missing tach
+      // points (the missed beat AND the spans-it beat). The HARD bounds
+      // catch the real outliers (state-reset spans of 4-6 s) and keep the
+      // autorange sane.
+      // Flagged beats (isArtifactBeat — the same rule HRV uses: v1
+      // ARTIFACT / LOW_SQI / LOW_CONFIDENCE, V2 GATED / AGC_SETTLING /
+      // ARTIFACT) are drawn as grey markers OFF the line: still visible,
+      // but the line, its smoothing and the rescale follow only the beats
+      // HRV is computed from.
       const HARD_MIN_MS = 200;
       const HARD_MAX_MS = 2500;
       bufs.narbisBeats.forEachInWindow(windowSecRef.current, (ts, v) => {
         if (v.ibi_ms <= 0) return;
         if (v.ibi_ms < HARD_MIN_MS || v.ibi_ms > HARD_MAX_MS) return;
+        if (isArtifactBeat(v)) {
+          flagX.push(ts);
+          flagY.push(v.ibi_ms);
+          return;
+        }
         ecX.push(ts);
         ecY.push(v.ibi_ms);
       });
@@ -177,8 +190,18 @@ export default function BeatChart({
           line: { color: CHART_COLORS.polar, width: 1, shape: lineShape },
           marker: { color: CHART_COLORS.polar, size: 4 },
         },
-        // Artifact trace removed — outliers/artifact beats are dropped
-        // entirely upstream so the autorange isn't pulled by them.
+        // Flagged earclip beats: raw IBI (never smoothed), markers only.
+        // Implausible outliers are still dropped above, so these cannot
+        // pull the autorange.
+        {
+          x: flagX,
+          y: flagY,
+          type: traceType,
+          mode: 'markers',
+          name: 'Earclip flagged',
+          marker: { color: CHART_COLORS.flaggedBeat, size: 6, symbol: 'circle-open' },
+          hovertemplate: '%{y} ms · flagged, not used for HRV<extra></extra>',
+        },
       ];
       return { traces, layoutPatch, seq };
     },

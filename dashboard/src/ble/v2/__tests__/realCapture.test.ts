@@ -13,6 +13,7 @@ import {
   parseV2Accel, parseV2CtrlResponse, parseV2EventBatch, parseV2Ppg, parseV2Status, ppgPeriodUs,
 } from '../protocol';
 import { V2LinkStats } from '../linkStats';
+import { gainKnobView } from '../agc';
 import { writeV2PpgRawCSV } from '../../../recording/format';
 import type { V2PpgBatchRecord } from '../../../recording/types';
 
@@ -84,6 +85,16 @@ describe('real capture — functest firmware v0.3.0-22', () => {
       expect(st[i].uptimeS).toBeGreaterThanOrEqual(st[i - 1].uptimeS);
     }
     expect(st[st.length - 1].uptimeS).toBeGreaterThan(st[0].uptimeS);
+  });
+
+  it('drives the Signal knobs from these STATUS frames, claiming no AGC state on proto 1.1', () => {
+    const protoVer = parseInt(capture.info.proto_ver_hex, 16);
+    for (const s of frames('status').map(parseV2Status)) {
+      const v = gainKnobView(s, protoVer, null);
+      expect([v.irMa, v.redMa, v.rfCode]).toEqual([s.ledIrMa, s.ledRedMa, s.tiaGainCode]);
+      expect(v.agcState).toBeNull();        /* byte 28 is reserved before 1.2 */
+      expect(v.control).not.toBe('waiting');
+    }
   });
 
   it('decodes accel (50 Hz, contiguous, no overrun) and only known event layouts', () => {

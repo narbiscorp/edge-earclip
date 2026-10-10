@@ -3,6 +3,7 @@ import {
   NARBIS_BEAT_FLAG_LOW_SQI,
   NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
 } from '../ble/parsers';
+import { IBIF_ARTIFACT } from '../ble/v2/protocol';
 import type { NarbisBeatEvent } from '../ble/narbisDevice';
 
 export type WindowType = 'rect' | 'hann' | 'hamming' | 'blackman';
@@ -35,9 +36,19 @@ export function applyWindow(samples: Float64Array, type: WindowType): Float64Arr
   return out;
 }
 
+/* Flags that keep a beat out of HRV. A V2 earclip's beats carry its own
+ * flag layout (ble/v2/protocol IBIF_*) in the same field: GATED,
+ * AGC_SETTLING and FIRST_AFTER_GAP sit on v1's ARTIFACT / LOW_SQI /
+ * LOW_CONFIDENCE bits, so the v1 mask already distrusts them. V2's ARTIFACT
+ * (0x10, protocol 1.3: failed the on-device plausibility check) has no v1
+ * twin (v1 never sets bit 4), so it is added explicitly: treated like
+ * GATED. INTERPOLATED (0x04 in both) is not an artifact in either. */
 const ARTIFACT_FLAGS =
-  NARBIS_BEAT_FLAG_ARTIFACT | NARBIS_BEAT_FLAG_LOW_SQI | NARBIS_BEAT_FLAG_LOW_CONFIDENCE;
+  NARBIS_BEAT_FLAG_ARTIFACT | NARBIS_BEAT_FLAG_LOW_SQI | NARBIS_BEAT_FLAG_LOW_CONFIDENCE |
+  IBIF_ARTIFACT;
 
+/** True for a beat HRV must skip. The tachogram draws these grey, the
+ * recorder marks them is_artifact. */
 export function isArtifactBeat(beat: NarbisBeatEvent): boolean {
   return (beat.flags & ARTIFACT_FLAGS) !== 0;
 }

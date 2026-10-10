@@ -58,7 +58,8 @@ export interface RawSampleRecord {
 export interface BeatRecord extends NarbisBeatEvent {
   /** True when isArtifactBeat() returned true for this beat. */
   is_artifact: boolean;
-  /** Pipe-joined flag names ("LOW_SQI|LOW_CONFIDENCE") or "" when no flags set. */
+  /** Pipe-joined flag names ("LOW_SQI|LOW_CONFIDENCE") or "" when no flags
+   * set, in the recording earclip's own vocabulary (V2: "GATED|ARTIFACT"). */
   rejection_reason: string;
   /** Detection channel used by the firmware ("ir" by default). */
   channel_used: string;

@@ -5,8 +5,9 @@ import {
   PPG_HDR_SIZE, IBI_HDR_SIZE, IBI_REC_SIZE, STATUS_SIZE, PPGF_AMB,
   LED_IR_MAX_MA, LED_RED_MAX_MA, OP_AGC_MANUAL, OP_KNOB_SET,
   parseV2EventBatch, ppgNewestUs, ppgSampleUs, ppgPeriodUs, ppgFlagNames, ibiFlagNames,
-  EV_AGC_STEP, EV_MARKER, EVENT_HDR_SIZE, PPGF_AGC_SETTLING, PPGF_CLIPPED,
-  IBIF_INTERPOLATED, IBIF_FIRST_AFTER_GAP,
+  EV_AGC_STEP, EV_AGC_STATE, EV_MARKER, EVENT_HDR_SIZE, PPGF_AGC_SETTLING, PPGF_CLIPPED,
+  IBIF_GATED, IBIF_INTERPOLATED, IBIF_FIRST_AFTER_GAP, IBIF_ARTIFACT, PROTO_VER_ARTIFACT,
+  AGC_ST_LOCKED, AGC_REASON_NAME, STF_AGC_FROZEN,
   parseV2Accel, accelPeriodUs, accelCountsPerG, ACCF_FS_MASK, ACCF_FIFO_OVERRUN,
 } from '../protocol';
 import { PpgFilter } from '../ppgFilter';
@@ -86,6 +87,19 @@ describe('V2 IBI parsing', () => {
     expect(records[0].confidence).toBe(90);
     expect(records[1].tBeatUs).toBe(2_000_001);
   });
+
+  it('keeps the proto 1.3 ARTIFACT bit with the beat (flagged, never dropped)', () => {
+    const b = new Uint8Array(IBI_HDR_SIZE + IBI_REC_SIZE);
+    const d = new DataView(b.buffer);
+    d.setUint8(4, 1);
+    d.setUint16(IBI_HDR_SIZE + 8, 1510, true);       /* a missed-beat span */
+    d.setUint8(IBI_HDR_SIZE + 10, 20);               /* confidence capped on ARTIFACT */
+    d.setUint8(IBI_HDR_SIZE + 11, IBIF_INTERPOLATED | IBIF_ARTIFACT);
+    const [r] = parseV2Ibi(new DataView(b.buffer)).records;
+    expect(r.ibiMs).toBe(1510);
+    expect(r.flags).toBe(0x14);
+    expect(ibiFlagNames(r.flags)).toBe('INTERPOLATED|ARTIFACT');
+  });
 });
 
 describe('V2 STATUS parsing', () => {
@@ -108,6 +122,18 @@ describe('V2 STATUS parsing', () => {
     expect(s.tiaGainCode).toBe(2);
     expect(s.notifDropCount).toBe(4);
     expect(s.hrBpm).toBe(61);
+  });
+
+  it('decodes the AGC fields the gain panel reads: frozen flag, state, re-acquire count', () => {
+    const b = new Uint8Array(STATUS_SIZE);
+    const d = new DataView(b.buffer);
+    d.setUint8(1, STF_AGC_FROZEN | 0x08);   /* frozen + worn */
+    d.setUint8(28, AGC_ST_LOCKED);
+    d.setUint8(29, 3);
+    const s = parseV2Status(new DataView(b.buffer));
+    expect(s.flags & STF_AGC_FROZEN).toBe(STF_AGC_FROZEN);
+    expect(s.agcState).toBe(AGC_ST_LOCKED);
+    expect(s.agcReacqCount).toBe(3);
   });
 });
 
@@ -209,6 +235,13 @@ describe('V2 PPG sample timing', () => {
     expect(ppgFlagNames(PPGF_AGC_SETTLING | PPGF_AMB | PPGF_CLIPPED)).toBe('AGC_SETTLING|AMB|CLIPPED');
     expect(ppgFlagNames(0)).toBe('');
     expect(ibiFlagNames(IBIF_INTERPOLATED | IBIF_FIRST_AFTER_GAP)).toBe('INTERPOLATED|FIRST_AFTER_GAP');
+    expect(ibiFlagNames(IBIF_GATED | IBIF_ARTIFACT)).toBe('GATED|ARTIFACT');
+  });
+
+  it('pins the proto 1.3 ARTIFACT bit to the firmware value (NC_IBIF_ARTIFACT = 1 << 4)', () => {
+    expect(IBIF_ARTIFACT).toBe(0x10);
+    expect(PROTO_VER_ARTIFACT).toBe(0x0103);
+    expect(ibiFlagNames(0x10)).toBe('ARTIFACT');
   });
 });
 
@@ -252,6 +285,16 @@ describe('V2 EVENT parsing', () => {
     expect(events[1].typeName).toBe('MARKER');
     expect(events[1].fields).toEqual({ source: 1, markerId: 0x1234 });
     expect(events[1].rawHex.startsWith('002d3101')).toBe(true);   /* 20e6 LE */
+  });
+
+  it('decodes an AGC_STATE transition (proto 1.2): state, reason, re-acquire count', () => {
+    const { events } = parseV2EventBatch(eventFrame(5, [
+      { type: EV_AGC_STATE, payload: [...u64le(30_000_000), AGC_ST_LOCKED, 1, 2] },   /* 11 bytes */
+    ]));
+    expect(events[0].typeName).toBe('AGC_STATE');
+    expect(events[0].fields).toEqual({ state: AGC_ST_LOCKED, reason: 1, reacqCount: 2 });
+    expect(AGC_REASON_NAME[events[0].fields.reason]).toBe('clean beats');
+    expect(AGC_REASON_NAME[6]).toBe('manual');            /* firmware NC_AGC_RSN_MANUAL */
   });
 
   it('keeps an unknown or mis-sized record as raw bytes instead of guessing', () => {

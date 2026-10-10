@@ -30,11 +30,7 @@ import { narbisDevice, type NarbisBeatEvent } from '../ble/narbisDevice';
 import { coherenceEngine, type EngineStatus } from '../engine/coherenceEngine';
 import { RespirationFromACC } from '../engine/respirationFromAcc';
 import { DEFAULT_TUNABLES } from '../engine/tunables';
-import {
-  NARBIS_BEAT_FLAG_ARTIFACT,
-  NARBIS_BEAT_FLAG_LOW_SQI,
-  NARBIS_BEAT_FLAG_LOW_CONFIDENCE,
-} from '../ble/parsers';
+import { isArtifactBeat } from '../metrics/windowing';
 import { sessionLog, type BeatSource, type MetricRow } from './log';
 
 /* Second Polar H10, worn lower on the torso. A separate instance of the same driver rather than
@@ -43,9 +39,6 @@ import { sessionLog, type BeatSource, type MetricRow } from './log';
  * Its heart-rate notifications are ignored — this strap exists for its accelerometer, and mixing a
  * second RR source into the HRV analysis would silently corrupt it. */
 export const lowerStrap = new PolarH10();
-
-const ARTIFACT_FLAGS =
-  NARBIS_BEAT_FLAG_ARTIFACT | NARBIS_BEAT_FLAG_LOW_SQI | NARBIS_BEAT_FLAG_LOW_CONFIDENCE;
 
 /* An RR outside this band is not a heartbeat — it is a dropped or doubled beat.
  * Flagged, never dropped: it stays in the log and the CSV, and only the
@@ -555,7 +548,9 @@ class RespirationSession extends EventTarget {
 
   private onEarclipBeat = (ev: CustomEvent<NarbisBeatEvent>): void => {
     const b = ev.detail;
-    const flagged = (b.flags & ARTIFACT_FLAGS) !== 0 || !isPlausible(b.ibi_ms);
+    /* The earclip's own flags, read the way the dashboard's HRV reads them
+     * (metrics/windowing: v1 bits plus the V2 ARTIFACT bit). */
+    const flagged = isArtifactBeat(b) || !isPlausible(b.ibi_ms);
     sessionLog.addBeat(b.timestamp, b.ibi_ms, b.bpm, 'earclip', flagged);
     if (this.state.analysisSource === 'earclip' && !flagged) {
       coherenceEngine.onRR(b.ibi_ms, b.confidence, b.timestamp / 1000);

@@ -55,6 +55,13 @@ export const IBIF_AGC_SETTLING = 0x02;
 /** Peak time refined to sub-sample precision. Normal — set on nearly every good beat; NOT an artifact flag. */
 export const IBIF_INTERPOLATED = 0x04;
 export const IBIF_FIRST_AFTER_GAP = 0x08;
+/** Proto 1.3: the interval failed the on-device plausibility check — more
+ * than ibi_art_tol_pct (15 %) off BOTH the median of the last 5 accepted
+ * intervals and the previous accepted one. Still sent (flagged, never
+ * dropped, confidence capped); the dashboard treats it like GATED. */
+export const IBIF_ARTIFACT = 0x10;
+/** First protocol version whose beats can carry IBIF_ARTIFACT. */
+export const PROTO_VER_ARTIFACT = 0x0103;
 
 /* ---- EVENT batch: [u32 seq][u8 n] + n × {u8 type, u8 len, payload[len]};
  * every payload starts with the event's u64 device time (µs). ---- */
@@ -84,13 +91,18 @@ export const AGC_ST_LOCKED = 2;    /* no adjustments: raw signal is step-free */
 export const AGC_STATE_NAME: Record<number, string> = {
   [AGC_ST_OFF]: 'OFF', [AGC_ST_ACQUIRE]: 'ACQUIRE', [AGC_ST_LOCKED]: 'LOCKED',
 };
-/** Why the AGC entered its current state (EV_AGC_STATE reason). */
+/** Why the AGC entered its current state (EV_AGC_STATE reason). 6 is the
+ * firmware's MANUAL: frozen or unfrozen by the host (AGC_FREEZE). */
 export const AGC_REASON_NAME: Record<number, string> = {
-  0: 'start', 1: 'clean beats', 2: 'stable level', 3: 'sustained clipping',
-  4: 'drift, no beats', 5: 'put on', 6: 'host', 7: 'mode change',
+  0: 'stream start', 1: 'clean beats', 2: 'stable level', 3: 'sustained clipping',
+  4: 'level drifted', 5: 'put on', 6: 'manual', 7: 'mode change',
 };
 /** First protocol version whose STATUS carries agc_state (bytes 28/29). */
 export const PROTO_VER_AGC_STATE = 0x0102;
+
+/* ---- STATUS flags byte (proto_consts.js STF_*; on the wire since 1.0) ---- */
+/** The AGC is frozen by the host (AGC_FREEZE): LEDs / gain hold what was set. */
+export const STF_AGC_FROZEN = 0x20;
 
 /* ---- stream mask (STREAM_START / STREAM_STOP payload) ---- */
 export const STREAM_PPG = 1;
@@ -155,13 +167,20 @@ export const KNOB = {
   AGC_HOLD_MS: 0x040b,
   AGC_OFFDAC_EN: 0x040c,
   /* acquire -> lock (proto 1.2 firmware; older firmware answers BAD_PARAM) */
-  AGC_MODE: 0x040d,            /* 0 continuous (legacy), 1 acquire then lock */
+  AGC_MODE: 0x040d,            /* 0 continuous (legacy), 1 acquire then lock,
+                                  2 optimize then lock (v0.3.0-31+ default)   */
   AGC_LOCK_BEATS: 0x040e,      /* consecutive clean beats that lock (6)      */
   AGC_LOCK_STABLE_MS: 0x040f,  /* in band + idle this long also locks (8000) */
   AGC_LOCK_BAND_PCT: 0x0410,   /* lock band = target ± this % of FS (38)     */
   AGC_REACQ_SAT_MS: 0x0411,    /* clipping this long re-acquires (3000)      */
   AGC_REACQ_DRIFT_MS: 0x0412,  /* out of band + no beats this long (15000)   */
-  AGC_REACQ_MIN_S: 0x0413,     /* never re-acquire sooner after a lock (30)  */
+  AGC_REACQ_MIN_S: 0x0413,     /* never re-acquire sooner after a lock (180;
+                                  30 before v0.3.0-31)                         */
+  /* optimizer (agc_mode 2, v0.3.0-31+; older firmware answers BAD_PARAM) */
+  AGC_PREF_MA_IR: 0x0416,      /* preferred IR current it solves around (25) */
+  AGC_PREF_MA_RED: 0x0417,     /* preferred red current (20)                 */
+  AGC_DRIFT_BAND: 0x0418,      /* re-run when raw DC leaves target ± this,
+                                  in counts (500000)                          */
   HP_FC_X100: 0x0501,
   BP_LO_X100: 0x0502,
   BP_HI_X100: 0x0503,
@@ -175,6 +194,10 @@ export const KNOB = {
   INTERP_EN: 0x0606,
   IBI_MIN_MS: 0x0607,
   IBI_MAX_MS: 0x0608,
+  /* beat plausibility (proto 1.3; older firmware answers BAD_PARAM) */
+  IBI_ART_EN: 0x060a,          /* flag implausible intervals ARTIFACT (1)    */
+  IBI_ART_TOL_PCT: 0x060b,     /* ARTIFACT if > this % off BOTH the median
+                                  of recent beats and the last one (15)      */
   GATE_EN: 0x0701,
 } as const;
 
@@ -326,6 +349,7 @@ export function ibiFlagNames(flags: number): string {
   return flagNames(flags, [
     [IBIF_GATED, 'GATED'], [IBIF_AGC_SETTLING, 'AGC_SETTLING'],
     [IBIF_INTERPOLATED, 'INTERPOLATED'], [IBIF_FIRST_AFTER_GAP, 'FIRST_AFTER_GAP'],
+    [IBIF_ARTIFACT, 'ARTIFACT'],
   ]);
 }
 

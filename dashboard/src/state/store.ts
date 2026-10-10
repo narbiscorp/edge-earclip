@@ -16,7 +16,11 @@ import {
   type NarbisV2EventsEvent,
 } from '../ble/narbisDevice';
 import { PpgFilter, PPG_FILTER_DEFAULTS, type PpgFilterConfig } from '../ble/v2/ppgFilter';
-import { AGC_REASON_NAME, AGC_STATE_NAME } from '../ble/v2/protocol';
+import { AGC_REASON_NAME, AGC_STATE_NAME, EV_AGC_STATE } from '../ble/v2/protocol';
+import {
+  AGC_RUNS_EMPTY, agcRunsOnLinkLost, agcRunsOnState, agcRunsOnStatus, describeAgcRun,
+  type AgcRunsState,
+} from '../ble/v2/agc';
 import {
   polarH10,
   type PolarStatus,
@@ -197,8 +201,11 @@ export interface DashboardState {
   /** V2 wire protocol version (0x0102 = 1.2); decides whether STATUS
    * carries the AGC state. null until read / on v1. */
   earclipProtoVer: number | null;
-  /** Reason code of the last AGC_STATE event (AGC_REASON_NAME). */
-  v2AgcReason: number | null;
+  /** V2 AGC gain-protocol bookkeeping (ble/v2/agc.ts): the latest AGC_STATE
+   * (state + reason), the acquisition in progress, and every ACQUIRE ->
+   * LOCKED run with the settings it locked at. Per connection: kept across
+   * an auto-reconnect, cleared on disconnect. */
+  v2AgcRuns: AgcRunsState;
 
   /** Which heart-rate source drives the glasses' coherence pipeline.
    * 'earclip' (default): the glasses' BLE central pulls IBI from the
@@ -693,7 +700,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   v2LinkStats: null,
   earclipFirmware: null,
   earclipProtoVer: null,
-  v2AgcReason: null,
+  v2AgcRuns: AGC_RUNS_EMPTY,
   hrSourceForGlasses: loadHrSourceForGlasses(),
   coherenceParams: loadCoherenceParams(),
   activeProgram: null,
@@ -1120,9 +1127,13 @@ narbisDevice.addEventListener('disconnected', (e) => {
      * last session's samples. */
     setState(() => ({
       earclipProtocol: null, v2Status: null, v2LinkStats: null, earclipFirmware: null,
-      earclipProtoVer: null, v2AgcReason: null,
+      earclipProtoVer: null, v2AgcRuns: AGC_RUNS_EMPTY,
     }));
     ppgFilter.reset();
+  } else {
+    /* Same session, new link: the run history stays, but what the AGC is
+     * doing is unknown until the restarted stream reports it. */
+    setState((s) => ({ v2AgcRuns: agcRunsOnLinkLost(s.v2AgcRuns) }));
   }
   setState((s) => ({
     connection: {
@@ -1337,16 +1348,26 @@ narbisDevice.addEventListener('rawSampleReceived', (e) => {
 });
 
 narbisDevice.addEventListener('v2StatusReceived', (e) => {
-  setState(() => ({ v2Status: (e as CustomEvent<NarbisV2StatusEvent>).detail }));
+  const st = (e as CustomEvent<NarbisV2StatusEvent>).detail;
+  /* The first STATUS after a lock carries the settings that run locked at;
+   * log them so a recording's ble_log.txt has every run's outcome. */
+  const before = useDashboardStore.getState().v2AgcRuns;
+  const after = agcRunsOnStatus(before, st);
+  setState(after === before ? { v2Status: st } : { v2Status: st, v2AgcRuns: after });
+  if (after !== before) appendBleLog('earclip', 'info', describeAgcRun(after.runs[after.runs.length - 1]));
 });
 
-/* AGC transitions: keep the reason for the panel, and log each one so the
- * BLE log (and a recording's ble_log.txt) shows when the gain locked. */
+/* AGC transitions: fold each into the gain-protocol run history, and log it
+ * so the BLE log (and a recording's ble_log.txt) shows when the gain locked. */
 narbisDevice.addEventListener('v2EventReceived', (e) => {
-  for (const ev of (e as CustomEvent<NarbisV2EventsEvent>).detail.events) {
-    if (ev.typeName !== 'AGC_STATE') continue;
+  const { events, timestamp } = (e as CustomEvent<NarbisV2EventsEvent>).detail;
+  for (const ev of events) {
+    if (ev.type !== EV_AGC_STATE) continue;
     const { state, reason, reacqCount } = ev.fields;
-    setState(() => ({ v2AgcReason: reason }));
+    if (state === undefined) continue;         /* mis-sized record: fields left empty */
+    setState((s) => ({
+      v2AgcRuns: agcRunsOnState(s.v2AgcRuns, { state, reason, atMs: ev.hostMs ?? timestamp }),
+    }));
     appendBleLog('earclip', 'info',
       `AGC ${AGC_STATE_NAME[state] ?? state} (${AGC_REASON_NAME[reason] ?? reason}` +
       `${reacqCount ? `, re-acquired ${reacqCount}x` : ''})`);
