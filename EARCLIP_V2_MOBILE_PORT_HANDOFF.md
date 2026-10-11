@@ -1,7 +1,7 @@
 # Handoff: Narbis V2.1 earclip → iOS (spec) and Android
 
 **This document doubles as the prompt.** Hand it to an agent whole. Written 2026-10-09; updated
-through 2026-10-10 for firmware v0.3.0-40 / protocol 1.3.
+through 2026-10-11 for firmware v0.3.0-40 / protocol 1.3 and the first Android field test.
 
 | | repo @ commit | what to read |
 |---|---|---|
@@ -15,13 +15,15 @@ through 2026-10-10 for firmware v0.3.0-40 / protocol 1.3.
 - The optimizer AGC locks: it picked 28/19 mA at 25k and locked, with beats ~80 bpm at
   confidence 84.
 - Removal is detected in ~4 s, and no beats are emitted off-ear.
-- The standby breathing LED works.
+- The standby breathing LED works, and the 2-minute auto-off fired on USB (v0.3.0-38; the
+  battery path is the same rule).
 - The radio fix: advertising RSSI at the same spot went −68 → −41 dBm.
+- An Android phone (Galaxy Note9, Android 10) paired, streamed an 8-minute training with no lost
+  PPG batches and no decode errors, and recorded it (see "Port status").
 
 Not yet proven on hardware:
 - Beats continuing through an AGC re-run (proven in the firmware's host tests only).
 - ARTIFACT flags on chewing / talking against an H10.
-- The 2-minute auto-off.
 
 Gate every 1.2-only and 1.3-only behaviour on PROTO_VER (traps 7 and 9). Take constants from
 `dashboard/src/ble/v2/protocol.ts`, which carries them all.
@@ -29,6 +31,36 @@ Gate every 1.2-only and 1.3-only behaviour on PROTO_VER (traps 7 and 9). Take co
 Per the apps' own rules: iOS is the spec and Android mirrors it; port the TypeScript 1:1 keeping
 its class boundaries; cite the commit SHAs above in every port commit; log every divergence in
 `docs/PARITY.md` (iOS) / `docs/PARITY-ANDROID.md`.
+
+## Port status (2026-10-11)
+
+**Android (`narbiscorp/edge-Android-HRV`) — went first (decision D34 there).**
+- **Phase 1 "Beats":** PR #1, branch `claude/zen-elbakyan-82adb6` @ `c246052`, CI green. It covers the
+  parser (the dashboard's vectors), link stats, session, device layer, the engine wiring, `EDGE_EARCLIP`,
+  battery / signal notices, and both scan rules.
+- **First field test** (Note9, Android 10, firmware v0.3.0-40, 2026-10-10):
+  - The 10:22 training ran 8 min: 586 beats kept, 42 rejected by the app's gate, ~44 s of beats missing in
+    23 gaps, HR 81, coherence avg 32 / peak 53.
+  - The link stayed up the whole block: no lost batches, no parse errors, 99.6 sps.
+  - Two bugs found:
+    - the FIRST pairing hung until the earclip's idle kick (trap 11 — the bond completed but the app never
+      heard it);
+    - the export's share sheet could not read the zip.
+- **Fixed, with phase 2 (raw capture), on LOCAL branch `claude/earclip-raw-capture`** (`945a2fd`, `3e866b7`).
+  Not pushed and not yet re-tested on the phone.
+  - Unit tests: 1106, all pass except one known order-dependent Robolectric flake (`CameraUiTest`, passes alone).
+  - Next: install, re-run the pairing + export checklist in that branch's `TODO.md`, then fast-forward the PR.
+
+**iOS (`narbiscorp/edge-iOS-HRV`) — not started.** Port from this document. Then mirror Android's
+phase 2 format below, since the iOS export should match it.
+
+**Phase 2 export format, as decided (Android `hrv/earclip/EarclipRawCapture.kt`):**
+- Layout: the export zip carries a `v2/` folder with the dashboard's files and columns, verbatim. Any added columns go at the END of a row only.
+- Added columns:
+  - `elapsed_ms` in every file, on the block's own clock (the same as `beats-<id>.csv`'s);
+  - in `ibi.csv`, `to_engine` (the record had an interval and went to the engine) and `engine_kept` (the engine's gate kept it).
+- `ibi.csv` holds EVERY record the earclip sent, flagged and `ibi_ms = 0` ones included. With the flags, that is what explains each gap in `beats-<id>.csv`: earclip-flagged vs app-rejected vs no beat detected.
+- The capture is streamed to gzip files during the block (an hour is ~360 k PPG rows) and expanded into the zip at export. It is deleted with its record and kept for the newest 10 blocks.
 
 ---
 
@@ -202,6 +234,12 @@ CONTROL: **one outstanding request at a time** (else `BUSY`) — queue them
     instead (`idle_kick_pair_s`, v0.3.0-40), and the 15 s restarts once pairing completes: on
     firmware before v0.3.0-40, a slow tap on "Pair" got the link cut, which reads as a refused
     bond.
+11. **Android below 13: system broadcasts never reach a `RECEIVER_NOT_EXPORTED` receiver.**
+    - The mechanism: `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)` emulates the flag below API 33 by registering behind the app's own `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
+    - The effect: `ACTION_BOND_STATE_CHANGED` comes from `com.android.bluetooth`, which does not hold that permission, so it is silently denied. The bond completes and the app never hears it, then sits at its bond step until the earclip's idle kick (status 19).
+    - Fix: register protected-system-broadcast receivers EXPORTED (safe: no app can send a protected broadcast), and also poll `bondState` while waiting.
+    - Seen on a Galaxy Note9, Android 10.
+    - iOS has no equivalent.
 
 ---
 
