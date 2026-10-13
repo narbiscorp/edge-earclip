@@ -103,7 +103,7 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 1. **[Firmware, hardware]** Flash A9:74 to v0.3.0-46 (the merged image wipes its bonds and knobs), then a guided run with the H10.
    - Score it with `tools/replay/replay_session.py --config live`.
    - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12, run 1: 100 % found, median 3-4 ms, 95-97 % within 10 ms).
-2. **[Push]** The firmware repo (6 commits) and this repo's `b03712d` / `89185f2` (dashboard + tester only; no firmware release).
+2. **[Push]** The firmware repo (7 commits, `3b62401`..`c8b91ec`) and this repo's dashboard / tester / TODO commits (no firmware release).
 3. **[Android, hardware]** Test the installed build on the Note9:
    - HR never doubles;
    - the battery % on the earclip chip (`battery=` in `strap-pmd.log`);
