@@ -32,30 +32,38 @@ external systems, or work that is intentionally deferred to a later stage.
   `EDGE/EDGE FIRMWARE/components/narbis_ble_central/` (current
   Bluedroid GATTC implementation).
 
-## V2.1 earclip ("PPG Clip": XIAO ESP32-C6 + AFE4404 + LIS2DH12) — status 2026-10-11
+## V2.1 earclip ("PPG Clip": XIAO ESP32-C6 + AFE4404 + LIS2DH12) — status 2026-10-12
 
 ### Where everything lives
 - **Firmware:** `narbiscorp/narbis-earclip-fw` (local `C:\Users\dgrec\Downloads\PPG Clip\narbis-earclip-fw`),
-  master @ `63b209e` = v0.3.0-40, protocol 1.3, **pushed**. Functest image `vendor/narbis-earclip-functest.bin`
+  origin master @ `63b209e` = v0.3.0-40, protocol 1.3. LOCAL, not pushed: master @ `dba1c57` = v0.3.0-46, protocol 1.4
+  (adaptive refractory, two-level motion gate, `tools/replay/`, tester step 15). Functest image `vendor/narbis-earclip-functest.bin`
   (build: `tools/make_factory_image.ps1`; flash at 0x0 with esptool). The repo has no CI.
+- **Replay + H10 scoring:** `tools/replay/` in the firmware repo re-runs the firmware's own beat detection on a dashboard
+  recording with any knob settings and scores each guided block against the H10 (`replay_session.py <session.zip>`).
 - **Dashboard:** `dashboard/` here, live at https://narbiscorp.github.io/edge-earclip/app.html (`0bff73d`: device-driven
-  AGC panel, "Run gain protocol", run history, ARTIFACT beats). Tester page `functest/` (protocol 1.3 constants, 89 knobs).
+  AGC panel, "Run gain protocol", run history, ARTIFACT beats; `243cc19` mains notch 60 / 50 / off on the raw trace).
+  Tester page `functest/` (step 15 fingertip, 90 knobs, live). LOCAL, not pushed: `b03712d` MOTION flag names,
+  `89185f2` tester protocol 1.4 constants (91 knobs).
 - **Mobile port spec:** `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (this repo's root).
-- **Android HRV app:** `narbiscorp/edge-Android-HRV` PR #1 (branch `claude/zen-elbakyan-82adb6` @ `c246052`, phase 1 "Beats",
-  CI green). On top of it, LOCAL ONLY (not pushed): branch `claude/earclip-raw-capture`
+- **Android HRV app:** `narbiscorp/edge-Android-HRV` PR #1, fast-forwarded to `a35902d` (pairing fix, raw capture, UI-test
+  leak fix; Note9 re-test passed 2026-10-11). LOCAL, not pushed, on branch `claude/earclip-raw-capture`
   (worktree `C:\CODE\edge-Android-HRV\.claude\worktrees\earclip-raw-capture`):
-  - `945a2fd` first-pairing fix;
-  - `3e866b7` raw capture + flags (phase 2) and the share-sheet grant.
+  - `b213c4e` the HR number follows kept beats (no doubled ~160 bpm), and a steady battery figure on the earclip chip;
+  - `f0a1bcd` review screen: average resonance frequency of the Follow trainings;
+  - `b6795ca` Settle & Find renamed Discovery, the earclip runs it as an experiment (PPG baseline breathing, accel logged
+    beside it in `resp.csv`);
+  - the protocol 1.4 MOTION flag names.
 
-  Debug APK built with a side-by-side id (`com.narbis.edge.hrv.earclip`, init script in the session scratchpad: debug
-  `applicationIdSuffix ".earclip"`). Not yet installed on the phone.
+  Debug APK with a side-by-side id (`com.narbis.edge.hrv.earclip`, debug `applicationIdSuffix ".earclip"`), installed on
+  the Note9 through `b6795ca`.
 - **iOS HRV app** (`narbiscorp/edge-iOS-HRV`): no earclip work yet.
 
 ### Boards
 | board | BLE | USB | firmware |
 |---|---|---|---|
-| `58:E6:C5:15:A9:74` | `…A9:76` | COM25 | functest **v0.3.0-40** |
-| `A0:F2:62:85:9F:C0` | `…9F:C2` | COM21 | functest v0.3.0-34 (flaky battery connector) |
+| `58:E6:C5:15:A9:74` | `…A9:76` | COM25 | functest **v0.3.0-42** (the working board) |
+| `A0:F2:62:85:9F:C0` | `…9F:C2` | COM21 | functest v0.3.0-34 (flaky battery connector; set aside) |
 | `A0:F2:62:85:A7:90`, `…D1:C0` | | | old bench -21 / functest -22 |
 
 A clip that turned itself OFF drops off USB — press its button before flashing.
@@ -67,6 +75,13 @@ A clip that turned itself OFF drops off USB — press its button before flashing
   - In band near the preferred currents it holds still (v0.3.0-34 — breathing had made the LEDs dither ±1-2 mA and it never locked).
 - **AGC step compensation (v0.3.0-36, knob `agc_step_comp`).** The DSP + beat chain is rescaled across every LED/gain step instead of gating ~2 s per step; the settle window now only annotates the PPG stream.
 - **Beats only while worn. ARTIFACT (proto 1.3, IBI flag 0x10):** the interval is >15 % off both the median of the last 5 and the last one. Still sent, with confidence capped at 20; the dashboard keeps it out of HRV.
+- **Adaptive refractory (v0.3.0-42, `refract_frac_pct` 60 %).** After a beat, the detector ignores 60 % of the median clean interval, so the second hump of a pulse can't count while talking or chewing.
+- **Two-level motion gate (v0.3.0-46, protocol 1.4).**
+  - Accel energy over `gate_acc_thr` (8000) but under `gate_acc_hard_thr` (200000) no longer gates: beats are found through it and flagged MOTION (IBI 0x20, PPG batch 0x80).
+  - Over 200 k (taking the clip off reads 0.87-4.5 M) it gates as before.
+  - Why: every chewing, talking and foot-tap gate in three guided H10 runs was the accel gate, and it lost 40-70 % of the beats there.
+  - Replayed: chew / talk beats found went from 32-51 % to 81-92 %, with false beats about the same; intervals during motion are 8-13 ms median off the H10.
+  - MOTION beats stay in HR, the HRS and HRV, but do not count toward an AGC lock.
 - **Standby (TEST builds).**
   - Ear posture → local sensing; a breathing LED while waiting.
   - OFF after 2 min not worn with no app session — on battery AND on USB (v0.3.0-38); console commands hold it off.
@@ -85,21 +100,22 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 - **Android pairing bug (root cause).** `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)` below API 33 puts the receiver behind an app-private permission. `com.android.bluetooth` does not hold it, so ACTION_BOND_STATE_CHANGED never arrived. Fixed by exporting protected-system-broadcast receivers, plus a 500 ms bond-state poll.
 
 ### Open — next steps, in order
-1. **[Android, hardware]** Install the `claude/earclip-raw-capture` build on the Galaxy Note9 (needs a USB data connection + adb; the APK is too big to send through chat). Then run the checklist in that branch's `TODO.md`:
-   - forget the clip in Bluetooth settings, then pair: it must go straight through (`earclip: bond … -> bonded`, no `dropped at stage BOND`);
-   - do a short training and export it: the zip has `v2/` with every stream (ppg rows ≈ 100 × seconds; `ibi.csv` `engine_kept`);
-   - the share sheet opens the zip.
+1. **[Firmware, hardware]** Flash A9:74 to v0.3.0-46 (the merged image wipes its bonds and knobs), then a guided run with the H10.
+   - Score it with `tools/replay/replay_session.py --config live`.
+   - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12: 95-100 % found, median 3-4 ms, 95-97 % within 10 ms).
+2. **[Push]** The firmware repo (6 commits) and this repo's `b03712d` / `89185f2` (dashboard + tester only; no firmware release).
+3. **[Android, hardware]** Test the installed build on the Note9:
+   - HR never doubles;
+   - the battery % on the earclip chip (`battery=` in `strap-pmd.log`);
+   - the review screen's resonance line;
+   - Discovery on the H10, and on the earclip (experimental), with an export to check `resp.csv`.
 
-   Then fast-forward the PR branch to it (`git push origin claude/earclip-raw-capture:claude/zen-elbakyan-82adb6`) and update the PR description.
-2. **[Android]** The known order-dependent Robolectric leak (`UncaughtExceptionsBeforeTest`) still hits `CameraUiTest` in the full suite; it passes alone. `stopContainers()` is only in `PairingScreenTest` — extend it to the other UI tests.
-3. **[Firmware]** Flash 9F:C0 to v0.3.0-40.
-4. **[Hardware]** A guided recording on v0.3.0-40 with an H10, to check:
-   - ARTIFACT flags on the chewing / talking blocks;
-   - beats continuing through an AGC re-run ("Run gain protocol");
-   - IBI agreement with the H10 at rest (target ±10 ms).
-5. **[Hardware/firmware]** Measure the +20 dBm battery cost while streaming (PPK2) and settle the default. Light sleep in TEST-build standby (the real standby saving) is not started.
-6. **[iOS]** Start the earclip port from `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (iOS is the spec per the apps' rules; Android went first, decision D34 there).
-7. **[Dashboard]** The coherence-engine feed and the session-summary RMSSD still take flagged beats (interval bounds only). Decide whether they follow the HRV rule (`isArtifactBeat`).
-8. **[Dashboard]** UI for the new knobs (`ble_tx_dbm`, `agc_step_comp`, `idle_kick_pair_s`): tester page only today.
-9. **[Board rev V2.2]** R1 → pull-down (removes 33 µA from OFF).
-10. **[Firmware]** Production builds (NARBIS_TEST_MODE 0) have not been run on hardware with any of this. The pairing window, the idle kick and the pairing grace were exercised in TEST builds only.
+   Then push the branch to PR #1.
+4. **[Report]** A motion section in the training report from the accel energy and MOTION flags (dashboard and app). Proposed, not yet agreed.
+5. **[Hardware]** The third guided subject's pulse was weak (AC/DC 0.66 %), and only 58-65 % of beats were found even at rest (37-65 % in motion). Try placement and the LED currents first.
+6. **[Hardware/firmware]** Measure the +20 dBm battery cost while streaming (PPK2) and settle the default. Light sleep in TEST-build standby (the real standby saving) is not started.
+7. **[iOS]** Start the earclip port from `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (iOS is the spec per the apps' rules; Android went first, decision D34 there).
+8. **[Dashboard]** The coherence-engine feed and the session-summary RMSSD still take flagged beats (interval bounds only). Decide whether they follow the HRV rule (`isArtifactBeat`).
+9. **[Dashboard]** UI for the new knobs (`ble_tx_dbm`, `agc_step_comp`, `idle_kick_pair_s`, `refract_frac_pct`, `gate_acc_hard_thr`): tester page only today.
+10. **[Board rev V2.2]** R1 → pull-down (removes 33 µA from OFF).
+11. **[Firmware]** Production builds (NARBIS_TEST_MODE 0) have not been run on hardware with any of this. The pairing window, the idle kick and the pairing grace were exercised in TEST builds only.
