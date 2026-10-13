@@ -61,7 +61,7 @@ external systems, or work that is intentionally deferred to a later stage.
 ### Boards
 | board | BLE | USB | firmware |
 |---|---|---|---|
-| `58:E6:C5:15:A9:74` | `…A9:76` | COM25 | functest **v0.3.0-46** (the working board; flashed 2026-10-12, bonds and knobs wiped) |
+| `58:E6:C5:15:A9:74` | `…A9:76` | COM25 | functest **v0.3.0-49** (the working board; flashed 2026-10-13, bonds and knobs wiped) |
 | `A0:F2:62:85:9F:C0` | `…9F:C2` | COM21 | functest v0.3.0-34 (flaky battery connector; set aside) |
 | `A0:F2:62:85:A7:90`, `…D1:C0` | | | old bench -21 / functest -22 |
 
@@ -99,7 +99,7 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 - **Android pairing bug (root cause).** `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)` below API 33 puts the receiver behind an app-private permission. `com.android.bluetooth` does not hold it, so ACTION_BOND_STATE_CHANGED never arrived. Fixed by exporting protected-system-broadcast receivers, plus a 500 ms bond-state poll.
 
 ### Open — next steps, in order
-1. **[Hardware]** A guided run with the H10 on v0.3.0-46 (A9:74; re-pair the phone first, its bond was wiped).
+1. **[Hardware]** A guided run with the H10 on v0.3.0-49 (A9:74; re-pair the phone first, its bond was wiped). Also check the new button timing: hold 3 s = off, 1 s = on (the boot log prints how the 1 s split, with ~200 ms of it an estimate).
    - Score it with `tools/replay/replay_session.py --config live`.
    - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12, run 1: 100 % found, median 3-4 ms, 95-97 % within 10 ms).
 2. **[Android, hardware]** Test the installed build on the Note9:
@@ -109,11 +109,12 @@ A clip that turned itself OFF drops off USB — press its button before flashing
    - Discovery on the H10, and on the earclip (experimental), with an export to check `resp.csv`.
 
    Then push the branch to PR #1.
-3. **[Report]** A motion section in the training report from the accel energy and MOTION flags (dashboard and app). Proposed, not yet agreed.
-4. **[Hardware]** The third guided subject's pulse was weak (AC/DC 0.66 %), and only 58-65 % of beats were found even at rest (37-65 % in motion). Try placement and the LED currents first.
-5. **[Hardware/firmware]** Measure the +20 dBm battery cost while streaming (PPK2) and settle the default. Light sleep in TEST-build standby (the real standby saving) is not started.
-6. **[iOS]** Start the earclip port from `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (iOS is the spec per the apps' rules; Android went first, decision D34 there).
-7. **[Dashboard]** The coherence-engine feed and the session-summary RMSSD still take flagged beats (interval bounds only). Decide whether they follow the HRV rule (`isArtifactBeat`).
-8. **[Dashboard]** UI for the new knobs (`ble_tx_dbm`, `agc_step_comp`, `idle_kick_pair_s`, `refract_frac_pct`, `gate_acc_hard_thr`): tester page only today.
-9. **[Board rev V2.2]** R1 → pull-down (removes 33 µA from OFF).
-10. **[Firmware]** Production builds (NARBIS_TEST_MODE 0) have not been run on hardware with any of this. The pairing window, the idle kick and the pairing grace were exercised in TEST builds only.
+3. **[Oximeter]** When the Innovo iP900BP-B arrives: connect it from the dashboard ("Connect Oximeter"). If it reports none of the known services, read its service UUID from this PC (bleak) and add it to `OXIMETER_SERVICES` in `dashboard/src/ble/innovoOximeter.ts`. Then wear both and use "fit from oximeter" (pulse-ox chart → cal). A breath-hold or altitude dip gives the 4-point spread that fits the slope b too.
+4. **[Report]** A motion section in the training report from the accel energy and MOTION flags (dashboard and app). Proposed, not yet agreed.
+5. **[Hardware]** The third guided subject's pulse was weak (AC/DC 0.66 %), and only 58-65 % of beats were found even at rest (37-65 % in motion). Try placement and the LED currents first.
+6. **[Hardware/firmware]** Measure the +20 dBm battery cost while streaming (PPK2) and settle the default. Light sleep in TEST-build standby (the real standby saving) is not started.
+7. **[iOS]** Start the earclip port from `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (iOS is the spec per the apps' rules; Android went first, decision D34 there).
+8. **[Dashboard]** The coherence-engine feed and the session-summary RMSSD still take flagged beats (interval bounds only). Decide whether they follow the HRV rule (`isArtifactBeat`).
+9. **[Dashboard]** UI for the new knobs (`ble_tx_dbm`, `agc_step_comp`, `idle_kick_pair_s`, `refract_frac_pct`, `gate_acc_hard_thr`): tester page only today.
+10. **[Board rev V2.2]** R1 → pull-down (removes 33 µA from OFF).
+11. **[Firmware]** Production builds (NARBIS_TEST_MODE 0) have not been run on hardware with any of this. The pairing window, the idle kick and the pairing grace were exercised in TEST builds only.
