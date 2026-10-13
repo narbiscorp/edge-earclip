@@ -1,6 +1,8 @@
 import JSZip from 'jszip';
 import { useDashboardStore, setReplayBattery } from '../state/store';
 import { metricsBuffers } from '../state/metricsBuffer';
+import { spo2Buffers } from '../state/spo2Buffer';
+import { computeSpo2Series, type Spo2Estimate } from '../metrics/spo2';
 import { METRICS_WINDOW_SEC } from '../state/metricsRunner';
 import { extractIbiWindow } from '../metrics/windowing';
 import MetricsWorker from '../workers/metricsWorker?worker';
@@ -160,10 +162,13 @@ export class ReplayPlayer {
   private rafId: number | null = null;
   private lastFrameMs = 0;
   private listeners = new Set<(pos: number) => void>();
+  /** SpO2 over the whole recording, from its raw red / IR (recordings carry no SpO2 of their own). */
+  private readonly spo2: Array<{ timestamp: number; value: Spo2Estimate }>;
 
   constructor(session: LoadedSession) {
     this.session = session;
     this.positionMs = 0;
+    this.spo2 = computeSpo2Series(session.raw);
     this.rebuildBuffers();
   }
 
@@ -259,6 +264,7 @@ export class ReplayPlayer {
     bufs.filtered.clear();
     bufs.polarBeats.clear();
     metricsBuffers.replay.clear();
+    spo2Buffers.replay.clear();
 
     pushWindow(this.session.raw, tEnd, RAW_WINDOW_SEC, (e) =>
       bufs.rawPpg.push(e.timestamp, e.sample),
@@ -287,6 +293,7 @@ export class ReplayPlayer {
       METRICS_DISPLAY_WINDOW_SEC,
       (m) => metricsBuffers.replay.push(m.timestamp, m.snapshot),
     );
+    pushWindow(this.spo2, tEnd, METRICS_DISPLAY_WINDOW_SEC, (e) => spo2Buffers.replay.push(e.timestamp, e.value));
 
     /* Battery is sparse (every ~30 s) — find the most-recent record at or
      * before tEnd and surface it on the connection panel during playback. */

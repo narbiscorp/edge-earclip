@@ -23,6 +23,9 @@ export const CHART_COLORS = {
   firmwareCoh: '#a3e635',
   /* On-glasses firmware coherence, decoded from the 0xF2 status frame. */
   edgeCoh: '#fde047',
+  /* Pulse ox (metrics/spo2.ts): SpO2, and the IR perfusion index beside it. */
+  spo2: '#60a5fa',
+  perfusion: '#94a3b8',
 };
 
 export function darkLayout(extra: Partial<Layout> = {}): Partial<Layout> {

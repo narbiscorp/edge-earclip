@@ -22,6 +22,7 @@ import BreathChime from './components/BreathChime';
 import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
 import AccChart from './components/AccChart';
+import Spo2Chart from './components/Spo2Chart';
 import SessionSummaryModal from './components/SessionSummaryModal';
 import SlimHeader from './components/SlimHeader';
 import AuthButton from './auth/AuthButton';
@@ -156,6 +157,7 @@ export default function App() {
               <SignalChart />
               <FilteredChart />
               <BeatChart />
+              <Spo2Chart />
               <MetricsChart />
               <CoherenceChart />
               {engineMode === 'modeB' && <AccChart />}

@@ -47,6 +47,7 @@ import {
   type PpgProgram,
 } from '../ble/edgeDevice';
 import { edgeCoherenceBuffers } from './metricsBuffer';
+import { pushLiveSpo2 } from './spo2Buffer';
 import type {
   NarbisRuntimeConfig,
   NarbisRawSample,
@@ -1288,6 +1289,7 @@ function processRawBatch(raw: NarbisRawSampleEvent): void {
   for (let i = 0; i < n; i++) {
     const ts = firstTs + i * periodMs;
     liveBuffers.rawPpg.push(ts, raw.samples[i]);
+    pushLiveSpo2(ts, raw.samples[i].ir, raw.samples[i].red, raw.sample_rate_hz);
     if (v2) {
       liveBuffers.filtered.push(ts, {
         kind: 'filtered',

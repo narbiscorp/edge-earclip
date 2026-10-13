@@ -8,6 +8,7 @@ import {
 import type { LoadedSession } from '../recording/types';
 import { useDashboardStore, setReplayBattery } from './store';
 import { metricsBuffers } from './metricsBuffer';
+import { spo2Buffers } from './spo2Buffer';
 
 export type ReplaySpeed = 1 | 2 | 5 | 10;
 
@@ -87,6 +88,7 @@ export const useReplayStore = create<ReplayStoreState>((set, get) => ({
       player = null;
     }
     metricsBuffers.replay.clear();
+    spo2Buffers.replay.clear();
     const bufs = useDashboardStore.getState().replayBuffers;
     bufs.rawPpg.clear();
     bufs.narbisBeats.clear();
