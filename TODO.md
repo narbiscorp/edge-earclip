@@ -80,7 +80,7 @@ A clip that turned itself OFF drops off USB — press its button before flashing
   - Accel energy over `gate_acc_thr` (8000) but under `gate_acc_hard_thr` (200000) no longer gates: beats are found through it and flagged MOTION (IBI 0x20, PPG batch 0x80).
   - Over 200 k (taking the clip off reads 0.87-4.5 M) it gates as before.
   - Why: every chewing, talking and foot-tap gate in three guided H10 runs was the accel gate, and it lost 40-70 % of the beats there.
-  - Replayed: chew / talk beats found went from 32-51 % to 81-92 %, with false beats about the same; intervals during motion are 8-13 ms median off the H10.
+  - Replayed: chew / talk beats found went from 32-51 % to 81-92 %, with false beats about the same; intervals during motion are 7-13 ms median off the H10.
   - MOTION beats stay in HR, the HRS and HRV, but do not count toward an AGC lock.
 - **Standby (TEST builds).**
   - Ear posture → local sensing; a breathing LED while waiting.
@@ -102,7 +102,7 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 ### Open — next steps, in order
 1. **[Firmware, hardware]** Flash A9:74 to v0.3.0-46 (the merged image wipes its bonds and knobs), then a guided run with the H10.
    - Score it with `tools/replay/replay_session.py --config live`.
-   - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12: 95-100 % found, median 3-4 ms, 95-97 % within 10 ms).
+   - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12, run 1: 100 % found, median 3-4 ms, 95-97 % within 10 ms).
 2. **[Push]** The firmware repo (6 commits) and this repo's `b03712d` / `89185f2` (dashboard + tester only; no firmware release).
 3. **[Android, hardware]** Test the installed build on the Note9:
    - HR never doubles;
