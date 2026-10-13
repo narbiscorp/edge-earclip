@@ -10,7 +10,7 @@ import {
   AGC_ST_LOCKED, AGC_REASON_NAME, STF_AGC_FROZEN,
   parseV2Accel, accelPeriodUs, accelCountsPerG, ACCF_FS_MASK, ACCF_FIFO_OVERRUN,
 } from '../protocol';
-import { PpgFilter } from '../ppgFilter';
+import { MainsNotch, PpgFilter, mainsAliasesHz } from '../ppgFilter';
 
 /* Frames are built here byte-for-byte from the firmware's documented
  * layouts, so a drift between dashboard and firmware fails loudly. */
@@ -212,6 +212,70 @@ describe('PpgFilter', () => {
     let v = 0;
     for (let i = 0; i < 500; i++) v = f.push(1_000_000);
     expect(Number.isFinite(v)).toBe(true);
+  });
+});
+
+/* Mains hum on the raw counts (lights: "tons of 60 Hz", 2026-10-12). At ~100 sps nothing above
+ * 50 Hz exists, so the hum arrives folded — and that is where the notch has to be. */
+describe('mains notch', () => {
+  it('sits where mains folds to: 60 Hz at 100 sps -> 20 and 40 Hz, 50 Hz -> just under Nyquist', () => {
+    expect(mainsAliasesHz(60, 100)).toEqual([20, 40]);
+    expect(mainsAliasesHz(50, 100)).toEqual([49.5]);
+    expect(mainsAliasesHz(60, 200)).toEqual([20, 40, 60, 80]);
+    expect(mainsAliasesHz(0, 100)).toEqual([]);
+  });
+
+  /** Amplitude of [f] in [xs] (single-bin DFT; whole cycles over the span). */
+  const amp = (xs: number[], f: number, fs: number) => {
+    let re = 0, im = 0;
+    xs.forEach((v, i) => {
+      re += v * Math.cos((2 * Math.PI * f * i) / fs);
+      im += v * Math.sin((2 * Math.PI * f * i) / fs);
+    });
+    return (2 * Math.hypot(re, im)) / xs.length;
+  };
+
+  it('takes the hum off the raw counts and leaves the pedestal and the pulse', () => {
+    const fs = 100;
+    const n = fs * 20;
+    const notch = new MainsNotch(60, fs);
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / fs;
+      out.push(notch.step(
+        1_100_000 + 1_000 * Math.sin(2 * Math.PI * 1.2 * t)
+          + 20_000 * Math.sin(2 * Math.PI * 20 * t) + 8_000 * Math.sin(2 * Math.PI * 40 * t),
+      ));
+    }
+    const settled = out.slice(n / 2);
+    expect(amp(settled, 20, fs)).toBeLessThan(20_000 * 0.01); // > 40 dB down
+    expect(amp(settled, 40, fs)).toBeLessThan(8_000 * 0.01);
+    expect(amp(settled, 1.2, fs)).toBeGreaterThan(1_000 * 0.97); // the pulse untouched
+    const mean = settled.reduce((a, b) => a + b, 0) / settled.length;
+    expect(Math.abs(mean - 1_100_000)).toBeLessThan(50); // the pedestal passes
+  });
+
+  it('primes on the first sample, so a pedestal does not ring at the left edge', () => {
+    const notch = new MainsNotch(60, 100);
+    for (let i = 0; i < 50; i++) expect(notch.step(1_100_000)).toBeCloseTo(1_100_000, 6);
+  });
+
+  it('off passes samples through untouched', () => {
+    const notch = new MainsNotch(0, 100);
+    expect(notch.notchesHz).toEqual([]);
+    expect(notch.step(123_456)).toBe(123_456);
+  });
+
+  it('runs in the filtered chain too, and the default is 60 Hz', () => {
+    const f = new PpgFilter({ sampleRate: 100, bpHi: 15 });
+    expect(f.config.mainsHz).toBe(60);
+    const off = new PpgFilter({ sampleRate: 100, bpHi: 15, mainsHz: 0 });
+    const hum = (pf: PpgFilter) => {
+      const ys: number[] = [];
+      for (let i = 0; i < 2000; i++) ys.push(pf.push(1_000_000 + 5_000 * Math.sin((2 * Math.PI * 20 * i) / 100)));
+      return amp(ys.slice(1000), 20, 100);
+    };
+    expect(hum(f)).toBeLessThan(hum(off) * 0.05);
   });
 });
 

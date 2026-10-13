@@ -18,7 +18,7 @@
  * write per animation frame on a 100 ms BLE connection interval.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useDashboardStore } from '../state/store';
+import { getRawSampleRateHz, useDashboardStore } from '../state/store';
 import { narbisDevice } from '../ble/narbisDevice';
 import {
   KNOB, TIA_RF_OHMS, LED_IR_MAX_MA, LED_RED_MAX_MA,
@@ -29,7 +29,7 @@ import {
   statusGainValue, withoutEdit,
   type AgcRun, type AgcRunsState, type GainField, type GainTone, type PendingEdits,
 } from '../ble/v2/agc';
-import { PPG_FILTER_DEFAULTS } from '../ble/v2/ppgFilter';
+import { mainsAliasesHz, PPG_FILTER_DEFAULTS, type MainsHz } from '../ble/v2/ppgFilter';
 
 const WRITE_DEBOUNCE_MS = 180;
 /** "Run gain protocol" stops waiting for the lock after this long. */
@@ -321,6 +321,7 @@ export default function V2TuningPanel() {
   const detSeeded = useRef(false);
   const filter = useDashboardStore((s) => s.ppgFilter);
   const setFilter = useDashboardStore((s) => s.setPpgFilter);
+  const mainsNotches = mainsAliasesHz(filter.mainsHz, getRawSampleRateHz());
 
   /* Manual edits the device has not answered yet. The knobs show STATUS;
    * these only add the "→ target" beside it until a STATUS answers. */
@@ -838,23 +839,24 @@ export default function V2TuningPanel() {
           title="Highest frequency kept. 8 Hz keeps the dicrotic notch and rejects the rest."
           onChange={(v) => setFilter({ bpHi: v })}
         />
-        <Row label="Mains notch" title="Only useful when the sample rate is well above twice the mains frequency.">
-          <span className="flex items-center gap-1">
-            <input
-              type="checkbox" checked={filter.notchEn}
-              onChange={(e) => setFilter({ notchEn: e.target.checked })}
-              className="accent-indigo-500"
-            />
-            <select
-              value={filter.notchHz}
-              onChange={(e) => setFilter({ notchHz: Number(e.target.value) })}
-              disabled={!filter.notchEn}
-              className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-slate-200 disabled:opacity-40"
-            >
-              <option value={50}>50 Hz</option>
-              <option value={60}>60 Hz</option>
-            </select>
-          </span>
+        <Row
+          label="Mains notch"
+          title={
+            'Removes mains hum (lights, wiring) from the Raw and the Filtered charts. ' +
+            'At this sample rate it lands where it folds to: ' +
+            (mainsNotches.length > 0 ? mainsNotches.map((f) => `${f.toFixed(0)} Hz`).join(' and ') : 'nothing to notch') +
+            '. Display only: recordings keep the raw counts.'
+          }
+        >
+          <select
+            value={filter.mainsHz}
+            onChange={(e) => setFilter({ mainsHz: Number(e.target.value) as MainsHz })}
+            className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-slate-200"
+          >
+            <option value={60}>60 Hz</option>
+            <option value={50}>50 Hz</option>
+            <option value={0}>Off</option>
+          </select>
         </Row>
         <Row label="Invert (peaks up)" title="Transmissive PPG dips when blood absorbs light, so the trace is inverted to look like a normal plethysmogram.">
           <input

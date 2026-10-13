@@ -1255,11 +1255,17 @@ let jitterQueue: NarbisRawSampleEvent[] = [];
 let jitterTimer: number | null = null;
 let jitterFilled = false;
 
+/** The raw stream's sample rate, from its latest batch (any generation): where the Raw chart's
+ * mains notch has to sit depends on it ([mainsAliasesHz]). */
+let rawSampleRateHz = PPG_FILTER_DEFAULTS.sampleRate;
+export function getRawSampleRateHz(): number { return rawSampleRateHz; }
+
 function processRawBatch(raw: NarbisRawSampleEvent): void {
   const arrivalMs = raw.timestamp;
   const periodMs = raw.sample_rate_hz > 0 ? 1000 / raw.sample_rate_hz : 0;
   const n = raw.samples.length;
   if (periodMs === 0 || n === 0) return;
+  rawSampleRateHz = raw.sample_rate_hz;
 
   const arrivalFirst = arrivalMs - (n - 1) * periodMs;
   const continueFirst = lastRawTs > 0 ? lastRawTs + periodMs : arrivalFirst;

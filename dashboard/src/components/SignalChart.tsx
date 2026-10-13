@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
-import { getActiveBuffers, useDashboardStore } from '../state/store';
+import { getActiveBuffers, getRawSampleRateHz, useDashboardStore } from '../state/store';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import { movingAverage, RescaleLatch } from '../charts/smoothing';
 import ChartControls, { type LineShape } from '../charts/ChartControls';
+import { MainsNotch } from '../ble/v2/ppgFilter';
 
 interface SignalChartProps {
   /** When true, hides the chart-controls bar in the header. Used by
@@ -15,6 +16,7 @@ interface SignalChartProps {
 
 export default function SignalChart({ compact = false }: SignalChartProps = {}) {
   const [paused, setPaused] = useState(false);
+  const mainsHz = useDashboardStore((s) => s.ppgFilter.mainsHz);
   // Window is global — see store.ts. Smooth/shape/rescale stay local.
   const windowSec = useDashboardStore((s) => s.windowSec);
   const setWindowSec = useDashboardStore((s) => s.setWindowSec);
@@ -117,10 +119,16 @@ export default function SignalChart({ compact = false }: SignalChartProps = {}) 
       const x: number[] = [];
       const red: number[] = [];
       const ir: number[] = [];
+      // The mains notch runs over the plotted window afresh each frame (primed on its first
+      // sample, so the left edge does not ring): the buffer stays the raw counts — what is
+      // recorded and replayed — and the same window always draws the same way.
+      const { mainsHz } = useDashboardStore.getState().ppgFilter;
+      const redNotch = new MainsNotch(mainsHz, getRawSampleRateHz());
+      const irNotch = new MainsNotch(mainsHz, getRawSampleRateHz());
       buf.forEachInWindow(windowSecRef.current, (ts, v) => {
         x.push(ts);
-        red.push(v.red);
-        ir.push(v.ir);
+        red.push(redNotch.step(v.red));
+        ir.push(irNotch.step(v.ir));
       });
       const n = smoothNRef.current;
       const redOut = n > 1 ? movingAverage(red, n) : red;
@@ -179,7 +187,12 @@ export default function SignalChart({ compact = false }: SignalChartProps = {}) 
   return (
     <div className="rounded border border-slate-800 bg-slate-900/50 flex flex-col min-h-[220px]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-800">
-        <span className="text-xs font-medium text-slate-300">Raw PPG ({formatWindow(windowSec)})</span>
+        <span className="text-xs font-medium text-slate-300">
+          Raw PPG ({formatWindow(windowSec)})
+          <span className="ml-1.5 text-[10px] font-normal text-slate-500">
+            {mainsHz > 0 ? `· ${mainsHz} Hz notch` : '· no notch'}
+          </span>
+        </span>
         {compact ? null : (
           <ChartControls
             windowSec={windowSec}
