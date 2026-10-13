@@ -7,6 +7,7 @@ import {
   parseV2EventBatch, ppgNewestUs, ppgSampleUs, ppgPeriodUs, ppgFlagNames, ibiFlagNames,
   EV_AGC_STEP, EV_AGC_STATE, EV_MARKER, EVENT_HDR_SIZE, PPGF_AGC_SETTLING, PPGF_CLIPPED,
   IBIF_GATED, IBIF_INTERPOLATED, IBIF_FIRST_AFTER_GAP, IBIF_ARTIFACT, PROTO_VER_ARTIFACT,
+  IBIF_MOTION, PPGF_MOTION, PROTO_VER_MOTION,
   AGC_ST_LOCKED, AGC_REASON_NAME, STF_AGC_FROZEN,
   parseV2Accel, accelPeriodUs, accelCountsPerG, ACCF_FS_MASK, ACCF_FIFO_OVERRUN,
 } from '../protocol';
@@ -306,6 +307,14 @@ describe('V2 PPG sample timing', () => {
     expect(IBIF_ARTIFACT).toBe(0x10);
     expect(PROTO_VER_ARTIFACT).toBe(0x0103);
     expect(ibiFlagNames(0x10)).toBe('ARTIFACT');
+  });
+
+  it('pins the proto 1.4 MOTION bits to the firmware values (NC_IBIF_MOTION = 1 << 5, NC_PPGF_MOTION = 1 << 7)', () => {
+    expect(IBIF_MOTION).toBe(0x20);
+    expect(PPGF_MOTION).toBe(0x80);
+    expect(PROTO_VER_MOTION).toBe(0x0104);
+    expect(ibiFlagNames(IBIF_INTERPOLATED | IBIF_MOTION)).toBe('INTERPOLATED|MOTION');
+    expect(ppgFlagNames(PPGF_MOTION)).toBe('MOTION');
   });
 });
 

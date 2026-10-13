@@ -4,7 +4,7 @@ import {
   NARBIS_BEAT_FLAG_ARTIFACT, NARBIS_BEAT_FLAG_LOW_CONFIDENCE, NARBIS_BEAT_FLAG_LOW_SQI,
 } from '../../ble/parsers';
 import {
-  IBIF_AGC_SETTLING, IBIF_ARTIFACT, IBIF_GATED, IBIF_INTERPOLATED,
+  IBIF_AGC_SETTLING, IBIF_ARTIFACT, IBIF_GATED, IBIF_INTERPOLATED, IBIF_MOTION,
 } from '../../ble/v2/protocol';
 import type { NarbisBeatEvent } from '../../ble/narbisDevice';
 
@@ -23,6 +23,12 @@ describe('which earclip beats HRV skips', () => {
   it('keeps INTERPOLATED-only beats: sub-sample peak timing, set on nearly every good beat', () => {
     expect(isArtifactBeat(beat(0, 800, IBIF_INTERPOLATED))).toBe(false);
     expect(isArtifactBeat(beat(0, 800, 0))).toBe(false);
+  });
+
+  it('keeps MOTION beats (proto 1.4): found through light motion, real beats', () => {
+    expect(isArtifactBeat(beat(0, 800, IBIF_MOTION))).toBe(false);
+    expect(isArtifactBeat(beat(0, 800, IBIF_MOTION | IBIF_INTERPOLATED))).toBe(false);
+    expect(isArtifactBeat(beat(0, 800, IBIF_MOTION | IBIF_ARTIFACT))).toBe(true);
   });
 
   it('still reads v1 flags as before', () => {

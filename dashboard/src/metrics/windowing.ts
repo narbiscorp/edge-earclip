@@ -42,7 +42,9 @@ export function applyWindow(samples: Float64Array, type: WindowType): Float64Arr
  * LOW_CONFIDENCE bits, so the v1 mask already distrusts them. V2's ARTIFACT
  * (0x10, protocol 1.3: failed the on-device plausibility check) has no v1
  * twin (v1 never sets bit 4), so it is added explicitly: treated like
- * GATED. INTERPOLATED (0x04 in both) is not an artifact in either. */
+ * GATED. INTERPOLATED (0x04 in both) is not an artifact in either, nor is
+ * V2's MOTION (0x20, protocol 1.4: found through light motion that no
+ * longer gates). */
 const ARTIFACT_FLAGS =
   NARBIS_BEAT_FLAG_ARTIFACT | NARBIS_BEAT_FLAG_LOW_SQI | NARBIS_BEAT_FLAG_LOW_CONFIDENCE |
   IBIF_ARTIFACT;

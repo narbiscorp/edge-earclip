@@ -35,6 +35,8 @@ export const PPGF_RATE_CHANGED = 0x08;
 export const PPGF_AMB = 0x10;
 export const PPGF_WEAR_OFF = 0x20;
 export const PPGF_CLIPPED = 0x40;
+/** Proto 1.4: light motion (chewing, talking, a foot tap), detected through, not gated. */
+export const PPGF_MOTION = 0x80;
 
 /* ---- ACCEL batch flags + rates ---- */
 export const ACCF_FS_MASK = 0x03;
@@ -62,6 +64,12 @@ export const IBIF_FIRST_AFTER_GAP = 0x08;
 export const IBIF_ARTIFACT = 0x10;
 /** First protocol version whose beats can carry IBIF_ARTIFACT. */
 export const PROTO_VER_ARTIFACT = 0x0103;
+/** Proto 1.4: found during light motion that did not gate (accel energy
+ * over gate_acc_thr, under gate_acc_hard_thr). A real beat, a little less
+ * precise: it stays in HRV. */
+export const IBIF_MOTION = 0x20;
+/** First protocol version whose beats can carry IBIF_MOTION. */
+export const PROTO_VER_MOTION = 0x0104;
 
 /* ---- EVENT batch: [u32 seq][u8 n] + n × {u8 type, u8 len, payload[len]};
  * every payload starts with the event's u64 device time (µs). ---- */
@@ -342,6 +350,7 @@ export function ppgFlagNames(flags: number): string {
     [PPGF_GATE, 'GATE'], [PPGF_AGC_SETTLING, 'AGC_SETTLING'],
     [PPGF_USB_PRESENT, 'USB'], [PPGF_RATE_CHANGED, 'RATE_CHANGED'],
     [PPGF_AMB, 'AMB'], [PPGF_WEAR_OFF, 'WEAR_OFF'], [PPGF_CLIPPED, 'CLIPPED'],
+    [PPGF_MOTION, 'MOTION'],
   ]);
 }
 
@@ -349,7 +358,7 @@ export function ibiFlagNames(flags: number): string {
   return flagNames(flags, [
     [IBIF_GATED, 'GATED'], [IBIF_AGC_SETTLING, 'AGC_SETTLING'],
     [IBIF_INTERPOLATED, 'INTERPOLATED'], [IBIF_FIRST_AFTER_GAP, 'FIRST_AFTER_GAP'],
-    [IBIF_ARTIFACT, 'ARTIFACT'],
+    [IBIF_ARTIFACT, 'ARTIFACT'], [IBIF_MOTION, 'MOTION'],
   ]);
 }
 
