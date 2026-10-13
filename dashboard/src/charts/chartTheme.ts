@@ -26,6 +26,8 @@ export const CHART_COLORS = {
   /* Pulse ox (metrics/spo2.ts): SpO2, and the IR perfusion index beside it. */
   spo2: '#60a5fa',
   perfusion: '#94a3b8',
+  /* The reference fingertip oximeter's SpO2 (ble/innovoOximeter.ts). */
+  oximeter: '#f472b6',
 };
 
 export function darkLayout(extra: Partial<Layout> = {}): Partial<Layout> {

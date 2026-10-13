@@ -48,6 +48,14 @@ import {
 } from '../ble/edgeDevice';
 import { edgeCoherenceBuffers } from './metricsBuffer';
 import { pushLiveSpo2 } from './spo2Buffer';
+import { oximeterBuffers } from './oximeterBuffer';
+import {
+  innovoOximeter,
+  type OximeterReading,
+  type OximeterReadingDetail,
+  type OximeterStatus,
+  type OximeterStatusDetail,
+} from '../ble/innovoOximeter';
 import type {
   NarbisRuntimeConfig,
   NarbisRawSample,
@@ -82,7 +90,7 @@ export type DataSource = 'live' | 'replay';
  * writes - everything user-visible across both devices. Stored as a fixed-
  * size ring (newest last) so the UI can show a tail without unbounded
  * memory growth. */
-export type BleLogSource = 'earclip' | 'edge' | 'polar' | 'system';
+export type BleLogSource = 'earclip' | 'edge' | 'polar' | 'oximeter' | 'system';
 export type BleLogLevel = 'info' | 'warn' | 'error' | 'rx' | 'tx';
 export interface BleLogEntry {
   id: number;
@@ -134,6 +142,8 @@ export interface DashboardState {
       reconnectAttempt: number | null;
     };
     polar: { state: PolarStatus; deviceName: string | null };
+    /** Reference pulse oximeter (ble/innovoOximeter.ts). */
+    oximeter: { state: OximeterStatus; deviceName: string | null };
     edge: {
       state: EdgeStatus;
       deviceName: string | null;
@@ -245,6 +255,8 @@ export interface DashboardState {
    * HR readout can pull whichever source is active without iterating the
    * StreamBuffer on every render. */
   lastPolarBeat: PolarBeatRecord | null;
+  /** Latest reference-oximeter reading (once a second while connected). */
+  lastOximeter: { reading: OximeterReading; timestamp: number } | null;
   /** Wall-clock ms of the most recent beat from EITHER source. Drives the
    * heartbeat-pulse animation in the Basic-mode glasses visual without
    * having to subscribe to both source-specific timestamps separately. */
@@ -291,6 +303,8 @@ export interface DashboardState {
   forgetNarbis: () => Promise<void>;
   connectPolar: () => Promise<void>;
   disconnectPolar: () => Promise<void>;
+  connectOximeter: () => Promise<void>;
+  disconnectOximeter: () => Promise<void>;
   connectEdge: () => Promise<void>;
   disconnectEdge: () => Promise<void>;
   /** Tell the connected glasses to forget their current earclip and rescan.
@@ -678,6 +692,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   connection: {
     narbis: { state: 'disconnected', deviceName: null, battery: null, phase: null, reconnectAttempt: null },
     polar:  { state: 'disconnected', deviceName: null },
+    oximeter: { state: 'disconnected', deviceName: null },
     edge:   { state: 'disconnected', deviceName: null, lastFrameAt: null, earclipRelay: null, linkQuality: null, ledHealth: null },
   },
   recording: {
@@ -708,6 +723,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   standaloneMode: null,
   lastEdgeCoherence: null,
   lastPolarBeat: null,
+  lastOximeter: null,
   lastBeatAt: null,
   uiMode: loadUiMode(),
   engineMode: loadEngineMode(),
@@ -755,6 +771,21 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
   disconnectPolar: async () => {
     await polarH10.disconnect();
+  },
+  connectOximeter: async () => {
+    set({ lastError: null });
+    appendBleLog('oximeter', 'info', 'connect requested (opening device chooser)');
+    try {
+      await innovoOximeter.connect();
+    } catch (err) {
+      const msg = errorMessage(err);
+      set({ lastError: msg });
+      appendBleLog('oximeter', 'error', `connect failed: ${msg}`);
+      throw err;
+    }
+  },
+  disconnectOximeter: async () => {
+    await innovoOximeter.disconnect();
   },
   connectEdge: async () => {
     set({ lastError: null });
@@ -1514,6 +1545,21 @@ function scheduleAutoStartProgram(reason: string): void {
       .catch(() => { /* setActiveProgram already logs */ });
   }, AUTO_START_DELAY_MS);
 }
+
+innovoOximeter.addEventListener('status', (e) => {
+  const { status, name, message } = (e as CustomEvent<OximeterStatusDetail>).detail;
+  setState((s) => ({
+    connection: { ...s.connection, oximeter: { state: status, deviceName: name } },
+    lastOximeter: status === 'disconnected' ? null : s.lastOximeter,
+  }));
+  appendBleLog('oximeter', message ? 'warn' : 'info', `${status}${name ? ` (${name})` : ''}${message ? `: ${message}` : ''}`);
+});
+
+innovoOximeter.addEventListener('reading', (e) => {
+  const { reading, timestamp } = (e as CustomEvent<OximeterReadingDetail>).detail;
+  oximeterBuffers.live.push(timestamp, reading);
+  setState({ lastOximeter: { reading, timestamp } });
+});
 
 polarH10.addEventListener('connected', (e) => {
   const { name } = (e as CustomEvent<{ name: string }>).detail;

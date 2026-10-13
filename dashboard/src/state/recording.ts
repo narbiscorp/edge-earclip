@@ -16,6 +16,11 @@ import { ibiFlagNames, type V2Status } from '../ble/v2/protocol';
 import { edgeDevice, type RelayedBattery } from '../ble/edgeDevice';
 import { polarH10, type PolarBeatEvent, type PolarAccEvent } from '../ble/polarH10';
 import {
+  innovoOximeter,
+  type OximeterPlethDetail,
+  type OximeterReadingDetail,
+} from '../ble/innovoOximeter';
+import {
   metricsRunner,
   METRICS_WINDOW_SEC,
   type MetricsUpdatedDetail,
@@ -53,6 +58,8 @@ import type {
   FilteredRecord,
   ManifestSummary,
   MetricsRecord,
+  OximeterPlethRecord,
+  OximeterRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
   RecordingChunk,
@@ -164,6 +171,8 @@ class SessionAccumulator {
   v2Status: V2StatusRecord[] = [];
   v2Ibi: V2IbiRecordTimed[] = [];
   v2Events: V2EventRecordTimed[] = [];
+  oximeter: OximeterRecord[] = [];
+  oximeterPleth: OximeterPlethRecord[] = [];
   bleLog: BleLogRecord[] = [];
   protocolEvents: ProtocolEventRecord[] = [];
 
@@ -184,6 +193,8 @@ class SessionAccumulator {
       this.v2Status.length === 0 &&
       this.v2Ibi.length === 0 &&
       this.v2Events.length === 0 &&
+      this.oximeter.length === 0 &&
+      this.oximeterPleth.length === 0 &&
       this.bleLog.length === 0 &&
       this.protocolEvents.length === 0
     );
@@ -205,6 +216,8 @@ class SessionAccumulator {
     this.v2Status = [];
     this.v2Ibi = [];
     this.v2Events = [];
+    this.oximeter = [];
+    this.oximeterPleth = [];
     this.bleLog = [];
     this.protocolEvents = [];
   }
@@ -245,6 +258,8 @@ interface RecorderRuntime {
   onPolar: (e: Event) => void;
   onAcc: (e: Event) => void;
   onMetric: (e: Event) => void;
+  onOximeter: (e: Event) => void;
+  onOximeterPleth: (e: Event) => void;
 }
 
 let runtime: RecorderRuntime | null = null;
@@ -614,6 +629,8 @@ function createRuntime(
     onPolar: () => {},
     onAcc: () => {},
     onMetric: () => {},
+    onOximeter: () => {},
+    onOximeterPleth: () => {},
   };
   r.onBeat = makeOnBeat(r);
   r.onRaw = makeOnRaw(r);
@@ -631,6 +648,8 @@ function createRuntime(
   r.onV2Ibi = makeOnV2Ibi(r);
   r.onV2Event = makeOnV2Event(r);
   r.onGuided = makeOnGuided(r);
+  r.onOximeter = makeOnOximeter(r);
+  r.onOximeterPleth = makeOnOximeterPleth(r);
   return r;
 }
 
@@ -681,6 +700,9 @@ function attachListeners(r: RecorderRuntime): void {
   if (r.meta.streams.polar) polarH10.addEventListener('beatReceived', r.onPolar);
   if (r.meta.streams.acc) polarH10.addEventListener('accReceived', r.onAcc);
   if (r.meta.streams.metrics) metricsRunner.addEventListener('metricsUpdated', r.onMetric);
+  /* The reference oximeter is always kept while it is connected: 1 Hz plus a 24 Hz byte. */
+  innovoOximeter.addEventListener('reading', r.onOximeter);
+  innovoOximeter.addEventListener('pleth', r.onOximeterPleth);
 }
 
 function detachListeners(r: RecorderRuntime): void {
@@ -706,6 +728,8 @@ function detachListeners(r: RecorderRuntime): void {
   polarH10.removeEventListener('beatReceived', r.onPolar);
   polarH10.removeEventListener('accReceived', r.onAcc);
   metricsRunner.removeEventListener('metricsUpdated', r.onMetric);
+  innovoOximeter.removeEventListener('reading', r.onOximeter);
+  innovoOximeter.removeEventListener('pleth', r.onOximeterPleth);
 }
 
 function makeOnBeat(r: RecorderRuntime) {
@@ -796,6 +820,22 @@ function makeOnGuided(r: RecorderRuntime) {
       bump(r, 'annotations', 64);
     }
     bump(r, null, d.payload ? 4096 : 160);
+  };
+}
+
+function makeOnOximeter(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { reading, timestamp, hex } = (ev as CustomEvent<OximeterReadingDetail>).detail;
+    r.acc.oximeter.push({ ...reading, timestamp, hex });
+    bump(r, null, 64);
+  };
+}
+
+function makeOnOximeterPleth(r: RecorderRuntime) {
+  return (ev: Event) => {
+    const { values, timestamp } = (ev as CustomEvent<OximeterPlethDetail>).detail;
+    r.acc.oximeterPleth.push({ timestamp, values: [...values] });
+    bump(r, null, 16 * values.length);
   };
 }
 
@@ -1017,6 +1057,8 @@ async function flushChunk(): Promise<void> {
   if (r.acc.v2Status.length) chunk.v2Status = r.acc.v2Status;
   if (r.acc.v2Ibi.length) chunk.v2Ibi = r.acc.v2Ibi;
   if (r.acc.v2Events.length) chunk.v2Events = r.acc.v2Events;
+  if (r.acc.oximeter.length) chunk.oximeter = r.acc.oximeter;
+  if (r.acc.oximeterPleth.length) chunk.oximeterPleth = r.acc.oximeterPleth;
   if (r.acc.bleLog.length) chunk.bleLog = r.acc.bleLog;
   if (r.acc.protocolEvents.length) chunk.protocolEvents = r.acc.protocolEvents;
   // Reset before await so events arriving during the write go into the next chunk.
@@ -1047,6 +1089,8 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.v2Status[0]?.timestamp,
     acc.v2Ibi[0]?.timestamp,
     acc.v2Events[0]?.timestamp,
+    acc.oximeter[0]?.timestamp,
+    acc.oximeterPleth[0]?.timestamp,
     acc.protocolEvents[0]?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
@@ -1070,6 +1114,8 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.v2Status)?.timestamp,
     last(acc.v2Ibi)?.timestamp,
     last(acc.v2Events)?.timestamp,
+    last(acc.oximeter)?.timestamp,
+    last(acc.oximeterPleth)?.timestamp,
     last(acc.protocolEvents)?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;

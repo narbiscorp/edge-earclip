@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Data, Layout } from 'plotly.js';
 import { useDashboardStore } from '../state/store';
 import { spo2Buffers } from '../state/spo2Buffer';
+import { oximeterBuffers } from '../state/oximeterBuffer';
 import { useLivePlot } from '../charts/useLivePlot';
 import { CHART_COLORS, darkLayout } from '../charts/chartTheme';
 import {
-  SPO2_CAL_TEXTBOOK, SPO2_OPTIONS, spo2FromR, type Spo2Cal, type Spo2Estimate, type Spo2Reject,
+  CAL_MIN_PAIRS, SPO2_CAL_TEXTBOOK, SPO2_OPTIONS, fitSpo2Cal, pairWithReference, spo2FromR,
+  type Spo2Cal, type Spo2Estimate, type Spo2Reject,
 } from '../metrics/spo2';
 
 /*
@@ -15,7 +17,8 @@ import {
  *
  * UNCALIBRATED: SpO2 = a − b·R with the textbook line (110 − 25 R) until it is fitted against a
  * reference pulse oximeter worn at the same time ("cal"). The ratio R is shown so a calibration
- * can be read straight off it.
+ * can be read straight off it. With the reference oximeter connected (ble/innovoOximeter.ts) its
+ * SpO2 is drawn beside the earclip's, and "fit from oximeter" fits a and b to the last 5 minutes.
  */
 
 const CAL_KEY = 'spo2Calibration';
@@ -48,6 +51,13 @@ function activeSpo2Buffer() {
   return useDashboardStore.getState().dataSource === 'replay' ? spo2Buffers.replay : spo2Buffers.live;
 }
 
+function activeOximeterBuffer() {
+  return useDashboardStore.getState().dataSource === 'replay' ? oximeterBuffers.replay : oximeterBuffers.live;
+}
+
+/** How much of the recent past "fit from oximeter" pairs up. */
+const FIT_WINDOW_SEC = 300;
+
 /** A live reading this old means the stream stopped: show nothing rather than a frozen number. */
 const LIVE_STALE_MS = 5000;
 
@@ -61,7 +71,10 @@ export default function Spo2Chart() {
   /* Bumped on every calibration change, so the plot redraws with the new line. */
   const calVersionRef = useRef(0);
   const [showCal, setShowCal] = useState(false);
+  const [fitNote, setFitNote] = useState<string | null>(null);
   const [reading, setReading] = useState<Spo2Estimate | null>(null);
+  const oximeterState = useDashboardStore((s) => s.connection.oximeter.state);
+  const lastOximeter = useDashboardStore((s) => s.lastOximeter);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -107,6 +120,7 @@ export default function Spo2Chart() {
     }),
     pull: () => {
       const buf = activeSpo2Buffer();
+      const oxBuf = activeOximeterBuffer();
       const c = calRef.current;
       const x: number[] = [];
       const spo2: Array<number | null> = [];
@@ -123,6 +137,13 @@ export default function Spo2Chart() {
           spo2.push(null);
           pi.push(null);
         }
+      });
+      const xRef: number[] = [];
+      const ref: Array<number | null> = [];
+      oxBuf.forEachInWindow(windowSecRef.current, (ts, r) => {
+        xRef.push(ts);
+        ref.push(r.spo2);
+        if (r.spo2 !== null) lo = Math.min(lo, r.spo2);
       });
       const bottom = Math.min(90, Math.floor(lo) - 1);
       const traces: Data[] = [
@@ -147,10 +168,23 @@ export default function Spo2Chart() {
           yaxis: 'y2',
         },
       ];
+      if (xRef.length > 0) {
+        traces.push({
+          x: xRef,
+          y: ref,
+          type: 'scatter',
+          mode: 'lines',
+          name: 'oximeter (reference)',
+          connectgaps: false,
+          line: { color: CHART_COLORS.oximeter, width: 1.5, shape: 'hv' },
+          yaxis: 'y',
+        });
+      }
       const layoutPatch: Partial<Layout> = {
         yaxis: { ...yaxisStyle, range: [bottom, 100.5], autorange: false },
       };
-      return { traces, layoutPatch, seq: buf.seq + calVersionRef.current * 1e7 };
+      // Every term only grows, so the sum changes whenever any of them does.
+      return { traces, layoutPatch, seq: buf.seq + oxBuf.seq + calVersionRef.current * 1e9 };
     },
   });
 
@@ -163,6 +197,24 @@ export default function Spo2Chart() {
   };
   const isTextbook = cal.a === SPO2_CAL_TEXTBOOK.a && cal.b === SPO2_CAL_TEXTBOOK.b;
 
+  const fitFromOximeter = () => {
+    const pairs = pairWithReference(
+      activeSpo2Buffer().getWindow(FIT_WINDOW_SEC),
+      activeOximeterBuffer().getWindow(FIT_WINDOW_SEC).map((x) => ({ timestamp: x.timestamp, spo2: x.value.spo2 })),
+    );
+    const fit = fitSpo2Cal(pairs, cal);
+    if (!fit) {
+      setFitNote(`needs ${CAL_MIN_PAIRS} s of both readings together (have ${pairs.length})`);
+      return;
+    }
+    updateCal(fit.cal);
+    setFitNote(
+      `fitted on ${fit.n} s, oximeter ${fit.refMin}–${fit.refMax} %` +
+        (fit.mode === 'offset' ? ', so only a (it needs a 4-point spread to fit b)' : '') +
+        `; RMS ${fit.rmse.toFixed(1)} points`,
+    );
+  };
+
   const est = reading;
   const shown = est && est.reject === null ? spo2FromR(est.r, cal) : null;
 
@@ -173,19 +225,37 @@ export default function Spo2Chart() {
           className="text-xs font-medium text-slate-300"
           title={
             `Estimated from the red / IR ratio of ratios over ${SPO2_OPTIONS.windowSec} s, once a second. ` +
-            `Uncalibrated: SpO2 = ${cal.a} − ${cal.b} × R` +
-            (isTextbook ? ' (the textbook line)' : '') +
-            '. Read it as a trend until it is calibrated against a reference pulse oximeter. ' +
+            `SpO2 = ${cal.a} − ${cal.b} × R` +
+            (isTextbook
+              ? ' (the textbook line, uncalibrated). Read it as a trend until it is calibrated against a reference pulse oximeter. '
+              : ' (calibrated here, against a reference oximeter or by hand). ') +
             'Not a medical measurement.'
           }
         >
           Pulse ox · SpO2
-          <span className="ml-1.5 text-[10px] font-normal text-amber-400/80">uncalibrated</span>
+          {isTextbook ? (
+            <span className="ml-1.5 text-[10px] font-normal text-amber-400/80">uncalibrated</span>
+          ) : (
+            <span className="ml-1.5 text-[10px] font-normal text-slate-400">
+              cal {cal.a} − {cal.b} R
+            </span>
+          )}
         </span>
         <div className="flex items-center gap-3">
           <span className="text-2xl font-semibold tabular-nums" style={{ color: shown !== null ? CHART_COLORS.spo2 : '#64748b' }}>
             {shown !== null ? `${shown.toFixed(0)} %` : '— %'}
           </span>
+          {oximeterState !== 'disconnected' ? (
+            <span
+              className="text-[11px] tabular-nums leading-tight text-right"
+              style={{ color: CHART_COLORS.oximeter }}
+              title="The reference fingertip oximeter (rated ±2 %)"
+            >
+              oximeter
+              <br />
+              {lastOximeter?.reading.spo2 != null ? `${lastOximeter.reading.spo2} %` : '—'}
+            </span>
+          ) : null}
           <span className="text-[11px] text-slate-400 tabular-nums leading-tight">
             {est && Number.isFinite(est.r) ? (
               <>
@@ -236,7 +306,17 @@ export default function Spo2Chart() {
           >
             textbook
           </button>
-          <span className="ml-auto text-slate-500">fit a and b against a reference oximeter worn at the same time</span>
+          <button
+            type="button"
+            onClick={fitFromOximeter}
+            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+            title={`Fit a (and b, if the oximeter moved enough) to the last ${FIT_WINDOW_SEC / 60} minutes of paired readings`}
+          >
+            fit from oximeter
+          </button>
+          <span className="ml-auto text-slate-500">
+            {fitNote ?? 'wear the reference oximeter at the same time, then fit'}
+          </span>
         </div>
       ) : null}
       <div ref={divRef} className="flex-1 min-h-0" />

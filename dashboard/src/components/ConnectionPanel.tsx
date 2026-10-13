@@ -5,6 +5,7 @@ import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevi
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
 import type { EdgeStatus } from '../ble/edgeDevice';
+import type { OximeterStatus } from '../ble/innovoOximeter';
 
 function formatBattery(b: BatteryState | null): string {
   if (b === null) return '';
@@ -40,7 +41,7 @@ const LED_MODE_NAMES: Record<number, string> = {
   7: 'coh·lens',
 };
 
-const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
+const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus | OximeterStatus, string> = {
   disconnected: 'bg-slate-500',
   connecting: 'bg-amber-400 animate-pulse',
   reconnecting: 'bg-amber-400 animate-pulse',
@@ -50,6 +51,8 @@ const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
 export default function ConnectionPanel() {
   const narbis = useDashboardStore((s) => s.connection.narbis);
   const polar = useDashboardStore((s) => s.connection.polar);
+  const oximeter = useDashboardStore((s) => s.connection.oximeter);
+  const lastOximeter = useDashboardStore((s) => s.lastOximeter);
   const edge = useDashboardStore((s) => s.connection.edge);
   const ledHealth = useDashboardStore((s) => s.connection.edge.ledHealth);
   const recording = useDashboardStore((s) => s.recording);
@@ -73,6 +76,16 @@ export default function ConnectionPanel() {
   const onDisconnectPolar = () => {
     void useDashboardStore.getState().disconnectPolar().catch((err) => {
       console.error('disconnect polar failed', err);
+    });
+  };
+  const onConnectOximeter = () => {
+    void useDashboardStore.getState().connectOximeter().catch((err) => {
+      console.error('connect oximeter failed', err);
+    });
+  };
+  const onDisconnectOximeter = () => {
+    void useDashboardStore.getState().disconnectOximeter().catch((err) => {
+      console.error('disconnect oximeter failed', err);
     });
   };
   const onConnectEdge = () => {
@@ -179,6 +192,17 @@ export default function ConnectionPanel() {
       : polar.state === 'reconnecting'
         ? 'reconnecting…'
         : polar.state === 'connecting'
+          ? 'connecting…'
+          : 'disconnected';
+
+  const oximeterLabel =
+    oximeter.state === 'connected'
+      ? `${oximeter.deviceName ?? 'oximeter'}${
+          lastOximeter?.reading.spo2 != null ? ` · ${lastOximeter.reading.spo2} %` : ' · no finger'
+        }`
+      : oximeter.state === 'reconnecting'
+        ? 'waiting for it to turn on…'
+        : oximeter.state === 'connecting'
           ? 'connecting…'
           : 'disconnected';
 
@@ -305,6 +329,28 @@ export default function ConnectionPanel() {
             className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
             onClick={onDisconnectPolar}
             disabled={polar.state === 'connecting'}
+          >
+            Disconnect
+          </button>
+        )}
+        {/* Reference pulse oximeter (Innovo iP900BP-B) */}
+        <Pill
+          label={`Oximeter: ${oximeterLabel}`}
+          dot={dotClass[oximeter.state]}
+          title="Reference fingertip pulse oximeter: its SpO2 is drawn on the Pulse ox chart and saved with recordings"
+        />
+        {oximeter.state === 'disconnected' ? (
+          <button
+            className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"
+            onClick={onConnectOximeter}
+          >
+            Connect Oximeter
+          </button>
+        ) : (
+          <button
+            className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
+            onClick={onDisconnectOximeter}
+            disabled={oximeter.state === 'connecting'}
           >
             Disconnect
           </button>

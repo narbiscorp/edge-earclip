@@ -6,6 +6,8 @@ import type {
   BleLogRecord,
   ConfigChangeEntry,
   MetricsRecord,
+  OximeterPlethRecord,
+  OximeterRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
   RecordingManifest,
@@ -465,6 +467,46 @@ export function writeBleLogTxt(entries: BleLogRecord[]): string {
     .join('\n') + '\n';
 }
 
+const OXIMETER_HEADER = ['timestamp_ms', 'spo2_pct', 'pulse_bpm', 'resp_per_min', 'pi_pct', 'packet_hex'];
+
+export function writeOximeterCSV(rows: OximeterRecord[]): string {
+  const lines: string[] = [OXIMETER_HEADER.join(',')];
+  for (const r of rows) {
+    lines.push(csvRow([r.timestamp, r.spo2, r.pulseBpm, r.respPerMin, fmtNum(r.piPct, 1), r.hex]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeOximeterPlethCSV(rows: OximeterPlethRecord[]): string {
+  const lines: string[] = ['timestamp_ms,pleth'];
+  for (const r of rows) {
+    for (const v of r.values) lines.push(csvRow([r.timestamp, v]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export const OXIMETER_README = `Reference pulse oximeter (Innovo iP900BP-B)
+===========================================
+A fingertip pulse oximeter worn during the recording, as the reference for the
+earclip's own SpO2 (the Pulse ox chart). Rated +/-2 % over 70-100 % SpO2.
+Times are when the dashboard received each packet (ms since 1970); the
+oximeter has no clock of its own on the link, so expect ~0.1 s of BLE jitter.
+
+oximeter_1hz.csv — one row per summary packet, once a second
+  spo2_pct      SpO2, %; blank = no reading (no finger, still acquiring)
+  pulse_bpm     pulse rate
+  resp_per_min  the oximeter's own breathing-rate estimate (rough)
+  pi_pct        perfusion index, %
+  packet_hex    the packet as received. The layout (13 bytes from 0x3E: SpO2 at
+                byte 1, pulse 3, breathing 5, PI x10 at 11) is a third party's
+                decode, so the bytes are kept.
+
+pleth_24hz.csv — its pleth waveform, 0..255, ~24 a second (one row each)
+
+The earclip's SpO2 is not stored: it is recomputed from raw_samples.csv by the
+same code the live chart uses (dashboard metrics/spo2.ts), on replay.
+`;
+
 export const V2_README = `V2.1 earclip (AFE4404) raw capture
 ==================================
 Everything the earclip sent while recording, verbatim. All host_ms columns
@@ -556,6 +598,9 @@ export const FILE_NAMES = {
   v2Events: 'v2/events.csv',
   v2LinkStats: 'v2/link_stats.json',
   v2Readme: 'v2/README.txt',
+  oximeter: 'reference_oximeter/oximeter_1hz.csv',
+  oximeterPleth: 'reference_oximeter/pleth_24hz.csv',
+  oximeterReadme: 'reference_oximeter/README.txt',
   bleLog: 'ble_log.txt',
   protocolJson: 'protocol/protocol.json',
   protocolBlocks: 'protocol/blocks.csv',

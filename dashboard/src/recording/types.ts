@@ -6,6 +6,7 @@ import type {
 } from '../ble/parsers';
 import type { NarbisBeatEvent } from '../ble/narbisDevice';
 import type { V2Status } from '../ble/v2/protocol';
+import type { OximeterReading } from '../ble/innovoOximeter';
 import type { GuidedEventDetail } from '../guided/bus';
 import type { PolarBeatRecord } from '../state/store';
 import type { MetricsSnapshot } from '../state/metricsBuffer';
@@ -138,6 +139,19 @@ export interface V2StatusRecord extends V2Status {
   timestamp: number;
 }
 
+/** One reference-oximeter reading (ble/innovoOximeter.ts), once a second, host arrival time. */
+export interface OximeterRecord extends OximeterReading {
+  timestamp: number;
+  /** The packet as received, lowercase hex: its layout is a third party's decode. */
+  hex: string;
+}
+
+/** Reference-oximeter pleth samples (0..255) from one notification, host arrival time. */
+export interface OximeterPlethRecord {
+  timestamp: number;
+  values: number[];
+}
+
 /** One V2.1 accelerometer notification (raw LIS2DH12 counts), stored whole. */
 export interface V2AccelBatchRecord {
   hostFirstMs: number;
@@ -206,6 +220,8 @@ export interface RecordingChunk {
   v2Status?: V2StatusRecord[];
   v2Ibi?: V2IbiRecordTimed[];
   v2Events?: V2EventRecordTimed[];
+  oximeter?: OximeterRecord[];
+  oximeterPleth?: OximeterPlethRecord[];
   bleLog?: BleLogRecord[];
   protocolEvents?: ProtocolEventRecord[];
 }

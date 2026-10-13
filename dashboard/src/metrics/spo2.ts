@@ -269,3 +269,84 @@ export function computeSpo2Series(
   }
   return out;
 }
+
+/* ------------------------------------------------------------------ */
+/* Calibration against a reference oximeter worn at the same time      */
+/* ------------------------------------------------------------------ */
+
+/** Fewer paired seconds than this, and there is no fit. */
+export const CAL_MIN_PAIRS = 30;
+/** The reference must span this many SpO2 points before the slope b is fitted as well. At rest a
+ * healthy reading sits within 1-3 points, which pins a well but says nothing about b. */
+export const CAL_LINE_MIN_SPAN = 4;
+/** A fitted slope outside this is noise, not a calibration: keep b and fit a alone. */
+const CAL_B_RANGE: [number, number] = [5, 60];
+
+export interface Spo2CalFit {
+  cal: Spo2Cal;
+  /** Paired seconds used. */
+  n: number;
+  /** 'offset': only a was fitted (the reference barely moved), b kept; 'line': a and b. */
+  mode: 'offset' | 'line';
+  /** RMS of (reference − fitted earclip SpO2) over the pairs, in SpO2 points. */
+  rmse: number;
+  refMin: number;
+  refMax: number;
+}
+
+/**
+ * Pair each shown earclip estimate with the reference reading nearest in time (within maxDtMs).
+ * Both sides average a few seconds (8 s window here, the oximeter its own), so they line up
+ * without a lag correction.
+ */
+export function pairWithReference(
+  estimates: ReadonlyArray<{ timestamp: number; value: Spo2Estimate }>,
+  reference: ReadonlyArray<{ timestamp: number; spo2: number | null }>,
+  maxDtMs = 1500,
+): Array<{ r: number; ref: number }> {
+  const ref = reference.filter((x) => x.spo2 !== null).sort((a, b) => a.timestamp - b.timestamp);
+  const out: Array<{ r: number; ref: number }> = [];
+  if (ref.length === 0) return out;
+  let j = 0;
+  for (const e of estimates) {
+    if (e.value.reject !== null || !Number.isFinite(e.value.r)) continue;
+    while (j + 1 < ref.length && Math.abs(ref[j + 1].timestamp - e.timestamp) <= Math.abs(ref[j].timestamp - e.timestamp)) j++;
+    if (Math.abs(ref[j].timestamp - e.timestamp) <= maxDtMs) out.push({ r: e.value.r, ref: ref[j].spo2 as number });
+  }
+  return out;
+}
+
+/** Fit SpO2 = a − b·R to paired readings (null with too few); a and b rounded to 0.1. */
+export function fitSpo2Cal(pairs: ReadonlyArray<{ r: number; ref: number }>, current: Spo2Cal): Spo2CalFit | null {
+  const ok = pairs.filter((p) => Number.isFinite(p.r) && Number.isFinite(p.ref) && p.ref > 0 && p.ref <= 100);
+  const n = ok.length;
+  if (n < CAL_MIN_PAIRS) return null;
+  let refMin = Infinity, refMax = -Infinity, mr = 0, my = 0;
+  for (const p of ok) {
+    refMin = Math.min(refMin, p.ref);
+    refMax = Math.max(refMax, p.ref);
+    mr += p.r;
+    my += p.ref;
+  }
+  mr /= n;
+  my /= n;
+  let b = current.b;
+  let mode: Spo2CalFit['mode'] = 'offset';
+  if (refMax - refMin >= CAL_LINE_MIN_SPAN) {
+    let sxy = 0, sxx = 0;
+    for (const p of ok) {
+      sxy += (p.r - mr) * (p.ref - my);
+      sxx += (p.r - mr) ** 2;
+    }
+    const fitted = sxx > 0 ? -sxy / sxx : NaN;
+    if (fitted >= CAL_B_RANGE[0] && fitted <= CAL_B_RANGE[1]) {
+      b = fitted;
+      mode = 'line';
+    }
+  }
+  const round1 = (v: number) => Math.round(v * 10) / 10;
+  const cal = { a: round1(my + b * mr), b: round1(b) };
+  let se = 0;
+  for (const p of ok) se += (p.ref - (cal.a - cal.b * p.r)) ** 2;
+  return { cal, n, mode, rmse: Math.sqrt(se / n), refMin, refMax };
+}

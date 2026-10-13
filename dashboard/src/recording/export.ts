@@ -8,6 +8,7 @@ import {
 } from './aggregator';
 import {
   FILE_NAMES,
+  OXIMETER_README,
   V2_README,
   writeAccSamplesCSV,
   writeAnnotationsCSV,
@@ -20,6 +21,8 @@ import {
   writeH10MetricsCSV,
   writeManifestJSON,
   writeMetricsCSV,
+  writeOximeterCSV,
+  writeOximeterPlethCSV,
   writeRawSamplesCSV,
   writeReplayJSON,
   writeV2AccelRawCSV,
@@ -134,6 +137,14 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
       batches: v2Ppg, accel: v2Accel, ibis: v2Ibi, statuses: v2Status, events: v2Events,
     }));
     add(FILE_NAMES.v2Readme, V2_README);
+  }
+  /* Reference pulse oximeter — present when one was connected while recording. */
+  const oximeter = concatStream(chunks, 'oximeter');
+  const oximeterPleth = concatStream(chunks, 'oximeterPleth');
+  if (oximeter.length > 0) {
+    add(FILE_NAMES.oximeter, writeOximeterCSV(oximeter));
+    if (oximeterPleth.length > 0) add(FILE_NAMES.oximeterPleth, writeOximeterPlethCSV(oximeterPleth));
+    add(FILE_NAMES.oximeterReadme, OXIMETER_README);
   }
   /* Guided protocol labels — present when the recording ran a protocol. */
   const protocolEvents = concatStream(chunks, 'protocolEvents');
