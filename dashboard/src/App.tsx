@@ -30,6 +30,7 @@ import LoginModal from './auth/LoginModal';
 import HistoryView from './sessions/HistoryView';
 import ClinicianPortal from './clients/ClinicianPortal';
 import ClientPicker from './clients/ClientPicker';
+import TpsPanel from './tps/TpsPanel';
 import { useAuthStore } from './auth/authStore';
 import { SUPABASE_CONFIGURED } from './lib/supabase';
 import { metricsRunner } from './state/metricsRunner';
@@ -56,6 +57,8 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   // Clinician portal is a sibling overlay too; its own sign-in CTA gates content.
   const [showClinician, setShowClinician] = useState(false);
+  // TPS sensor (Thought Technology) screens — Expert-only overlay: training, link diagnostics, tunables.
+  const [showTps, setShowTps] = useState(false);
 
   useEffect(() => {
     metricsRunner.start();
@@ -134,6 +137,13 @@ export default function App() {
               Clinician portal
             </button>
           )}
+          <button
+            onClick={() => setShowTps(true)}
+            className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 shrink-0 transition"
+            title="Thought Technology TPS sensor: training screens, Bluetooth diagnostics, protocol tunables"
+          >
+            TPS sensor
+          </button>
           {/* Renders nothing until the signed-in user has ≥1 client. */}
           <ClientPicker compact />
           <AuthButton />
@@ -187,6 +197,7 @@ export default function App() {
       {showLogin && <LoginModal />}
       {showHistory && <HistoryView onClose={() => setShowHistory(false)} />}
       {showClinician && <ClinicianPortal onClose={() => setShowClinician(false)} />}
+      {showTps && <TpsPanel onClose={() => setShowTps(false)} />}
     </div>
   );
 }

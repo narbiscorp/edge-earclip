@@ -636,7 +636,7 @@ function startCoherenceEngine(mode: 'modeA' | 'modeB' | 'modeC'): void {
 }
 
 /** Stop the engine, persisting any converged Mode B resonance frequency for a warm restart. */
-function stopCoherenceEngine(): void {
+export function stopCoherenceEngine(): void {
   const rf = coherenceEngine.storedRF();
   if (rf != null) saveModeBRF(rf);
   coherenceEngine.stop();
