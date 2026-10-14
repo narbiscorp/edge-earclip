@@ -1,4 +1,6 @@
-export type ChartId = 'signal' | 'filtered' | 'beat' | 'metrics' | 'filteredbeat' | 'coherence' | 'acc' | 'spo2';
+export type ChartId =
+  | 'signal' | 'filtered' | 'beat' | 'metrics' | 'filteredbeat' | 'coherence' | 'acc' | 'spo2'
+  | 'tpsIbi' | 'tpsTemp' | 'tpsSc' | 'tpsProtocol';
 
 export interface TimeRangeEvent {
   source: ChartId;
