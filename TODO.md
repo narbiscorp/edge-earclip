@@ -99,9 +99,22 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 - **Android pairing bug (root cause).** `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)` below API 33 puts the receiver behind an app-private permission. `com.android.bluetooth` does not hold it, so ACTION_BOND_STATE_CHANGED never arrived. Fixed by exporting protected-system-broadcast receivers, plus a 500 ms bond-state poll.
 
 ### Open — next steps, in order
-1. **[Hardware]** A guided run with the H10 on v0.3.0-49 (A9:74; re-pair the phone first, its bond was wiped). Also check the new button timing: hold 3 s = off, 1 s = on (the boot log prints how the 1 s split, with ~200 ms of it an estimate).
-   - Score it with `tools/replay/replay_session.py --config live`.
-   - Expect chew / talk found ≥ 80 %, MOTION on those beats, and rest unchanged (live 2026-10-12, run 1: 100 % found, median 3-4 ms, 95-97 % within 10 ms).
+1. **[OTA, for later]** Finish the earclip over-the-air updates. The work is in session "Earclip OTA updates + 2 s off / 0.5 s on button", 2026-10-14.
+   - Built and tested; NOT pushed:
+     - `narbis-earclip-fw` master is 3 ahead: `6eec008` button 2 s off / 0.5 s on; `fc96965` OTA via the web updater, image identity `narbis_earclip_v2`; `15478a2` functest image v0.3.0-52.
+     - `edge-OTA` branch `earclip-v21-ota`, `575791f`: updater v1.7, earclip V2.1 as its own device kind, releases listed from narbis-earclip-fw.
+   - Already verified on A9:74 over BLE:
+     - -49 → -52 in 60 s; boots from ota_1; self-check PASS; bonds and knobs kept.
+     - An updater-only link no longer drops at 60 s.
+     - An image with the old name is refused.
+   - Left to do:
+     1. In Chrome, open the real updater page (`edge-OTA/index.html`), Scan & Connect, pick the earclip, and flash `vendor/ota/narbis_earclip_v2_functest.bin`. The in-app pane cannot show the Bluetooth chooser.
+     2. Check the button by hand: 2 s hold = off; a tap stays off; 0.5 s = on.
+     3. Push both repos and merge `earclip-v21-ota` to edge-OTA main. That makes it the live updater.
+     4. Publish the first earclip release on narbis-earclip-fw, so the updater lists it.
+   - Done 2026-10-14: the guided H10 run on v0.3.0-49.
+     - Rest: 92 % of beats found, median error 3-4 ms.
+     - Chew / talk: 59 %. The motion gate stayed open; the signal itself is corrupted.
 2. **[Android, hardware]** Test the installed build on the Note9:
    - HR never doubles;
    - the battery % on the earclip chip (`battery=` in `strap-pmd.log`);
