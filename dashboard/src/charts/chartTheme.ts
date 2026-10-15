@@ -28,6 +28,13 @@ export const CHART_COLORS = {
   perfusion: '#94a3b8',
   /* The reference fingertip oximeter's SpO2 (ble/innovoOximeter.ts). */
   oximeter: '#f472b6',
+  /* Thought Technology TPS sensor (tps/): channels and the protocol's outputs. */
+  tpsIbi: '#f472b6',
+  tpsTemp: '#f97316',
+  tpsSc: '#eab308',
+  tpsHrv: '#38bdf8',
+  tpsR: '#34d399',
+  tpsDuty: '#a78bfa',
 };
 
 export function darkLayout(extra: Partial<Layout> = {}): Partial<Layout> {
