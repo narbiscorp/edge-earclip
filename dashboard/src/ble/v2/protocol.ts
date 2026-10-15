@@ -260,6 +260,9 @@ export interface V2Status {
   agcState: number;
   /** Re-acquisitions since stream start (proto 1.2). */
   agcReacqCount: number;
+  /** The Bluetooth link as the earclip hears this central, dBm (proto 1.5, STATUS byte 30).
+   * null = unknown: not measured, or older firmware (the byte was reserved, 0). */
+  connRssiDbm?: number | null;
 }
 
 function dv(v: DataView | ArrayBuffer): DataView {
@@ -455,6 +458,13 @@ export function parseV2Ibi(buf: DataView | ArrayBuffer): { seq: number; records:
   return { seq, records };
 }
 
+/** STATUS conn_rssi_dbm when the earclip has no reading (proto 1.5). */
+export const RSSI_UNKNOWN = 127;
+
+function rssiOrNull(v: number): number | null {
+  return v === RSSI_UNKNOWN || v >= 0 ? null : v;   // 0: older firmware's reserved byte
+}
+
 export function parseV2Status(buf: DataView | ArrayBuffer): V2Status {
   const d = dv(buf);
   if (d.byteLength < STATUS_SIZE) throw new Error(`STATUS too short: ${d.byteLength}`);
@@ -477,6 +487,7 @@ export function parseV2Status(buf: DataView | ArrayBuffer): V2Status {
     btnPressed: d.byteLength > 27 ? d.getUint8(27) : 0,
     agcState: d.getUint8(28),
     agcReacqCount: d.getUint8(29),
+    connRssiDbm: rssiOrNull(d.getInt8(30)),
   };
 }
 

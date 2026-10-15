@@ -293,7 +293,7 @@ const V2_STATUS_HEADER = [
   'host_ms', 'uptime_s', 'sys_state', 'flags', 'batt_mv', 'batt_pct', 'rate_sps',
   'led_ir_ma', 'led_red_ma', 'tia_rf_kohm', 'tia_cf_code', 'gate_duty_pct',
   'notif_drops', 'i2c_errors', 'ibi_last_ms', 'hr_bpm', 'btn_pressed',
-  'agc_state', 'agc_reacq_count',
+  'agc_state', 'agc_reacq_count', 'conn_rssi_dbm',
 ];
 
 const V2_IBI_HEADER = [
@@ -368,7 +368,7 @@ export function writeV2StatusCSV(statuses: V2StatusRecord[]): string {
       RATE_SPS[s.ppgRateCode] ?? null, s.ledIrMa, s.ledRedMa, rfKohm(s.tiaGainCode),
       s.tiaCfCode, fmtNum(s.gateDutyX100 / 100, 2), s.notifDropCount, s.i2cErrCount,
       s.ibiLastMs, s.hrBpm, s.btnPressed,
-      AGC_STATE_NAME[s.agcState] ?? s.agcState, s.agcReacqCount,
+      AGC_STATE_NAME[s.agcState] ?? s.agcState, s.agcReacqCount, s.connRssiDbm ?? null,
     ]));
   }
   return lines.join('\n') + '\n';

@@ -44,7 +44,7 @@ const WITHHELD: Record<Spo2Reject, string> = {
   clipped: 'signal clipped',
   level_step: 'signal level moving',
   weak: 'pulse too weak',
-  motion: 'motion: red and IR disagree',
+  motion: 'paused: movement (it would read falsely low)',
 };
 
 function activeSpo2Buffer() {

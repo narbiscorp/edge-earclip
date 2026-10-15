@@ -6,6 +6,7 @@ import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
 import type { EdgeStatus } from '../ble/edgeDevice';
 import type { OximeterStatus } from '../ble/innovoOximeter';
+import { signalBarsGlyph } from '../charts/signalBars';
 
 function formatBattery(b: BatteryState | null): string {
   if (b === null) return '';
@@ -53,6 +54,8 @@ export default function ConnectionPanel() {
   const polar = useDashboardStore((s) => s.connection.polar);
   const oximeter = useDashboardStore((s) => s.connection.oximeter);
   const lastOximeter = useDashboardStore((s) => s.lastOximeter);
+  /* The direct link's signal, as the earclip hears this PC (STATUS, proto 1.5). */
+  const earclipLinkRssi = useDashboardStore((s) => s.v2Status?.connRssiDbm ?? null);
   const edge = useDashboardStore((s) => s.connection.edge);
   const ledHealth = useDashboardStore((s) => s.connection.edge.ledHealth);
   const recording = useDashboardStore((s) => s.recording);
@@ -150,7 +153,8 @@ export default function ConnectionPanel() {
   /* Append earclip-side RSSI bars when the relay link is up. The glasses
    * is the only thing that knows the earclip RSSI — Web Bluetooth doesn't
    * expose it — so this depends on a 0xFA frame having arrived. */
-  const narbisLabelWithRssi = `${earclipBars ? `${narbisLabel} ${earclipBars}` : narbisLabel}${ecPhyTag}`;
+  const directBars = narbis.state === 'connected' ? signalBarsGlyph(earclipLinkRssi) : '';
+  const narbisLabelWithRssi = `${earclipBars ? `${narbisLabel} ${earclipBars}` : narbisLabel}${directBars ? ` ${directBars}` : ''}${ecPhyTag}`;
 
   /* Sub-status line under the pill: shows the current phase of the
    * connect / reconnect handshake so the user knows whether the dashboard
@@ -223,7 +227,11 @@ export default function ConnectionPanel() {
         <Pill
           label={`Earclip: ${narbisLabelWithRssi}`}
           dot={dotClass[narbis.state]}
-          title={earclipBars ? rssiTitle('earclip↔glasses link', earclipRssi) : undefined}
+          title={
+            directBars
+              ? `Earclip signal: ${earclipLinkRssi} dBm, as the earclip hears this PC`
+              : earclipBars ? rssiTitle('earclip↔glasses link', earclipRssi) : undefined
+          }
         />
         {narbis.state === 'disconnected' ? (
           <>
