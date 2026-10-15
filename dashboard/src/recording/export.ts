@@ -9,6 +9,7 @@ import {
 import {
   FILE_NAMES,
   OXIMETER_README,
+  PTT_README,
   V2_README,
   writeAccSamplesCSV,
   writeAnnotationsCSV,
@@ -21,8 +22,11 @@ import {
   writeH10MetricsCSV,
   writeManifestJSON,
   writeMetricsCSV,
+  writeEcgCSV,
   writeOximeterCSV,
   writeOximeterPlethCSV,
+  writePatCSV,
+  writeRPeaksCSV,
   writeRawSamplesCSV,
   writeReplayJSON,
   writeV2AccelRawCSV,
@@ -145,6 +149,16 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
     add(FILE_NAMES.oximeter, writeOximeterCSV(oximeter));
     if (oximeterPleth.length > 0) add(FILE_NAMES.oximeterPleth, writeOximeterPlethCSV(oximeterPleth));
     add(FILE_NAMES.oximeterReadme, OXIMETER_README);
+  }
+  /* H10 raw ECG, its R-peaks, and pulse arrival time — present when ECG ran. */
+  const ecg = concatStream(chunks, 'ecg');
+  const rPeaks = concatStream(chunks, 'rPeaks');
+  const pat = concatStream(chunks, 'pat');
+  if (ecg.length > 0) add(FILE_NAMES.ecg, writeEcgCSV(ecg));
+  if (rPeaks.length > 0) add(FILE_NAMES.rPeaks, writeRPeaksCSV(rPeaks));
+  if (pat.length > 0) {
+    add(FILE_NAMES.pat, writePatCSV(pat));
+    add(FILE_NAMES.pttReadme, PTT_README);
   }
   /* Guided protocol labels — present when the recording ran a protocol. */
   const protocolEvents = concatStream(chunks, 'protocolEvents');

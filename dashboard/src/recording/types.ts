@@ -146,6 +146,28 @@ export interface OximeterRecord extends OximeterReading {
   hex: string;
 }
 
+/** A block of H10 raw ECG (µV) on the PTT clock (state/pttState.ts): sample i at t0 + i·periodMs. */
+export interface EcgBlockRecord {
+  t0: number;
+  periodMs: number;
+  samples: number[];
+}
+
+/** An R-peak found in the H10 ECG (metrics/ecgRpeak.ts). */
+export interface RPeakRecord {
+  timestamp: number;
+  rr: number | null;
+  amp: number;
+}
+
+/** One pulse arrival time: H10 ECG R-peak → earclip beat (metrics/ptt.ts). */
+export interface PatRecord {
+  /** The earclip beat, corrected clock. */
+  timestamp: number;
+  pat: number;
+  motion: boolean;
+}
+
 /** Reference-oximeter pleth samples (0..255) from one notification, host arrival time. */
 export interface OximeterPlethRecord {
   timestamp: number;
@@ -222,6 +244,9 @@ export interface RecordingChunk {
   v2Events?: V2EventRecordTimed[];
   oximeter?: OximeterRecord[];
   oximeterPleth?: OximeterPlethRecord[];
+  ecg?: EcgBlockRecord[];
+  rPeaks?: RPeakRecord[];
+  pat?: PatRecord[];
   bleLog?: BleLogRecord[];
   protocolEvents?: ProtocolEventRecord[];
 }

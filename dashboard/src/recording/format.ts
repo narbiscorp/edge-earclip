@@ -5,8 +5,11 @@ import type {
   BeatRecord,
   BleLogRecord,
   ConfigChangeEntry,
+  EcgBlockRecord,
   MetricsRecord,
   OximeterPlethRecord,
+  PatRecord,
+  RPeakRecord,
   OximeterRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
@@ -485,6 +488,44 @@ export function writeOximeterPlethCSV(rows: OximeterPlethRecord[]): string {
   return lines.join('\n') + '\n';
 }
 
+export function writeEcgCSV(blocks: EcgBlockRecord[]): string {
+  const lines: string[] = ['timestamp_ms,ecg_uv'];
+  for (const b of blocks) {
+    b.samples.forEach((v, i) => lines.push(csvRow([fmtNum(b.t0 + i * b.periodMs, 2), v])));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeRPeaksCSV(peaks: RPeakRecord[]): string {
+  const lines: string[] = ['timestamp_ms,rr_ms,amp_uv'];
+  for (const p of peaks) lines.push(csvRow([fmtNum(p.timestamp, 2), fmtNum(p.rr, 1), Math.round(p.amp)]));
+  return lines.join('\n') + '\n';
+}
+
+export function writePatCSV(rows: PatRecord[]): string {
+  const lines: string[] = ['earclip_beat_ms,pat_ms,motion'];
+  for (const r of rows) lines.push(csvRow([fmtNum(r.timestamp, 2), fmtNum(r.pat, 1), r.motion ? 1 : 0]));
+  return lines.join('\n') + '\n';
+}
+
+export const PTT_README = `Pulse arrival time (H10 ECG R-peak -> earclip beat)
+====================================================
+Recorded when the H10's raw ECG was running (Expert view, "Start ECG").
+
+ptt/pat.csv    earclip_beat_ms  the earclip beat (its own sub-sample beat time)
+               pat_ms           ms from the R-peak before it (80-600 ms window)
+               motion           1 = the beat was found during light motion (proto 1.4)
+reference_h10/r_peaks.csv       R-peaks found in the raw ECG by the dashboard (not the
+                                H10's own heart-rate packets, whose timing jitters by
+                                up to a second)
+reference_h10/ecg_130hz.csv     the raw ECG lead, microvolts
+
+All three are on the PTT clock: each device's times moved onto its fastest packet
+of the last minute, so what is left between the two is a few ms, constant.
+PAT includes the pre-ejection period (it reads above true transit time); its
+changes follow blood pressure and vascular tone.
+`;
+
 export const OXIMETER_README = `Reference pulse oximeter (Innovo iP900BP-B)
 ===========================================
 A fingertip pulse oximeter worn during the recording, as the reference for the
@@ -601,6 +642,10 @@ export const FILE_NAMES = {
   oximeter: 'reference_oximeter/oximeter_1hz.csv',
   oximeterPleth: 'reference_oximeter/pleth_24hz.csv',
   oximeterReadme: 'reference_oximeter/README.txt',
+  ecg: 'reference_h10/ecg_130hz.csv',
+  rPeaks: 'reference_h10/r_peaks.csv',
+  pat: 'ptt/pat.csv',
+  pttReadme: 'ptt/README.txt',
   bleLog: 'ble_log.txt',
   protocolJson: 'protocol/protocol.json',
   protocolBlocks: 'protocol/blocks.csv',

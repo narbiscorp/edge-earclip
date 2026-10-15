@@ -20,6 +20,7 @@ import {
   type OximeterPlethDetail,
   type OximeterReadingDetail,
 } from '../ble/innovoOximeter';
+import { pttEvents, type PttEcgDetail, type PttPatDetail, type PttRPeakDetail } from './pttState';
 import {
   metricsRunner,
   METRICS_WINDOW_SEC,
@@ -57,9 +58,12 @@ import type {
   ProtocolEventRecord,
   FilteredRecord,
   ManifestSummary,
+  EcgBlockRecord,
   MetricsRecord,
   OximeterPlethRecord,
   OximeterRecord,
+  PatRecord,
+  RPeakRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
   RecordingChunk,
@@ -173,6 +177,9 @@ class SessionAccumulator {
   v2Events: V2EventRecordTimed[] = [];
   oximeter: OximeterRecord[] = [];
   oximeterPleth: OximeterPlethRecord[] = [];
+  ecg: EcgBlockRecord[] = [];
+  rPeaks: RPeakRecord[] = [];
+  pat: PatRecord[] = [];
   bleLog: BleLogRecord[] = [];
   protocolEvents: ProtocolEventRecord[] = [];
 
@@ -195,6 +202,9 @@ class SessionAccumulator {
       this.v2Events.length === 0 &&
       this.oximeter.length === 0 &&
       this.oximeterPleth.length === 0 &&
+      this.ecg.length === 0 &&
+      this.rPeaks.length === 0 &&
+      this.pat.length === 0 &&
       this.bleLog.length === 0 &&
       this.protocolEvents.length === 0
     );
@@ -218,6 +228,9 @@ class SessionAccumulator {
     this.v2Events = [];
     this.oximeter = [];
     this.oximeterPleth = [];
+    this.ecg = [];
+    this.rPeaks = [];
+    this.pat = [];
     this.bleLog = [];
     this.protocolEvents = [];
   }
@@ -260,6 +273,9 @@ interface RecorderRuntime {
   onMetric: (e: Event) => void;
   onOximeter: (e: Event) => void;
   onOximeterPleth: (e: Event) => void;
+  onPttEcg: (e: Event) => void;
+  onPttRPeak: (e: Event) => void;
+  onPttPat: (e: Event) => void;
 }
 
 let runtime: RecorderRuntime | null = null;
@@ -631,6 +647,9 @@ function createRuntime(
     onMetric: () => {},
     onOximeter: () => {},
     onOximeterPleth: () => {},
+    onPttEcg: () => {},
+    onPttRPeak: () => {},
+    onPttPat: () => {},
   };
   r.onBeat = makeOnBeat(r);
   r.onRaw = makeOnRaw(r);
@@ -650,6 +669,21 @@ function createRuntime(
   r.onGuided = makeOnGuided(r);
   r.onOximeter = makeOnOximeter(r);
   r.onOximeterPleth = makeOnOximeterPleth(r);
+  r.onPttEcg = (ev: Event) => {
+    const d = (ev as CustomEvent<PttEcgDetail>).detail;
+    r.acc.ecg.push({ t0: d.t0, periodMs: d.periodMs, samples: [...d.samples] });
+    bump(r, null, 8 * d.samples.length);
+  };
+  r.onPttRPeak = (ev: Event) => {
+    const { peak } = (ev as CustomEvent<PttRPeakDetail>).detail;
+    r.acc.rPeaks.push({ timestamp: peak.t, rr: peak.rr, amp: peak.amp });
+    bump(r, null, 32);
+  };
+  r.onPttPat = (ev: Event) => {
+    const { sample } = (ev as CustomEvent<PttPatDetail>).detail;
+    r.acc.pat.push({ timestamp: sample.t, pat: sample.pat, motion: sample.motion });
+    bump(r, null, 32);
+  };
   return r;
 }
 
@@ -703,6 +737,10 @@ function attachListeners(r: RecorderRuntime): void {
   /* The reference oximeter is always kept while it is connected: 1 Hz plus a 24 Hz byte. */
   innovoOximeter.addEventListener('reading', r.onOximeter);
   innovoOximeter.addEventListener('pleth', r.onOximeterPleth);
+  /* H10 ECG / R-peaks / PAT: these only fire while the ECG runs (Expert view "Start ECG"). */
+  pttEvents.addEventListener('ecg', r.onPttEcg);
+  pttEvents.addEventListener('rpeak', r.onPttRPeak);
+  pttEvents.addEventListener('pat', r.onPttPat);
 }
 
 function detachListeners(r: RecorderRuntime): void {
@@ -730,6 +768,9 @@ function detachListeners(r: RecorderRuntime): void {
   metricsRunner.removeEventListener('metricsUpdated', r.onMetric);
   innovoOximeter.removeEventListener('reading', r.onOximeter);
   innovoOximeter.removeEventListener('pleth', r.onOximeterPleth);
+  pttEvents.removeEventListener('ecg', r.onPttEcg);
+  pttEvents.removeEventListener('rpeak', r.onPttRPeak);
+  pttEvents.removeEventListener('pat', r.onPttPat);
 }
 
 function makeOnBeat(r: RecorderRuntime) {
@@ -1059,6 +1100,9 @@ async function flushChunk(): Promise<void> {
   if (r.acc.v2Events.length) chunk.v2Events = r.acc.v2Events;
   if (r.acc.oximeter.length) chunk.oximeter = r.acc.oximeter;
   if (r.acc.oximeterPleth.length) chunk.oximeterPleth = r.acc.oximeterPleth;
+  if (r.acc.ecg.length) chunk.ecg = r.acc.ecg;
+  if (r.acc.rPeaks.length) chunk.rPeaks = r.acc.rPeaks;
+  if (r.acc.pat.length) chunk.pat = r.acc.pat;
   if (r.acc.bleLog.length) chunk.bleLog = r.acc.bleLog;
   if (r.acc.protocolEvents.length) chunk.protocolEvents = r.acc.protocolEvents;
   // Reset before await so events arriving during the write go into the next chunk.
@@ -1091,6 +1135,9 @@ function pickFirstTimestamp(acc: SessionAccumulator): number | null {
     acc.v2Events[0]?.timestamp,
     acc.oximeter[0]?.timestamp,
     acc.oximeterPleth[0]?.timestamp,
+    acc.ecg[0]?.t0,
+    acc.rPeaks[0]?.timestamp,
+    acc.pat[0]?.timestamp,
     acc.protocolEvents[0]?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
@@ -1116,6 +1163,9 @@ function pickLastTimestamp(acc: SessionAccumulator): number | null {
     last(acc.v2Events)?.timestamp,
     last(acc.oximeter)?.timestamp,
     last(acc.oximeterPleth)?.timestamp,
+    last(acc.ecg)?.t0,
+    last(acc.rPeaks)?.timestamp,
+    last(acc.pat)?.timestamp,
     last(acc.protocolEvents)?.hostMs,
   ].filter((v): v is number => typeof v === 'number');
   if (candidates.length === 0) return null;
