@@ -23,6 +23,8 @@ import BasicMode from './components/BasicMode';
 import CoherenceChart from './components/CoherenceChart';
 import AccChart from './components/AccChart';
 import Spo2Chart from './components/Spo2Chart';
+import H10EcgChart from './components/H10EcgChart';
+import PttChart from './components/PttChart';
 import SessionSummaryModal from './components/SessionSummaryModal';
 import SlimHeader from './components/SlimHeader';
 import AuthButton from './auth/AuthButton';
@@ -48,6 +50,7 @@ export default function App() {
   const uiMode = useDashboardStore((s) => s.uiMode);
   const setUiMode = useDashboardStore((s) => s.setUiMode);
   const engineMode = useDashboardStore((s) => s.engineMode);
+  const polarConnected = useDashboardStore((s) => s.connection.polar.state === 'connected');
   const showSessionSummary = useDashboardStore((s) => s.showSessionSummary);
   const endSessionAndSave = useDashboardStore((s) => s.endSessionAndSave);
   const showLogin = useAuthStore((s) => s.showLogin);
@@ -168,6 +171,8 @@ export default function App() {
               <FilteredChart />
               <BeatChart />
               <Spo2Chart />
+              {polarConnected && <H10EcgChart />}
+              {polarConnected && <PttChart />}
               <MetricsChart />
               <CoherenceChart />
               {engineMode === 'modeB' && <AccChart />}

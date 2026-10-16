@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  Spo2Tracker, computeSpo2Series, sampleRateFromTimestamps, spo2FromR, SPO2_CAL_TEXTBOOK,
-  type Spo2Estimate,
+  Spo2Tracker, computeSpo2Series, fitSpo2Cal, pairWithReference, sampleRateFromTimestamps, spo2FromR,
+  SPO2_CAL_TEXTBOOK, type Spo2Estimate,
 } from '../spo2';
 
 const FS = 100;
@@ -170,5 +170,52 @@ describe('SpO2 from the red / IR ratio of ratios', () => {
     const ts = Array.from({ length: 500 }, (_, i) => i * 10 + (i > 250 ? 2000 : 0));
     expect(sampleRateFromTimestamps(ts)).toBeCloseTo(100, 6);
     expect(sampleRateFromTimestamps([])).toBe(0);
+  });
+});
+
+describe('calibrating the earclip against a reference oximeter', () => {
+  const est = (t: number, r: number, reject: Spo2Estimate['reject'] = null) =>
+    ({ timestamp: t, value: { r, corr: 0.99, piIr: 1, piRed: 0.6, reject } });
+
+  it('pairs each shown estimate with the nearest reference second, within 1.5 s', () => {
+    const e = [est(1000, 0.6), est(2000, 0.61), est(3000, 0.62, 'motion'), est(9000, 0.6)];
+    const ref = [{ timestamp: 1400, spo2: 97 }, { timestamp: 2300, spo2: 98 }, { timestamp: 3000, spo2: 96 }, { timestamp: 5000, spo2: null }];
+    expect(pairWithReference(e, ref)).toEqual([{ r: 0.6, ref: 97 }, { r: 0.61, ref: 98 }]);
+    expect(pairWithReference(e, [])).toEqual([]);
+  });
+
+  it('fits only a when the reference barely moves (rest), keeping b', () => {
+    // True line 112 - 25 R; at rest the reference sits at 96-98.
+    const pairs = Array.from({ length: 60 }, (_, i) => {
+      const r = 0.58 + 0.01 * (i % 3);
+      return { r, ref: Math.round(112 - 25 * r) };
+    });
+    const fit = fitSpo2Cal(pairs, SPO2_CAL_TEXTBOOK);
+    expect(fit?.mode).toBe('offset');
+    expect(fit?.cal.b).toBe(25);
+    expect(fit?.cal.a).toBeCloseTo(112, 0);
+    expect(fit?.n).toBe(60);
+    expect(fit?.rmse).toBeLessThan(0.6);
+  });
+
+  it('fits a and b when the reference spans 4+ points (a desaturation)', () => {
+    // True line 104 - 17 R across 90-97 %.
+    const pairs = Array.from({ length: 80 }, (_, i) => {
+      const r = 0.4 + (0.8 - 0.4) * (i / 79);
+      return { r, ref: 104 - 17 * r };
+    });
+    const fit = fitSpo2Cal(pairs, SPO2_CAL_TEXTBOOK);
+    expect(fit?.mode).toBe('line');
+    expect(fit?.cal.a).toBeCloseTo(104, 0);
+    expect(fit?.cal.b).toBeCloseTo(17, 0);
+    expect(fit?.rmse).toBeLessThan(0.1);
+  });
+
+  it('keeps b when a fitted slope is implausible, and needs 30 pairs at all', () => {
+    const flatRatio = Array.from({ length: 40 }, (_, i) => ({ r: 0.6 + (i % 2) * 1e-4, ref: 90 + (i % 10) }));
+    const fit = fitSpo2Cal(flatRatio, { a: 110, b: 25 });
+    expect(fit?.mode).toBe('offset');
+    expect(fit?.cal.b).toBe(25);
+    expect(fitSpo2Cal(flatRatio.slice(0, 29), SPO2_CAL_TEXTBOOK)).toBeNull();
   });
 });

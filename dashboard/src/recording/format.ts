@@ -5,7 +5,12 @@ import type {
   BeatRecord,
   BleLogRecord,
   ConfigChangeEntry,
+  EcgBlockRecord,
   MetricsRecord,
+  OximeterPlethRecord,
+  PatRecord,
+  RPeakRecord,
+  OximeterRecord,
   PolarBeatRecordTimed,
   RawSampleRecord,
   RecordingManifest,
@@ -288,7 +293,7 @@ const V2_STATUS_HEADER = [
   'host_ms', 'uptime_s', 'sys_state', 'flags', 'batt_mv', 'batt_pct', 'rate_sps',
   'led_ir_ma', 'led_red_ma', 'tia_rf_kohm', 'tia_cf_code', 'gate_duty_pct',
   'notif_drops', 'i2c_errors', 'ibi_last_ms', 'hr_bpm', 'btn_pressed',
-  'agc_state', 'agc_reacq_count',
+  'agc_state', 'agc_reacq_count', 'conn_rssi_dbm',
 ];
 
 const V2_IBI_HEADER = [
@@ -363,7 +368,7 @@ export function writeV2StatusCSV(statuses: V2StatusRecord[]): string {
       RATE_SPS[s.ppgRateCode] ?? null, s.ledIrMa, s.ledRedMa, rfKohm(s.tiaGainCode),
       s.tiaCfCode, fmtNum(s.gateDutyX100 / 100, 2), s.notifDropCount, s.i2cErrCount,
       s.ibiLastMs, s.hrBpm, s.btnPressed,
-      AGC_STATE_NAME[s.agcState] ?? s.agcState, s.agcReacqCount,
+      AGC_STATE_NAME[s.agcState] ?? s.agcState, s.agcReacqCount, s.connRssiDbm ?? null,
     ]));
   }
   return lines.join('\n') + '\n';
@@ -465,6 +470,84 @@ export function writeBleLogTxt(entries: BleLogRecord[]): string {
     .join('\n') + '\n';
 }
 
+const OXIMETER_HEADER = ['timestamp_ms', 'spo2_pct', 'pulse_bpm', 'resp_per_min', 'pi_pct', 'packet_hex'];
+
+export function writeOximeterCSV(rows: OximeterRecord[]): string {
+  const lines: string[] = [OXIMETER_HEADER.join(',')];
+  for (const r of rows) {
+    lines.push(csvRow([r.timestamp, r.spo2, r.pulseBpm, r.respPerMin, fmtNum(r.piPct, 1), r.hex]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeOximeterPlethCSV(rows: OximeterPlethRecord[]): string {
+  const lines: string[] = ['timestamp_ms,pleth'];
+  for (const r of rows) {
+    for (const v of r.values) lines.push(csvRow([r.timestamp, v]));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeEcgCSV(blocks: EcgBlockRecord[]): string {
+  const lines: string[] = ['timestamp_ms,ecg_uv'];
+  for (const b of blocks) {
+    b.samples.forEach((v, i) => lines.push(csvRow([fmtNum(b.t0 + i * b.periodMs, 2), v])));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeRPeaksCSV(peaks: RPeakRecord[]): string {
+  const lines: string[] = ['timestamp_ms,rr_ms,amp_uv'];
+  for (const p of peaks) lines.push(csvRow([fmtNum(p.timestamp, 2), fmtNum(p.rr, 1), Math.round(p.amp)]));
+  return lines.join('\n') + '\n';
+}
+
+export function writePatCSV(rows: PatRecord[]): string {
+  const lines: string[] = ['earclip_beat_ms,pat_ms,motion'];
+  for (const r of rows) lines.push(csvRow([fmtNum(r.timestamp, 2), fmtNum(r.pat, 1), r.motion ? 1 : 0]));
+  return lines.join('\n') + '\n';
+}
+
+export const PTT_README = `Pulse arrival time (H10 ECG R-peak -> earclip beat)
+====================================================
+Recorded when the H10's raw ECG was running (Expert view, "Start ECG").
+
+ptt/pat.csv    earclip_beat_ms  the earclip beat (its own sub-sample beat time)
+               pat_ms           ms from the R-peak before it (80-600 ms window)
+               motion           1 = the beat was found during light motion (proto 1.4)
+reference_h10/r_peaks.csv       R-peaks found in the raw ECG by the dashboard (not the
+                                H10's own heart-rate packets, whose timing jitters by
+                                up to a second)
+reference_h10/ecg_130hz.csv     the raw ECG lead, microvolts
+
+All three are on the PTT clock: each device's times moved onto its fastest packet
+of the last minute, so what is left between the two is a few ms, constant.
+PAT includes the pre-ejection period (it reads above true transit time); its
+changes follow blood pressure and vascular tone.
+`;
+
+export const OXIMETER_README = `Reference pulse oximeter (Innovo iP900BP-B)
+===========================================
+A fingertip pulse oximeter worn during the recording, as the reference for the
+earclip's own SpO2 (the Pulse ox chart). Rated +/-2 % over 70-100 % SpO2.
+Times are when the dashboard received each packet (ms since 1970); the
+oximeter has no clock of its own on the link, so expect ~0.1 s of BLE jitter.
+
+oximeter_1hz.csv — one row per summary packet, once a second
+  spo2_pct      SpO2, %; blank = no reading (no finger, still acquiring)
+  pulse_bpm     pulse rate
+  resp_per_min  the oximeter's own breathing-rate estimate (rough)
+  pi_pct        perfusion index, %
+  packet_hex    the packet as received. The layout (13 bytes from 0x3E: SpO2 at
+                byte 1, pulse 3, breathing 5, PI x10 at 11) is a third party's
+                decode, so the bytes are kept.
+
+pleth_24hz.csv — its pleth waveform, 0..255, ~24 a second (one row each)
+
+The earclip's SpO2 is not stored: it is recomputed from raw_samples.csv by the
+same code the live chart uses (dashboard metrics/spo2.ts), on replay.
+`;
+
 export const V2_README = `V2.1 earclip (AFE4404) raw capture
 ==================================
 Everything the earclip sent while recording, verbatim. All host_ms columns
@@ -556,6 +639,13 @@ export const FILE_NAMES = {
   v2Events: 'v2/events.csv',
   v2LinkStats: 'v2/link_stats.json',
   v2Readme: 'v2/README.txt',
+  oximeter: 'reference_oximeter/oximeter_1hz.csv',
+  oximeterPleth: 'reference_oximeter/pleth_24hz.csv',
+  oximeterReadme: 'reference_oximeter/README.txt',
+  ecg: 'reference_h10/ecg_130hz.csv',
+  rPeaks: 'reference_h10/r_peaks.csv',
+  pat: 'ptt/pat.csv',
+  pttReadme: 'ptt/README.txt',
   bleLog: 'ble_log.txt',
   protocolJson: 'protocol/protocol.json',
   protocolBlocks: 'protocol/blocks.csv',

@@ -8,6 +8,8 @@ import {
 } from './aggregator';
 import {
   FILE_NAMES,
+  OXIMETER_README,
+  PTT_README,
   V2_README,
   writeAccSamplesCSV,
   writeAnnotationsCSV,
@@ -20,6 +22,11 @@ import {
   writeH10MetricsCSV,
   writeManifestJSON,
   writeMetricsCSV,
+  writeEcgCSV,
+  writeOximeterCSV,
+  writeOximeterPlethCSV,
+  writePatCSV,
+  writeRPeaksCSV,
   writeRawSamplesCSV,
   writeReplayJSON,
   writeV2AccelRawCSV,
@@ -134,6 +141,24 @@ export async function exportSession(sessionId: string): Promise<ExportResult> {
       batches: v2Ppg, accel: v2Accel, ibis: v2Ibi, statuses: v2Status, events: v2Events,
     }));
     add(FILE_NAMES.v2Readme, V2_README);
+  }
+  /* Reference pulse oximeter — present when one was connected while recording. */
+  const oximeter = concatStream(chunks, 'oximeter');
+  const oximeterPleth = concatStream(chunks, 'oximeterPleth');
+  if (oximeter.length > 0) {
+    add(FILE_NAMES.oximeter, writeOximeterCSV(oximeter));
+    if (oximeterPleth.length > 0) add(FILE_NAMES.oximeterPleth, writeOximeterPlethCSV(oximeterPleth));
+    add(FILE_NAMES.oximeterReadme, OXIMETER_README);
+  }
+  /* H10 raw ECG, its R-peaks, and pulse arrival time — present when ECG ran. */
+  const ecg = concatStream(chunks, 'ecg');
+  const rPeaks = concatStream(chunks, 'rPeaks');
+  const pat = concatStream(chunks, 'pat');
+  if (ecg.length > 0) add(FILE_NAMES.ecg, writeEcgCSV(ecg));
+  if (rPeaks.length > 0) add(FILE_NAMES.rPeaks, writeRPeaksCSV(rPeaks));
+  if (pat.length > 0) {
+    add(FILE_NAMES.pat, writePatCSV(pat));
+    add(FILE_NAMES.pttReadme, PTT_README);
   }
   /* Guided protocol labels — present when the recording ran a protocol. */
   const protocolEvents = concatStream(chunks, 'protocolEvents');

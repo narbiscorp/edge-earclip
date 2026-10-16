@@ -6,6 +6,7 @@ import type {
 } from '../ble/parsers';
 import type { NarbisBeatEvent } from '../ble/narbisDevice';
 import type { V2Status } from '../ble/v2/protocol';
+import type { OximeterReading } from '../ble/innovoOximeter';
 import type { GuidedEventDetail } from '../guided/bus';
 import type { PolarBeatRecord } from '../state/store';
 import type { MetricsSnapshot } from '../state/metricsBuffer';
@@ -138,6 +139,41 @@ export interface V2StatusRecord extends V2Status {
   timestamp: number;
 }
 
+/** One reference-oximeter reading (ble/innovoOximeter.ts), once a second, host arrival time. */
+export interface OximeterRecord extends OximeterReading {
+  timestamp: number;
+  /** The packet as received, lowercase hex: its layout is a third party's decode. */
+  hex: string;
+}
+
+/** A block of H10 raw ECG (µV) on the PTT clock (state/pttState.ts): sample i at t0 + i·periodMs. */
+export interface EcgBlockRecord {
+  t0: number;
+  periodMs: number;
+  samples: number[];
+}
+
+/** An R-peak found in the H10 ECG (metrics/ecgRpeak.ts). */
+export interface RPeakRecord {
+  timestamp: number;
+  rr: number | null;
+  amp: number;
+}
+
+/** One pulse arrival time: H10 ECG R-peak → earclip beat (metrics/ptt.ts). */
+export interface PatRecord {
+  /** The earclip beat, corrected clock. */
+  timestamp: number;
+  pat: number;
+  motion: boolean;
+}
+
+/** Reference-oximeter pleth samples (0..255) from one notification, host arrival time. */
+export interface OximeterPlethRecord {
+  timestamp: number;
+  values: number[];
+}
+
 /** One V2.1 accelerometer notification (raw LIS2DH12 counts), stored whole. */
 export interface V2AccelBatchRecord {
   hostFirstMs: number;
@@ -206,6 +242,11 @@ export interface RecordingChunk {
   v2Status?: V2StatusRecord[];
   v2Ibi?: V2IbiRecordTimed[];
   v2Events?: V2EventRecordTimed[];
+  oximeter?: OximeterRecord[];
+  oximeterPleth?: OximeterPlethRecord[];
+  ecg?: EcgBlockRecord[];
+  rPeaks?: RPeakRecord[];
+  pat?: PatRecord[];
   bleLog?: BleLogRecord[];
   protocolEvents?: ProtocolEventRecord[];
 }

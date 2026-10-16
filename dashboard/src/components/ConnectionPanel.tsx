@@ -5,6 +5,8 @@ import { forgetEdgePairedDevice, getEdgePairedDeviceName } from '../ble/edgeDevi
 import type { NarbisStatus } from '../ble/narbisDevice';
 import type { PolarStatus } from '../ble/polarH10';
 import type { EdgeStatus } from '../ble/edgeDevice';
+import type { OximeterStatus } from '../ble/innovoOximeter';
+import { signalBarsGlyph } from '../charts/signalBars';
 
 function formatBattery(b: BatteryState | null): string {
   if (b === null) return '';
@@ -40,7 +42,7 @@ const LED_MODE_NAMES: Record<number, string> = {
   7: 'coh·lens',
 };
 
-const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
+const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus | OximeterStatus, string> = {
   disconnected: 'bg-slate-500',
   connecting: 'bg-amber-400 animate-pulse',
   reconnecting: 'bg-amber-400 animate-pulse',
@@ -50,6 +52,10 @@ const dotClass: Record<NarbisStatus | PolarStatus | EdgeStatus, string> = {
 export default function ConnectionPanel() {
   const narbis = useDashboardStore((s) => s.connection.narbis);
   const polar = useDashboardStore((s) => s.connection.polar);
+  const oximeter = useDashboardStore((s) => s.connection.oximeter);
+  const lastOximeter = useDashboardStore((s) => s.lastOximeter);
+  /* The direct link's signal, as the earclip hears this PC (STATUS, proto 1.5). */
+  const earclipLinkRssi = useDashboardStore((s) => s.v2Status?.connRssiDbm ?? null);
   const edge = useDashboardStore((s) => s.connection.edge);
   const ledHealth = useDashboardStore((s) => s.connection.edge.ledHealth);
   const recording = useDashboardStore((s) => s.recording);
@@ -73,6 +79,16 @@ export default function ConnectionPanel() {
   const onDisconnectPolar = () => {
     void useDashboardStore.getState().disconnectPolar().catch((err) => {
       console.error('disconnect polar failed', err);
+    });
+  };
+  const onConnectOximeter = () => {
+    void useDashboardStore.getState().connectOximeter().catch((err) => {
+      console.error('connect oximeter failed', err);
+    });
+  };
+  const onDisconnectOximeter = () => {
+    void useDashboardStore.getState().disconnectOximeter().catch((err) => {
+      console.error('disconnect oximeter failed', err);
     });
   };
   const onConnectEdge = () => {
@@ -137,7 +153,8 @@ export default function ConnectionPanel() {
   /* Append earclip-side RSSI bars when the relay link is up. The glasses
    * is the only thing that knows the earclip RSSI — Web Bluetooth doesn't
    * expose it — so this depends on a 0xFA frame having arrived. */
-  const narbisLabelWithRssi = `${earclipBars ? `${narbisLabel} ${earclipBars}` : narbisLabel}${ecPhyTag}`;
+  const directBars = narbis.state === 'connected' ? signalBarsGlyph(earclipLinkRssi) : '';
+  const narbisLabelWithRssi = `${earclipBars ? `${narbisLabel} ${earclipBars}` : narbisLabel}${directBars ? ` ${directBars}` : ''}${ecPhyTag}`;
 
   /* Sub-status line under the pill: shows the current phase of the
    * connect / reconnect handshake so the user knows whether the dashboard
@@ -182,6 +199,17 @@ export default function ConnectionPanel() {
           ? 'connecting…'
           : 'disconnected';
 
+  const oximeterLabel =
+    oximeter.state === 'connected'
+      ? `${oximeter.deviceName ?? 'oximeter'}${
+          lastOximeter?.reading.spo2 != null ? ` · ${lastOximeter.reading.spo2} %` : ' · no finger'
+        }`
+      : oximeter.state === 'reconnecting'
+        ? 'waiting for it to turn on…'
+        : oximeter.state === 'connecting'
+          ? 'connecting…'
+          : 'disconnected';
+
   const onForgetNarbis = () => {
     void useDashboardStore.getState().forgetNarbis().catch((err) => {
       console.error('forget narbis failed', err);
@@ -199,7 +227,11 @@ export default function ConnectionPanel() {
         <Pill
           label={`Earclip: ${narbisLabelWithRssi}`}
           dot={dotClass[narbis.state]}
-          title={earclipBars ? rssiTitle('earclip↔glasses link', earclipRssi) : undefined}
+          title={
+            directBars
+              ? `Earclip signal: ${earclipLinkRssi} dBm, as the earclip hears this PC`
+              : earclipBars ? rssiTitle('earclip↔glasses link', earclipRssi) : undefined
+          }
         />
         {narbis.state === 'disconnected' ? (
           <>
@@ -305,6 +337,28 @@ export default function ConnectionPanel() {
             className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
             onClick={onDisconnectPolar}
             disabled={polar.state === 'connecting'}
+          >
+            Disconnect
+          </button>
+        )}
+        {/* Reference pulse oximeter (Innovo iP900BP-B) */}
+        <Pill
+          label={`Oximeter: ${oximeterLabel}`}
+          dot={dotClass[oximeter.state]}
+          title="Reference fingertip pulse oximeter: its SpO2 is drawn on the Pulse ox chart and saved with recordings"
+        />
+        {oximeter.state === 'disconnected' ? (
+          <button
+            className="rounded bg-emerald-600 hover:bg-emerald-500 px-2 py-1 text-xs font-medium"
+            onClick={onConnectOximeter}
+          >
+            Connect Oximeter
+          </button>
+        ) : (
+          <button
+            className="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1 text-xs"
+            onClick={onDisconnectOximeter}
+            disabled={oximeter.state === 'connecting'}
           >
             Disconnect
           </button>
