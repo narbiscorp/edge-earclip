@@ -265,6 +265,7 @@ export class NarbisDevice extends EventTarget {
       // Filters are an OR-set covering BOTH earclip generations:
       //   v1 — custom service UUID, or name "Narbis Earclip <MAC suffix>"
       //   v2 — Narbis Sensor Service, or name "Narbis Edge Earclip[ TEST]"
+      //        or, production firmware v0.4.0+, "Narbis Edge Clip"
       // Service-UUID matching is preferred (Linux/Android/macOS and many
       // Windows configs); the name prefixes are the fallback for Windows
       // builds whose WinRT stack strips 128-bit UUIDs from the
@@ -278,6 +279,7 @@ export class NarbisDevice extends EventTarget {
           { services: [V2_SENSOR_SVC] },
           { namePrefix: 'Narbis Earclip' },
           { namePrefix: 'Narbis Edge Earclip' },
+          { namePrefix: 'Narbis Edge Clip' },
         ],
         optionalServices: [
           NARBIS_SVC_UUID,
