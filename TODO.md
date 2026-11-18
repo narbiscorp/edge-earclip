@@ -88,9 +88,10 @@ A clip that turned itself OFF drops off USB — press its button before flashing
   - A central that subscribes nothing is dropped after 15 s, so a bonded OS background link cannot hold the single slot.
   - A NEW phone still pairing gets 60 s (v0.3.0-40, `idle_kick_pair_s`), and the 15 s restarts once paired.
 - **Radio.**
-  - TX power +20 dBm (knob `ble_tx_dbm`).
+  - TX power +9 dBm (knob `ble_tx_dbm`), from fw 0dff245 / test candidate 3 (2026-11-18). It was +20 from v0.3.0-35.
   - XIAO RF switch driven at boot: GPIO3 low (powered) + GPIO14 low (onboard ceramic antenna).
-  - Advertising RSSI at the same spot went −68 → −41 dBm.
+  - Advertising RSSI at the same spot went −68 → −41 dBm at +20 (~16 dB of it the switch, ~11 dB the power). Expect about −52 dBm at +9.
+  - C6 datasheet v1.6 table 5-8, BLE TX current: 315 mA at +20, 190 mA at +9, 130 mA at 0 dBm.
 - **Heart Rate Service (0x180D)** carries H10-style RRs (1/1024 s, one per beat) minus ARTIFACT and GATED-context beats.
 - **OFF current** measured 46 µA (PPK2), inside the hardware floor.
   - 33 µA of it is the AFE RESETZ pull-up R1 held low.
@@ -118,7 +119,7 @@ A clip that turned itself OFF drops off USB — press its button before flashing
 3. **[Oximeter]** When the Innovo iP900BP-B arrives: connect it from the dashboard ("Connect Oximeter"). If it reports none of the known services, read its service UUID from this PC (bleak) and add it to `OXIMETER_SERVICES` in `dashboard/src/ble/innovoOximeter.ts`. Then wear both and use "fit from oximeter" (pulse-ox chart → cal). A breath-hold or altitude dip gives the 4-point spread that fits the slope b too.
 4. **[Report]** A motion section in the training report from the accel energy and MOTION flags (dashboard and app). Proposed, not yet agreed.
 5. **[Hardware]** The third guided subject's pulse was weak (AC/DC 0.66 %), and only 58-65 % of beats were found even at rest (37-65 % in motion). Try placement and the LED currents first.
-6. **[Hardware/firmware]** Measure the +20 dBm battery cost while streaming (PPK2) and settle the default. Light sleep in TEST-build standby (the real standby saving) is not started.
+6. **[Hardware/firmware]** TX power default is now +9 dBm (2026-11-18). Still to do: PPK2 running current at +9 vs +20 (estimate 1–3 mA saved while connected or fast-advertising), and a walk-around range check with a phone. Light sleep in TEST-build standby (the real standby saving) is not started.
 7. **[iOS]** Start the earclip port from `EARCLIP_V2_MOBILE_PORT_HANDOFF.md` (iOS is the spec per the apps' rules; Android went first, decision D34 there).
 8. **[Dashboard]** The coherence-engine feed and the session-summary RMSSD still take flagged beats (interval bounds only). Decide whether they follow the HRV rule (`isArtifactBeat`).
 9. **[Dashboard]** UI for the new knobs (`ble_tx_dbm`, `agc_step_comp`, `idle_kick_pair_s`, `refract_frac_pct`, `gate_acc_hard_thr`): tester page only today.
